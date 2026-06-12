@@ -1,0 +1,298 @@
+const ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+const escape = (s: string): string => s.replace(/[&<>"']/g, (c) => ESC[c] ?? c);
+function renderInline(s: string): string {
+  const codes: string[] = [];
+  s = s.replace(/`([^`\n]+)`/g, (_, c) => {
+    codes.push(c);
+    return `\u0001C${codes.length - 1}\u0001`;
+  });
+  const images: string[] = [];
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g, (_, alt, src) => {
+    if (!/^(https?:\/\/|\/)/i.test(src)) return alt; 
+    images.push(JSON.stringify({ alt, src }));
+    return `\u0001I${images.length - 1}\u0001`;
+  });
+  const links: string[] = [];
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, text, href) => {
+    if (!/^(https?:\/\/|\/|#)/i.test(href)) return text; 
+    links.push(JSON.stringify({ text, href }));
+    return `\u0001L${links.length - 1}\u0001`;
+  });
+  s = escape(s);
+  s = s.replace(/~~([^~\n]+)~~/g, (_, t) => `<del>${t}</del>`);
+  s = s.replace(/\*\*\*([\s\S]+?)\*\*\*/g, (_, t) => `<strong><em>${t}</em></strong>`);
+  s = s.replace(/\*\*([\s\S]+?)\*\*/g, (_, t) => `<strong>${t}</strong>`);
+  s = s.replace(/__([^_\n]+)__/g, (_, t) => `<strong>${t}</strong>`);
+  s = s.replace(/(^|[^\*])\*([\s\S]+?)\*(?!\*)/g, (_, p, t) => `${p}<em>${t}</em>`);
+  s = s.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, (_, p, t) => `${p}<em>${t}</em>`);
+  s = s.replace(/\u0001I(\d+)\u0001/g, (_, idx) => {
+    const { alt, src } = JSON.parse(images[Number(idx)]) as { alt: string; src: string };
+    return `<img src="${src}" alt="${alt}" loading="lazy" />`;
+  });
+  s = s.replace(/\u0001L(\d+)\u0001/g, (_, idx) => {
+    const { text, href } = JSON.parse(links[Number(idx)]) as { text: string; href: string };
+    return `<a href="${href}" rel="noopener noreferrer" target="_blank">${text}</a>`;
+  });
+  s = s.replace(/\u0001C(\d+)\u0001/g, (_, idx) => {
+    return `<code>${escape(codes[Number(idx)])}</code>`;
+  });
+  return s;
+}
+type Lang = "python" | "javascript" | "typescript" | "json" | "bash" | "css" | "html" | string;
+const KEYWORDS: Record<string, RegExp> = {
+  python: /\b(def|class|return|if|elif|else|for|while|in|not|and|or|import|from|as|with|try|except|finally|raise|pass|break|continue|lambda|yield|global|nonlocal|is|None|True|False|self|async|await)\b/g,
+  javascript: /\b(var|let|const|function|return|if|else|for|while|do|switch|case|break|continue|new|class|extends|super|this|throw|try|catch|finally|typeof|instanceof|in|of|async|await|yield|import|export|from|as|default|null|undefined|true|false)\b/g,
+  typescript: /\b(var|let|const|function|return|if|else|for|while|do|switch|case|break|continue|new|class|extends|super|this|throw|try|catch|finally|typeof|instanceof|in|of|async|await|yield|import|export|from|as|default|interface|type|enum|public|private|protected|readonly|static|abstract|implements|null|undefined|true|false|void|never|unknown|any)\b/g,
+  bash: /\b(if|then|else|elif|fi|for|while|do|done|case|esac|in|function|return|export|local|read|echo|set|unset)\b/g,
+  css: /\b(important|inherit|initial|unset|none|block|inline|flex|grid|absolute|relative|fixed|static|sticky)\b/g,
+  json: /\b(true|false|null)\b/g,
+  html: /\b(html|head|body|div|span|p|a|img|table|tr|td|th|tbody|thead|class|id|src|href|alt|title|style|script|meta|link|input|button|form|label|select|option|textarea)\b/g,
+};
+const TYPE_KEYWORDS: Record<string, RegExp> = {
+  typescript: /\b(string|number|boolean|bigint|symbol|object|Function|Array|Map|Set|Promise|Date|RegExp|Error)\b/g,
+};
+const COMMENT: Record<string, { line?: RegExp; block?: RegExp }> = {
+  python: { line: /(^|\s)#.*$/gm, block: undefined },
+  javascript: { line: /\/\/.*$/gm, block: /\/\*[\s\S]*?\*\//g },
+  typescript: { line: /\/\/.*$/gm, block: /\/\*[\s\S]*?\*\//g },
+  bash: { line: /(^|\s)#.*$/gm },
+  css: { block: /\/\*[\s\S]*?\*\//g },
+  html: { block: /<!--[\s\S]*?-->/g },
+  json: {},
+};
+const STRING_RE: Record<string, RegExp> = {
+  python: /("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')/g,
+  javascript: /(`(?:\\.|\$\{[^}]*\}|[^`\\])*`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
+  typescript: /(`(?:\\.|\$\{[^}]*\}|[^`\\])*`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
+  bash: /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
+  json: /("(?:\\.|[^"\\])*")/g,
+  css: /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
+  html: /("[^"]*"|'[^']*')/g,
+};
+const NUM_RE = /\b\d+(?:\.\d+)?\b/g;
+function highlightCode(src: string, lang: Lang): string {
+  if (!lang || !KEYWORDS[lang]) return escape(src);
+  type Patch = { start: number; end: number; html: string };
+  const patches: Patch[] = [];
+  const collect = (re: RegExp, wrap: (raw: string) => string) => {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(src)) !== null) {
+      patches.push({ start: m.index, end: m.index + m[0].length, html: wrap(m[0]) });
+      if (m[0].length === 0) re.lastIndex++;
+    }
+  };
+  if (STRING_RE[lang]) collect(STRING_RE[lang], (m) => `<span class="arc-syn-str">${escape(m)}</span>`);
+  const c = COMMENT[lang];
+  if (c?.line) collect(c.line, (m) => `<span class="arc-syn-c">${escape(m)}</span>`);
+  if (c?.block) collect(c.block, (m) => `<span class="arc-syn-c">${escape(m)}</span>`);
+  collect(NUM_RE, (m) => `<span class="arc-syn-num">${m}</span>`);
+  collect(KEYWORDS[lang], (m) => `<span class="arc-syn-kw">${m}</span>`);
+  if (TYPE_KEYWORDS[lang]) collect(TYPE_KEYWORDS[lang], (m) => `<span class="arc-syn-type">${m}</span>`);
+  patches.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+  let out = "";
+  let cursor = 0;
+  for (const p of patches) {
+    if (p.start < cursor) continue;
+    out += escape(src.slice(cursor, p.start));
+    out += p.html;
+    cursor = p.end;
+  }
+  out += escape(src.slice(cursor));
+  return out;
+}
+function renderBlock(s: string): string {
+  const lines = s.split("\n");
+  const html: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.trim() === "") { i++; continue; }
+    if (/^ {0,3}>/.test(line)) {
+      const raw: string[] = [];
+      while (i < lines.length && /^ {0,3}>/.test(lines[i])) {
+        raw.push(lines[i].replace(/^ {0,3}> ?/, ""));
+        i++;
+      }
+      html.push(renderBlockquote(raw, 0));
+      continue;
+    }
+    const fenceOpen = /^ {0,3}```([a-zA-Z0-9_+\-#]*)\s*$/.exec(line);
+    if (fenceOpen) {
+      const lang = (fenceOpen[1] || "").toLowerCase();
+      const body: string[] = [];
+      i++;
+      while (i < lines.length && !/^ {0,3}```\s*$/.test(lines[i])) {
+        body.push(lines[i]);
+        i++;
+      }
+      if (i < lines.length) i++;
+      const code = body.join("\n");
+      const innerHtml = lang ? highlightCode(code, lang) : escape(code);
+      const langClass = lang ? ` data-lang="${lang}"` : "";
+      html.push(`<pre class="arc-md-pre"${langClass}><code class="arc-md-code">${innerHtml}</code></pre>`);
+      continue;
+    }
+    html.push(renderBlockDispatch0(lines, i));
+    i = renderBlockDispatch1(lines, i);
+  }
+  return html.join("");
+}
+function renderBlockDispatch0(lines: string[], i: number): string {
+  return renderBlockDispatch(lines.join("\n"), i)[0];
+}
+function renderBlockDispatch1(lines: string[], i: number): number {
+  return renderBlockDispatch(lines.join("\n"), i)[1];
+}
+function renderBlockDispatch(s: string, start: number): [string, number] {
+  const lines = s.split("\n");
+  let i = start;
+  const line = lines[i];
+  if (line === undefined) return ["", i];
+  if (/^ {0,3}(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+    return [`<hr class="arc-md-hr" />`, i + 1];
+  }
+  const h = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+  if (h) return [`<h${h[1].length}>${renderInline(h[2])}</h${h[1].length}>`, i + 1];
+  if (i + 1 < lines.length && /\|/.test(line) && /^\s*\|?\s*:?-{3,}/.test(lines[i + 1])) {
+    const splitRow = (r: string): string[] =>
+      r.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+    const head = splitRow(line);
+    i += 2;
+    const aligns = splitRow(lines[i - 1]).map((c) => {
+      const l = c.startsWith(":");
+      const r = c.endsWith(":");
+      return l && r ? "center" : r ? "right" : l ? "left" : "";
+    });
+    const headHtml = `<tr>${head.map((c, idx) => `<th style="text-align:${aligns[idx] || "left"}">${renderInline(c)}</th>`).join("")}</tr>`;
+    const bodyRows: string[] = [];
+    while (i < lines.length && /\|/.test(lines[i]) && lines[i].trim() !== "") {
+      const cells = splitRow(lines[i]);
+      while (cells.length < head.length) cells.push("");
+      bodyRows.push(`<tr>${cells.map((c, idx) => `<td style="text-align:${aligns[idx] || "left"}">${renderInline(c)}</td>`).join("")}</tr>`);
+      i++;
+    }
+    return [`<table class="arc-md-table"><thead>${headHtml}</thead><tbody>${bodyRows.join("")}</tbody></table>`, i];
+  }
+
+  if (isListLine(line)) {
+    const [html, nextI] = renderListAt(lines, i, indentOf(line));
+    return [html, nextI];
+  }
+
+  const buf: string[] = [line];
+  i++;
+  while (
+    i < lines.length &&
+    lines[i].trim() !== "" &&
+    !/^(#{1,6})\s+/.test(lines[i]) &&
+    !/^ {0,3}(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i]) &&
+    !/\|/.test(lines[i]) &&
+    !isListLine(lines[i]) &&
+    !/^ {0,3}>/.test(lines[i]) &&
+    !/^ {0,3}```/.test(lines[i])
+  ) {
+    buf.push(lines[i]);
+    i++;
+  }
+  return [`<p>${renderInline(buf.join(" "))}</p>`, i];
+}
+function renderBlockquote(raw: string[], level: number): string {
+  const current: string[] = [];
+  const nested: string[] = [];
+  for (const l of raw) {
+    if (/^ {0,3}>/.test(l)) {
+      nested.push(l.replace(/^ {0,3}> ?/, ""));
+    } else {
+      current.push(l);
+    }
+  }
+  const inner = renderBlock(current.join("\n"));
+  if (nested.length) {
+    return `<blockquote class="arc-md-quote">${inner}${renderBlockquote(nested, level + 1)}</blockquote>`;
+  }
+  return `<blockquote class="arc-md-quote">${inner}</blockquote>`;
+}
+function isListLine(line: string): boolean {
+  return /^ {0,6}([-*]|\d+\.)\s+/.test(line);
+}
+function indentOf(line: string): number {
+  const m = /^( *)/.exec(line)!;
+  return m[1].length;
+}
+function renderListAt(lines: string[], start: number, parentIndent: number): [string, number] {
+  const out: string[] = [];
+  let i = start;
+  let currentTag: "ul" | "ol" | null = null;
+  let liOpen = false;
+  const closeLiIfOpen = () => {
+    if (liOpen) { out.push(`</li>`); liOpen = false; }
+  };
+  const closeList = () => {
+    if (currentTag) {
+      closeLiIfOpen();
+      out.push(`</${currentTag}>`);
+      currentTag = null;
+    }
+  };
+  while (i < lines.length) {
+    const l = lines[i];
+    if (l.trim() === "") {
+      let k = i + 1;
+      while (k < lines.length && lines[k].trim() === "") k++;
+      if (k < lines.length && isListLine(lines[k]) && indentOf(lines[k]) >= parentIndent) {
+        i = k;
+        continue;
+      }
+      break;
+    }
+    if (!isListLine(l)) break;
+    const indent = indentOf(l);
+    if (indent < parentIndent) break;
+    const content = l.replace(/^ *([-*]|\d+\.)\s+/, "");
+    const isOrdered = /^\d+\.\s+/.test(l.trimStart());
+    const tag: "ul" | "ol" = isOrdered ? "ol" : "ul";
+    if (indent > parentIndent) {
+      if (!liOpen) {
+        i++;
+        continue;
+      }
+      const [childHtml, nextI] = renderListAt(lines, i, indent);
+      out.push(childHtml);
+      i = nextI;
+      closeLiIfOpen();
+      continue;
+    }
+    if (currentTag === null) {
+      currentTag = tag;
+      out.push(`<${tag} class="arc-md-${tag}">`);
+    } else if (currentTag !== tag) {
+      closeList();
+      currentTag = tag;
+      out.push(`<${tag} class="arc-md-${tag}">`);
+    } else {
+      closeLiIfOpen();
+    }
+    const taskMatch = /^(\[[ xX]\])(\s+.*)$/.exec(content);
+    if (!isOrdered && taskMatch) {
+      const checked = taskMatch[1].toLowerCase() === "[x]";
+      const rest = taskMatch[2];
+      out.push(
+        `<li class="arc-md-task">` +
+        `<input type="checkbox" disabled${checked ? " checked" : ""} /> ` +
+        `${renderInline(rest)}</li>`,
+      );
+      liOpen = false; 
+    } else {
+      out.push(`<li>${renderInline(content)}`);
+      liOpen = true;
+    }
+    i++;
+  }
+  closeList();
+  return [out.join(""), i];
+}
+export function renderMarkdown(src: string): string {
+  if (!src) return "";
+  return renderBlock(src);
+}

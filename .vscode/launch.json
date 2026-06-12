@@ -1,0 +1,80 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Arc Extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/packages/arc"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/packages/arc/dist/**/*.js"
+      ],
+      "preLaunchTask": "build:ext",
+      "presentation": {
+        "reveal": "auto"
+      }
+    },
+    {
+      "name": "Run Arc Extension (watch + reload)",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/packages/arc"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/packages/arc/dist/**/*.js"
+      ],
+      "preLaunchTask": "build:ext",
+      "presentation": {
+        "reveal": "auto"
+      }
+    },
+    {
+      "name": "Arc: Run @arc/host tests",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "@arc/host",
+        "test"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "presentation": { "reveal": "always" }
+    },
+    {
+      "name": "Arc: Run all tests",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["test"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "presentation": { "reveal": "always" }
+    },
+    {
+      "name": "Arc: Package .vsix",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "arc",
+        "package"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "presentation": { "reveal": "always" }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Arc: Build + Launch",
+      "preLaunchTask": "build:ext",
+      "configurations": ["Run Arc Extension"]
+    }
+  ]
+}

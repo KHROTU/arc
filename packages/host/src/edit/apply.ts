@@ -1,0 +1,145 @@
+import { diffLines, type Change } from "diff";
+export interface ApplyEditInput {
+  before: string;
+  search: string;
+  replace: string;
+  replaceAll?: boolean;
+}
+export interface ApplyEditResult {
+  ok: boolean;
+  after: string;
+  matches: number;
+  strategy: "exact" | "trim" | "blank-collapse" | "fuzzy" | "regex" | "append";
+  diff: Change[];
+  error?: string;
+}
+const NL = /\r\n?|\n/;
+function normalizeLines(s: string): string {
+  return s.split(NL).map((l) => l.replace(/[ \t]+$/, "")).join("\n");
+}
+function collapseBlank(s: string): string {
+  return s.replace(/\n{3,}/g, "\n\n");
+}
+function findIndex(haystack: string, needle: string): number {
+  if (!needle) return -1;
+  return haystack.indexOf(needle);
+}
+function findRegex(haystack: string, needle: string): { index: number; length: number } | null {
+  if (!needle) return null;
+  const m = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "m").exec(haystack);
+  return m ? { index: m.index, length: m[0].length } : null;
+}
+function windowedMatch(haystack: string, needle: string): { index: number; length: number } | null {
+  const nLines = needle.split(NL).length;
+  if (nLines === 0) return null;
+  const hLines = haystack.split(NL);
+  for (let i = 0; i <= hLines.length - nLines; i++) {
+    let all = true;
+    for (let j = 0; j < nLines; j++) {
+      if (hLines[i + j].trim() !== needle.split(NL)[j].trim()) {
+        all = false;
+        break;
+      }
+    }
+    if (all) {
+      const length = hLines.slice(i, i + nLines).join("\n").length;
+      const index = hLines.slice(0, i).join("\n").length + (i > 0 ? 1 : 0);
+      return { index, length };
+    }
+  }
+  return null;
+}
+export function applyEdit(input: ApplyEditInput): ApplyEditResult {
+  const { before, search, replace, replaceAll } = input;
+  if (!search) {
+    const after = before + replace;
+    return {
+      ok: true,
+      after,
+      matches: 1,
+      strategy: "append",
+      diff: diffLines(before, after),
+    };
+  }
+  if (before.includes(search)) {
+    return finalize(before, search, replace, replaceAll, "exact");
+  }
+  {
+    const norm = normalizeLines(before);
+    const normSearch = normalizeLines(search);
+    if (norm.includes(normSearch)) {
+      return finalize(norm, normSearch, normalizeLines(replace), replaceAll, "trim");
+    }
+    const col = collapseBlank(norm);
+    const colSearch = collapseBlank(normSearch);
+    if (col.includes(colSearch)) {
+      return finalize(col, colSearch, collapseBlank(normalizeLines(replace)), replaceAll, "blank-collapse");
+    }
+  }
+  {
+    const w = windowedMatch(before, search);
+    if (w) {
+      const after = before.slice(0, w.index) + replace + before.slice(w.index + w.length);
+      return {
+        ok: true,
+        after,
+        matches: 1,
+        strategy: "fuzzy",
+        diff: diffLines(before, after),
+      };
+    }
+  }
+  {
+    const r = findRegex(before, search);
+    if (r) {
+      const after = before.slice(0, r.index) + replace + before.slice(r.index + r.length);
+      return {
+        ok: true,
+        after,
+        matches: 1,
+        strategy: "regex",
+        diff: diffLines(before, after),
+      };
+    }
+  }
+  return {
+    ok: false,
+    after: before,
+    matches: 0,
+    strategy: "exact",
+    diff: diffLines(before, before),
+    error: "search text not found",
+  };
+}
+function finalize(before: string, search: string, replace: string, replaceAll: boolean | undefined, strategy: ApplyEditResult["strategy"]): ApplyEditResult {
+  let count = 0;
+  let after = before;
+  if (replaceAll) {
+    const parts = before.split(search);
+    count = parts.length - 1;
+    after = parts.join(replace);
+  } else {
+    const idx = findIndex(before, search);
+    if (idx >= 0) {
+      after = before.slice(0, idx) + replace + before.slice(idx + search.length);
+      count = 1;
+      if (before.split(search).length - 1 > 1) {
+        return {
+          ok: false,
+          after: before,
+          matches: 0,
+          strategy,
+          diff: diffLines(before, before),
+          error: "search text matches multiple locations; pass replaceAll:true to replace every occurrence",
+        };
+      }
+    }
+  }
+  return {
+    ok: count > 0,
+    after,
+    matches: count,
+    strategy,
+    diff: diffLines(before, after),
+  };
+}

@@ -1,0 +1,16 @@
+node_modules/
+dist/
+out/
+.vsix
+*.log
+.DS_Store
+.reference/
+.vscode-test/
+coverage/
+.eslintcache
+.env.*
+
+# Auto-added by export script
+.export.state.json
+.exportignore.json
+context.txt

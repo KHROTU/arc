@@ -1,0 +1,10 @@
+TODO — Arc Playground Tasks
+============================
+
+[ ] Read and parse playground/src/config.json
+[ ] Fix the type error in playground/src/index.ts
+[ ] Replace REPLACE_ME in playground/src/utils.ts with an actual string
+[ ] Run playground/scripts/demo.sh
+[ ] Check LSP diagnostics on playground/src/index.ts
+[ ] Navigate browser to playground/web/index.html and test the form
+[ ] Write results to playground/data/output.txt

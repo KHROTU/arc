@@ -1,0 +1,55 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["build"],
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "silent" },
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "build:ext",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["build:ext"],
+      "group": "build",
+      "presentation": { "reveal": "silent" },
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "build:webview",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["build:webview"],
+      "group": "build",
+      "presentation": { "reveal": "silent" }
+    },
+    {
+      "label": "watch",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["-r", "--parallel", "build", "--watch"],
+      "isBackground": true,
+      "presentation": { "reveal": "silent" }
+    },
+    {
+      "label": "test",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["-r", "test"],
+      "group": "test",
+      "presentation": { "reveal": "silent" },
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "package",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["package"],
+      "presentation": { "reveal": "always" }
+    }
+  ]
+}

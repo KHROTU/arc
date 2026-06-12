@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arc Playground</title>
+  <link rel="stylesheet" href="../src/style.css">
+</head>
+<body>
+  <h1>Arc Agent Playground</h1>
+
+  <div class="card">
+    <h2 class="card-title">Tool Test Form</h2>
+    <p id="message">Fill out the form and submit.</p>
+    <form id="test-form">
+      <label for="name">Name:</label>
+      <input type="text" id="name" name="name" placeholder="Enter your name">
+      <br><br>
+      <label for="action">Action:</label>
+      <select id="action" name="action">
+        <option value="greet">Greet</option>
+        <option value="count">Count</option>
+        <option value="validate">Validate</option>
+      </select>
+      <br><br>
+      <button type="button" id="submit-btn">Run</button>
+      <button type="reset">Reset</button>
+    </form>
+    <pre id="output"></pre>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Status</h2>
+    <p>Page loaded at: <span id="load-time"></span></p>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>

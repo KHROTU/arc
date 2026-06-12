@@ -1,0 +1,15 @@
+{
+  "app": {
+    "name": "Arc Agent Playground",
+    "version": "0.1.0",
+    "debug": true
+  },
+  "features": {
+    "tools": ["file.read", "file.edit", "file.write", "shell.run", "lsp.problems", "browser.navigate", "todo.write", "subagent.spawn", "handoff", "clarification.askUser"],
+    "tiers": ["free", "light", "default", "heavy"]
+  },
+  "limits": {
+    "maxResults": 100,
+    "timeoutMs": 30000
+  }
+}

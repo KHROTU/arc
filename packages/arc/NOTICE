@@ -1,0 +1,11 @@
+Arc
+Copyright 2026 KHROTU
+
+This product includes software developed by:
+- The Kilo-Org authors (https://github.com/Kilo-Org/kilocode), Apache-2.0,
+  which itself descends from Roo Code and Cline, also Apache-2.0.
+  Conceptual patterns for search/replace file edits, provider routing,
+  and checkpoint design were studied from these projects. No source files
+  are vendored verbatim; the implementation is original to Arc.
+
+See THIRD_PARTY.md for full attribution.

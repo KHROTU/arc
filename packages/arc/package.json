@@ -1,0 +1,172 @@
+{
+  "name": "arc",
+  "displayName": "Arc",
+  "description": "Agentic coding extension with tiered model routing, subagents, handoff, and Kilo-style checkpoints.",
+  "version": "0.0.1",
+  "publisher": "arc",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.95.0",
+    "node": ">=18.18.0"
+  },
+  "main": "dist/extension.js",
+  "categories": ["Programming Languages", "Other"],
+  "keywords": ["ai", "agent", "coding", "mcp", "playwright"],
+  "icon": "assets/arc-logo-mono.png",
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:arc-sidebar",
+    "onView:arc-sidebar-pride",
+    "onCommand:arc.openSidebar",
+    "onCommand:arc.openFullscreen",
+    "onCommand:arc.openSettings",
+    "onCommand:arc.newTask",
+    "onCommand:arc.stop",
+    "onCommand:arc.continue",
+    "onCommand:arc.toggleProblems",
+    "onCommand:arc.manageModels",
+    "onCommand:arc.manageMcp",
+    "onCommand:arc.managePrompts",
+    "onCommand:arc.openPlayground"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "arc-activitybar",
+          "title": "Arc",
+          "icon": "assets/arc-logo-mono.svg",
+          "when": "!arc.isPrideMonth"
+        },
+        {
+          "id": "arc-activitybar-pride",
+          "title": "Arc",
+          "icon": "assets/arc-logo-pride.svg",
+          "when": "arc.isPrideMonth"
+        }
+      ]
+    },
+    "views": {
+      "arc-activitybar": [
+        {
+          "type": "webview",
+          "id": "arc-sidebar",
+          "name": "Arc",
+          "icon": "assets/arc-logo-mono.svg",
+          "contextualTitle": "Arc",
+          "when": "!arc.isPrideMonth"
+        }
+      ],
+      "arc-activitybar-pride": [
+        {
+          "type": "webview",
+          "id": "arc-sidebar-pride",
+          "name": "Arc",
+          "icon": "assets/arc-logo-pride.svg",
+          "contextualTitle": "Arc",
+          "when": "arc.isPrideMonth"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "arc.openSidebar", "title": "Open Sidebar Chat", "category": "Arc" },
+      { "command": "arc.openFullscreen", "title": "Open Full-Screen Chat", "category": "Arc" },
+      { "command": "arc.openSettings", "title": "Open Settings", "category": "Arc" },
+      { "command": "arc.newTask", "title": "New Task", "category": "Arc" },
+      { "command": "arc.stop", "title": "Stop Current Task", "category": "Arc" },
+      { "command": "arc.continue", "title": "Continue Last Task", "category": "Arc" },
+      { "command": "arc.toggleProblems", "title": "Toggle Problems Panel", "category": "Arc" },
+      { "command": "arc.manageModels", "title": "Manage Models", "category": "Arc" },
+      { "command": "arc.manageMcp", "title": "Manage MCP Servers", "category": "Arc" },
+      { "command": "arc.managePrompts", "title": "Manage System Prompts", "category": "Arc" },
+      { "command": "arc.openPlayground", "title": "Open Component Playground", "category": "Arc" }
+    ],
+    "menus": {
+      "commandPalette": [
+        { "command": "arc.openSidebar", "when": "true" },
+        { "command": "arc.openFullscreen", "when": "true" },
+        { "command": "arc.openSettings", "when": "true" },
+        { "command": "arc.openPlayground", "when": "true" },
+        { "command": "arc.newTask", "when": "true" },
+        { "command": "arc.stop", "when": "true" },
+        { "command": "arc.continue", "when": "true" },
+        { "command": "arc.toggleProblems", "when": "true" },
+        { "command": "arc.manageModels", "when": "true" },
+        { "command": "arc.manageMcp", "when": "true" },
+        { "command": "arc.managePrompts", "when": "true" }
+      ]
+    },
+    "keybindings": [
+      { "command": "arc.openSidebar", "key": "ctrl+shift+a", "mac": "cmd+shift+a" },
+      { "command": "arc.openFullscreen", "key": "ctrl+shift+alt+a", "mac": "cmd+shift+alt+a" },
+      { "command": "arc.openSettings", "key": "ctrl+shift+,", "mac": "cmd+shift+," },
+      { "command": "arc.newTask", "key": "ctrl+shift+n", "mac": "cmd+shift+n" }
+    ],
+    "configuration": {
+      "title": "Arc",
+      "properties": {
+        "arc.notifications.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show OS notifications when a task completes, handoff occurs, or input is needed."
+        },
+        "arc.shell.approval": {
+          "type": "string",
+          "enum": ["always", "allowlist", "off"],
+          "default": "allowlist",
+          "description": "Shell command approval policy."
+        },
+        "arc.shell.allowlist": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["ls", "cat", "grep", "rg", "git", "pnpm", "npm", "node"],
+          "description": "Commands that can run without explicit approval when shell.approval is 'allowlist'."
+        },
+        "arc.compaction.strategy": {
+          "type": "string",
+          "enum": ["model-aware", "fixed"],
+          "default": "model-aware",
+          "description": "Context compaction strategy. 'model-aware' uses the model's observed average thinking+response length."
+        },
+        "arc.compaction.safetyMargin": {
+          "type": "number",
+          "default": 0.15,
+          "description": "Safety margin reserved for model output (fraction of window)."
+        }
+      }
+    },
+    "walkthroughs": [
+      {
+        "id": "arc.welcome",
+        "title": "Arc",
+        "description": "Get Arc set up: add a model, pick a tier, run your first task.",
+        "steps": [
+          { "id": "arc.welcome.open", "title": "Open Arc", "description": "Click the Arc icon in the activity bar.", "command": "arc.openSidebar" },
+          { "id": "arc.welcome.model", "title": "Add a model", "description": "Open Arc settings to add at least one model and provider.", "command": "arc.manageModels" },
+          { "id": "arc.welcome.run", "title": "Run a task", "description": "Ask Arc to do something in the chat." }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "package": "vsce package --no-dependencies",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/vscode": "1.95.0",
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "esbuild": "0.23.0",
+    "@vscode/vsce": "2.32.0",
+    "vitest": "2.0.5"
+  },
+  "dependencies": {
+    "@arc/host": "workspace:*",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "framer-motion": "11.5.4",
+    "lucide-react": "0.439.0"
+  }
+}
