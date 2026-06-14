@@ -22,10 +22,9 @@ let persist: () => void;
 let persistAsync: () => Promise<void>;
 let chatsFilePath: string;
 let chatHistory: ChatHistory;
-let initialized = false;
 let initResolve: (() => void) | undefined;
 const initReady = new Promise<void>((r) => { initResolve = r; });
-type Session = { id: string; panel?: vscode.WebviewPanel; view?: vscode.WebviewView; agent: Agent; steps: ProcessStep[]; messages: import("@arc/host").ChatMessage[]; };
+type Session = { id: string; panel?: vscode.WebviewPanel; view?: vscode.WebviewView; agent: Agent; agentReady?: Promise<Agent>; steps: ProcessStep[]; messages: import("@arc/host").ChatMessage[]; };
 const sidebarSession: Session = { id: "sidebar", agent: undefined as unknown as Agent, steps: [], messages: [] };
 const fullscreenSessions = new Map<string, Session>();
 const chatSessions = new Map<string, Session>();
@@ -54,12 +53,13 @@ export function activate(context: vscode.ExtensionContext) {
   try {
     registerViewsAndCommands(context);
   } catch (err) {
-    log.appendLine(`[arc] FATAL during phase 1: ${(err as Error)?.stack ?? err}`);
+    log.appendLine(`[arc] fatal during phase 1: ${(err as Error)?.stack ?? err}`);
     void vscode.window.showErrorMessage(`Arc failed to activate: ${(err as Error)?.message ?? err}`);
     return;
   }
   void initializeAsync(context).catch((err) => {
     log.appendLine(`[arc] async init failed: ${(err as Error)?.stack ?? err}`);
+    initResolve?.();
   });
 }
 function registerViewsAndCommands(context: vscode.ExtensionContext) {
@@ -74,8 +74,8 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
           localResourceRoots: [vscode.Uri.file(context.extensionPath)],
         };
         webviewView.webview.html = getWebviewHtml(webviewView.webview, context.extensionUri, "sidebar");
-        if (!sidebarSession.agent) await createAgent(sidebarSession);
         wireWebview(webviewView.webview, sidebarSession);
+        void ensureAgent(sidebarSession);
       } catch (err) {
         log.appendLine(`[arc] view resolve failed: ${(err as Error)?.stack ?? err}`);
       }
@@ -96,10 +96,10 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
     newTask();
   });
   vscode.commands.registerCommand("arc.stop", () => {
-    void sidebarSession.agent?.stop();
+    void awaitAgent(sidebarSession).then((a) => a?.stop());
   });
   vscode.commands.registerCommand("arc.continue", () => {
-    void sidebarSession.agent?.continue();
+    void awaitAgent(sidebarSession).then((a) => a?.continue());
   });
   vscode.commands.registerCommand("arc.toggleProblems", async () => {
     const cur = vscode.workspace.getConfiguration().get<boolean>("arc.showProblems", false);
@@ -133,7 +133,6 @@ async function initializeAsync(context: vscode.ExtensionContext) {
     if (diskSnap.chats?.length) {
       chatHistory.load(diskSnap);
       loadedFromDisk = true;
-      log.appendLine(`[arc] loaded chat history from disk (${diskSnap.chats.length} chats)`);
     }
   } catch {  }
   if (!loadedFromDisk) {
@@ -171,26 +170,26 @@ async function initializeAsync(context: vscode.ExtensionContext) {
   lsp = new LspBridge(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
   mcp = new McpAggregator();
   mcp.setPersistence(() => persistMcpConfig(mcp, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()));
-  await hydrateMcp(mcp, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
   mcp.onChange(() => {
     const list = mcp.listServers().map((s) => ({ name: s.name, enabled: s.enabled, transport: s.transport.type, toolCount: s.tools.length }));
     for (const webview of getAllWebviews()) {
       webview.postMessage({ type: "mcp/list", servers: list });
     }
   });
+  void hydrateMcp(mcp, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()).catch((err) => {
+    log.appendLine(`[arc] MCP hydration failed: ${(err as Error)?.stack ?? err}`);
+  });
   setNotifier(makeVSCodeNotifier());
-  const currentChat = chatHistory.ensure();
+  const currentChat = chatHistory.ensure(chatHistory.current());
   sidebarSession.id = currentChat.id;
   chatSessions.set(currentChat.id, sidebarSession);
-  await createAgent(sidebarSession);
+  void ensureAgent(sidebarSession);
   persist();
-  initialized = true;
   void tryLoadIndex();
   initResolve?.();
 }
 async function openFullscreen() {
   if (!ctxRef) return;
-  await initReady;
   const panel = vscode.window.createWebviewPanel("arc.fullscreen", "Arc", vscode.ViewColumn.One, {
     enableScripts: true,
     retainContextWhenHidden: true,
@@ -198,11 +197,15 @@ async function openFullscreen() {
   });
   panel.iconPath = vscode.Uri.file(ctxRef.asAbsolutePath("assets/arc-logo-mono.png"));
   panel.webview.html = getWebviewHtml(panel.webview, ctxRef.extensionUri, "fullscreen");
-  const session: Session = { id: `fullscreen-${Date.now()}`, panel, agent: undefined as unknown as Agent, steps: [], messages: [] };
-  fullscreenSessions.set(session.id, session);
-  await createAgent(session);
+  const mapKey = `fullscreen-${Date.now()}`;
+  const chatId = chatHistory.ensure(chatHistory.current()).id;
+  const session: Session = { id: chatId, panel, agent: undefined as unknown as Agent, steps: [], messages: [] };
+  fullscreenSessions.set(mapKey, session);
   wireWebview(panel.webview, session);
-  panel.onDidDispose(() => fullscreenSessions.delete(session.id));
+  void ensureAgent(session);
+  panel.onDidDispose(() => {
+    fullscreenSessions.delete(mapKey);
+  });
 }
 function openSettings() {
   if (!ctxRef) return;
@@ -216,9 +219,12 @@ function newTask() {
   sidebarSession.messages = [];
   sidebarSession.steps = [];
   if (sidebarSession.agent) {
-    void createAgent(sidebarSession);
+    sidebarSession.agent = undefined as unknown as Agent;
+    sidebarSession.agentReady = undefined;
+    void ensureAgent(sidebarSession);
   }
   if (sidebarSession.view) {
+    sidebarSession.view.webview.postMessage({ type: "chat/current", chatId: sidebarSession.id });
     sidebarSession.view.webview.postMessage({
       type: "session/init",
       sessionId: sidebarSession.id,
@@ -279,6 +285,7 @@ Working dir: ${root} | OS: ${process.platform} | Date: ${new Date().toISOString(
 ## Tool efficiency
 - Prefer dedicated tools over shell.run when one fits: file.grep over rg/grep, file.glob over ls/find, file.read over cat/head/tail, webfetch over curl.
 - When reading a large file, use offset/limit on file.read to target just the lines you need.
+- For file.edit, pass the SEARCH/REPLACE block format in \`search\` — it is unambiguous and survives whitespace drift. Format:\n\npath/to/file.ts\n<<<<<<< SEARCH\nexact lines to replace (include enough context to be unique)\n=======\nreplacement lines\n>>>>>>> REPLACE\n\nInclude enough surrounding lines for a unique match. Fall back to plain search+replace only for trivial one-line changes.
 - After a successful file.edit or file.write, do NOT re-read the file to verify — the tool would have errored if the change failed. LSP diagnostics run automatically.
 - Launch independent Read or Glob calls in parallel — one response, multiple tool calls.
 - Reflect on command output before proceeding to the next step.
@@ -309,16 +316,15 @@ file.read, file.edit, file.write, file.grep, file.glob, shell.run, shell.backgro
     date: new Date().toISOString().slice(0, 10),
   });
 };
-async function createAgent(session: Session) {
+async function createAgent(session: Session): Promise<Agent | undefined> {
   if (!registry || !store || !lsp || !mcp || !ctxRef) return;
   const systemPrompt = await buildSystemPrompt();
-  const b = await getBrowser();
   const toolContext = {
     problems: () => lsp.allProblems(),
     problemsFor: (file: string) => lsp.problemsFor(file),
     summaryForFiles: (files: string[]) => lsp.summaryForFiles(files),
     mcp,
-    browser: b,
+    browser: getBrowser,
     grep: async (pattern: string, include?: string) => {
       const results: { file: string; line: number; column: number; text: string }[] = [];
       const MAX_FILES = 200;
@@ -371,6 +377,7 @@ async function createAgent(session: Session) {
     assistantDelta: (id, text) => broadcast(session, { type: "session/assistantText", id, text, sessionId: sinkId }),
     steps: (steps) => {
       session.steps = steps;
+      chatHistory?.setSteps(session.id, steps);
       broadcast(session, { type: "session/steps", steps, sessionId: sinkId });
     },
     turnStart: (turnId) => broadcast(session, { type: "session/turnStart", turnId, sessionId: sinkId }),
@@ -386,12 +393,13 @@ async function createAgent(session: Session) {
       if (chatHistory) {
         chatHistory.bump(session.id, usage.cost);
         chatHistory.setMessages(session.id, session.agent.getMessages());
+        chatHistory.setSteps(session.id, session.steps);
       }
       broadcast(session, { type: "session/usage", usage, perModel });
       for (const w of [session.view?.webview, session.panel?.webview].filter(Boolean) as vscode.Webview[]) {
         pushContextStats(w, session.id);
-        broadcastChatList(w);
       }
+      broadcastChatListAll();
       persist?.();
       void persistAsync?.();
     },
@@ -452,10 +460,24 @@ async function createAgent(session: Session) {
     },
     initialMessages: chatHistory?.getMessages(session.id) as ChatMessage[] ?? [],
   });
+  return session.agent;
 }
 function broadcast(session: Session, msg: HostMsg) {
   if (session.view) session.view.webview.postMessage(msg);
   if (session.panel) session.panel.webview.postMessage(msg);
+}
+function ensureAgent(session: Session): Promise<Agent | undefined> {
+  if (session.agentReady) return session.agentReady;
+  session.agentReady = createAgent(session).catch((err) => {
+    log.appendLine(`[arc] createAgent failed: ${(err as Error)?.stack ?? err}`);
+    return undefined;
+  });
+  return session.agentReady;
+}
+async function awaitAgent(session: Session): Promise<Agent | undefined> {
+  await initReady;
+  const a = await ensureAgent(session);
+  return a;
 }
 function broadcastChatList(webview: vscode.Webview) {
   if (!chatHistory) return;
@@ -469,21 +491,54 @@ function broadcastChatList(webview: vscode.Webview) {
   }));
   webview.postMessage({ type: "chat/list", chats });
 }
+function broadcastChatListAll() {
+  for (const w of getAllWebviews()) {
+    broadcastChatList(w);
+  }
+}
 function switchToChat(chatId: string, webview: vscode.Webview) {
   if (sidebarSession.agent) {
     chatHistory?.setMessages(sidebarSession.id, sidebarSession.agent.getMessages());
     void persistAsync?.();
   }
+  for (const [, s] of fullscreenSessions) {
+    if (s.agent) {
+      chatHistory?.setMessages(s.id, s.agent.getMessages());
+    }
+    s.id = chatId;
+    s.steps = [];
+    s.agent = undefined as unknown as Agent;
+    s.agentReady = undefined;
+  }
   webview.postMessage({ type: "chat/current", chatId });
   webview.postMessage({ type: "session/steps", steps: [] });
+  const persisted = (chatHistory?.getMessages(chatId) ?? []) as ChatMessage[];
+  const persistedSteps = chatHistory?.getSteps(chatId) ?? [];
   if (sidebarSession) {
     sidebarSession.id = chatId;
-    sidebarSession.messages = [];
-    sidebarSession.steps = [];
+    sidebarSession.messages = persisted;
+    sidebarSession.steps = persistedSteps as ProcessStep[];
     sidebarSession.agent = undefined as unknown as Agent;
+    sidebarSession.agentReady = undefined;
+  }
+  for (const [, s] of fullscreenSessions) {
+    s.messages = persisted;
+    s.steps = persistedSteps as ProcessStep[];
+  }
+  webview.postMessage({ type: "session/steps", steps: persistedSteps.length ? persistedSteps : [] });
+  for (const m of persisted) {
+    webview.postMessage({ type: "session/message", message: m, sessionId: chatId });
   }
   chatTotals.set(chatId, { cost: 0, promptTokens: 0, completionTokens: 0, window: 0 });
   pushContextStats(webview, chatId);
+  sidebarSession.agent = undefined as unknown as Agent;
+  sidebarSession.agentReady = undefined;
+  void ensureAgent(sidebarSession);
+  for (const [, s] of fullscreenSessions) {
+    s.agent = undefined as unknown as Agent;
+    s.agentReady = undefined;
+    void ensureAgent(s);
+  }
 }
 function pushContextStats(webview: vscode.Webview, chatId: string) {
   const totals = chatTotals.get(chatId) ?? { cost: 0, promptTokens: 0, completionTokens: 0, window: 0 };
@@ -633,9 +688,11 @@ function wireWebview(webview: vscode.Webview, session: Session) {
     try {
       switch (msg.type) {
         case "ready": {
+          await initReady;
           webview.postMessage({
             type: "session/init",
             sessionId: session.id,
+            chatId: chatHistory?.current(),
             models: registry?.list() ?? [],
             currentModelId: registry?.getCurrent()?.id ?? "",
           });
@@ -645,27 +702,83 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             const list = mcp.listServers().map((s) => ({ name: s.name, enabled: s.enabled, transport: s.transport.type, toolCount: s.tools.length }));
             webview.postMessage({ type: "mcp/list", servers: list });
           }
-          for (const m of session.messages) webview.postMessage({ type: "session/message", message: m });
+          {
+            const persisted = (chatHistory?.getMessages(session.id) ?? []) as ChatMessage[];
+            const persistedSteps = chatHistory?.getSteps(session.id) ?? [];
+            if (persisted.length) {
+              session.messages = persisted;
+              for (const m of persisted) webview.postMessage({ type: "session/message", message: m, sessionId: session.id });
+            } else {
+              for (const m of session.messages) webview.postMessage({ type: "session/message", message: m, sessionId: session.id });
+            }
+            if (persistedSteps.length) {
+              session.steps = persistedSteps as ProcessStep[];
+              webview.postMessage({ type: "session/steps", steps: persistedSteps, sessionId: session.id });
+            } else {
+              webview.postMessage({ type: "session/steps", steps: session.steps });
+            }
+          }
           webview.postMessage({ type: "session/steps", steps: session.steps });
           broadcastChatList(webview);
           pushContextStats(webview, session.id);
           break;
         }
         case "chat/send":
-          await session.agent.send(msg.text, msg.attachments);
+          if (chatHistory && !chatHistory.list().length) {
+            const c = chatHistory.create();
+            session.id = c.id;
+            session.messages = [];
+            session.steps = [];
+            session.agent = undefined as unknown as Agent;
+            session.agentReady = undefined;
+            void ensureAgent(session);
+            persist?.();
+            void persistAsync?.();
+            broadcastChatListAll();
+          }
+          if (chatHistory) {
+            const nonSystem = (session.messages as ChatMessage[]).filter((m) => m.role !== "system");
+            if (nonSystem.length === 0) {
+              const chat = chatHistory.list().find((c) => c.id === session.id);
+              if (chat && (chat.title.startsWith("Welcome") || chat.title.startsWith("New chat"))) {
+                chatHistory.rename(session.id, msg.text.slice(0, 40).trim());
+                persist?.();
+                void persistAsync?.();
+                broadcastChatListAll();
+              }
+            }
+          }
+          {
+            const agent = await awaitAgent(session);
+            if (agent) await agent.send(msg.text, msg.attachments);
+          }
           break;
         case "chat/stop":
-          await session.agent.stop();
+          {
+            const agent = await awaitAgent(session);
+            if (agent) await agent.stop();
+          }
           break;
         case "chat/continue":
-          await session.agent.continue();
+          {
+            const agent = await awaitAgent(session);
+            if (agent) await agent.continue();
+          }
           break;
         case "chat/answerClarification":
-          session.agent.answerClarification(msg.id, msg.answer);
-          await session.agent.continue();
+          {
+            const agent = await awaitAgent(session);
+            if (agent) {
+              agent.answerClarification(msg.id, msg.answer);
+              await agent.continue();
+            }
+          }
           break;
         case "chat/retract":
-          await session.agent.retract(msg.turnId);
+          {
+            const agent = await awaitAgent(session);
+            if (agent) await agent.retract(msg.turnId);
+          }
           break;
         case "model/select":
           if (registry) { registry.setCurrent(msg.modelId); persist?.(); webview.postMessage({ type: "model/list", models: registry.list(), currentModelId: registry.getCurrent()?.id ?? "" }); }
@@ -772,38 +885,46 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           void vscode.commands.executeCommand("arc.newTask");
           break;
         case "chat/new": {
+          await initReady;
           if (chatHistory) {
             const c = chatHistory.create();
             persist?.();
-            broadcastChatList(webview);
+            void persistAsync?.();
+            broadcastChatListAll();
             switchToChat(c.id, webview);
           }
           break;
         }
         case "chat/switch": {
+          await initReady;
           if (chatHistory) {
             const c = chatHistory.switch(msg.chatId);
             persist?.();
-            broadcastChatList(webview);
+            void persistAsync?.();
+            broadcastChatListAll();
             if (c) switchToChat(c.id, webview);
           }
           break;
         }
         case "chat/rename": {
+          await initReady;
           if (chatHistory) {
             chatHistory.rename(msg.chatId, msg.title);
             persist?.();
-            broadcastChatList(webview);
+            void persistAsync?.();
+            broadcastChatListAll();
           }
           break;
         }
         case "chat/delete": {
+          await initReady;
           if (chatHistory) {
             chatHistory.remove(msg.chatId);
             chatSessions.delete(msg.chatId);
             chatTotals.delete(msg.chatId);
             persist?.();
-            broadcastChatList(webview);
+            void persistAsync?.();
+            broadcastChatListAll();
             if (!chatHistory.current()) {
               const first = chatHistory.list()[0];
               if (first) switchToChat(first.id, webview);
@@ -812,10 +933,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           break;
         }
         case "chat/compact": {
-          const session = sidebarSession;
-          if (session?.agent) {
-            void session.agent.continue();
-          }
+          void awaitAgent(sidebarSession).then((a) => a?.continue());
           break;
         }
         case "search/reindex": {

@@ -3,6 +3,12 @@ import { promisify } from "node:util";
 import { FileEditor } from "../edit/editor.js";
 import type { DiffHunk } from "../protocol/process.js";
 const pexec = promisify(exec);
+type BrowserAdapter = import("../browser/browser.js").BrowserAdapter;
+type BrowserSource = BrowserAdapter | (() => Promise<BrowserAdapter>);
+async function resolveBrowser(src: BrowserSource | undefined): Promise<BrowserAdapter | undefined> {
+  if (!src) return undefined;
+  return typeof src === "function" ? await src() : src;
+}
 interface BgProcess { proc: ChildProcess; stdout: string; stderr: string; exited: boolean; exitCode: number | undefined; }
 const bgProcesses = new Map<string, BgProcess>();
 let bgIds = 0;
@@ -26,7 +32,7 @@ export interface ToolContext {
   summaryForFiles?: (files: string[]) => Promise<{ hasErrors: boolean; hasWarnings: boolean; text: string }>;
   grep?: (pattern: string, include?: string) => Promise<{ file: string; line: number; column: number; text: string }[]>;
   glob?: (pattern: string) => Promise<string[]>;
-  browser?: import("../browser/browser.js").BrowserAdapter;
+  browser?: import("../browser/browser.js").BrowserAdapter | (() => Promise<import("../browser/browser.js").BrowserAdapter>);
   mcp?: import("../mcp/mcp.js").McpAggregator;
   workspacePath: string;
   onChunk?: (stream: "stdout" | "stderr", text: string) => void;
@@ -55,7 +61,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     },
   },
   "file.edit": {
-    description: "Apply a search/replace edit. Args: { path, search, replace, replaceAll?, runAfter? }",
+    description: "Apply an edit. PREFER passing a SEARCH/REPLACE block in `search`:\n<<<<<<< SEARCH\nexact text\n=======\nreplacement\n>>>>>>> REPLACE\nFallback args: { path, search, replace, replaceAll?, runAfter? }",
     fn: async (args, ctx) => {
       const ed = new FileEditor(ctx.root);
       const r = await ed.apply(String(args.path), String(args.search), String(args.replace), { replaceAll: !!args.replaceAll });
@@ -259,13 +265,13 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       return { ok: true, output: `Todo list updated (${items.length} items).`, todoState: { items } };
     },
   },
-  "browser.navigate": { description: "Navigate the browser. Args: { url }", fn: async (a, ctx) => (await ctx.browser?.navigate(String(a.url))) ?? { ok: false, output: "Browser not available." } },
-  "browser.click": { description: "Click a selector. Args: { selector }", fn: async (a, ctx) => (await ctx.browser?.click(String(a.selector))) ?? { ok: false, output: "Browser not available." } },
-  "browser.type": { description: "Type into a selector. Args: { selector, text }", fn: async (a, ctx) => (await ctx.browser?.type(String(a.selector), String(a.text))) ?? { ok: false, output: "Browser not available." } },
-  "browser.screenshot": { description: "Take a screenshot. Args: { path? }", fn: async (a, ctx) => (await ctx.browser?.screenshot(a.path ? String(a.path) : undefined)) ?? { ok: false, output: "Browser not available." } },
-  "browser.evaluate": { description: "Run JS in the page. Args: { script }", fn: async (a, ctx) => (await ctx.browser?.evaluate(String(a.script))) ?? { ok: false, output: "Browser not available." } },
-  "browser.readDom": { description: "Read the page's accessibility tree. Args: {} ", fn: async (_a, ctx) => (await ctx.browser?.readDom()) ?? { ok: false, output: "Browser not available." } },
-  "browser.close": { description: "Close the browser. Args: {}", fn: async (_a, ctx) => { await ctx.browser?.close(); return { ok: true, output: "Browser closed." }; } },
+  "browser.navigate": { description: "Navigate the browser. Args: { url }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.navigate(String(a.url)) : { ok: false, output: "Browser not available." }; } },
+  "browser.click": { description: "Click a selector. Args: { selector }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.click(String(a.selector)) : { ok: false, output: "Browser not available." }; } },
+  "browser.type": { description: "Type into a selector. Args: { selector, text }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.type(String(a.selector), String(a.text)) : { ok: false, output: "Browser not available." }; } },
+  "browser.screenshot": { description: "Take a screenshot. Args: { path? }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.screenshot(a.path ? String(a.path) : undefined) : { ok: false, output: "Browser not available." }; } },
+  "browser.evaluate": { description: "Run JS in the page. Args: { script }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.evaluate(String(a.script)) : { ok: false, output: "Browser not available." }; } },
+  "browser.readDom": { description: "Read the page's accessibility tree. Args: {} ", fn: async (_a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.readDom() : { ok: false, output: "Browser not available." }; } },
+  "browser.close": { description: "Close the browser. Args: {}", fn: async (_a, ctx) => { const b = await resolveBrowser(ctx.browser); if (b) await b.close(); return { ok: true, output: "Browser closed." }; } },
   "webfetch": {
     description: "Fetch raw text content from a web URL. Args: { url }",
     fn: async (args) => {

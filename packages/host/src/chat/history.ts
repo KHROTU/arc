@@ -10,18 +10,21 @@ export interface ChatSnapshot {
   chats: ChatMeta[];
   currentId?: string;
   messages: Record<string, unknown[]>;
+  steps: Record<string, unknown[]>;
 }
 export class ChatHistory {
   private chats: ChatMeta[] = [];
   private currentId: string | undefined;
   private messages: Record<string, unknown[]> = {};
-  load(input: { chats?: ChatMeta[]; currentId?: string; messages?: Record<string, unknown[]> }) {
+  private steps: Record<string, unknown[]> = {};
+  load(input: { chats?: ChatMeta[]; currentId?: string; messages?: Record<string, unknown[]>; steps?: Record<string, unknown[]> }) {
     this.chats = input.chats ?? [];
     this.currentId = input.currentId;
     this.messages = input.messages ?? {};
+    this.steps = input.steps ?? {};
   }
   snapshot(): ChatSnapshot {
-    return { chats: this.chats, currentId: this.currentId, messages: this.messages };
+    return { chats: this.chats, currentId: this.currentId, messages: this.messages, steps: this.steps };
   }
   list(): ChatMeta[] {
     return this.chats.slice().sort((a, b) => b.updatedAt - a.updatedAt);
@@ -41,6 +44,7 @@ export class ChatHistory {
     this.chats.push(c);
     this.currentId = c.id;
     this.messages[c.id] = [];
+    this.steps[c.id] = [];
     return c;
   }
   ensure(id?: string): ChatMeta {
@@ -66,6 +70,7 @@ export class ChatHistory {
   remove(id: string): void {
     this.chats = this.chats.filter((c) => c.id !== id);
     delete this.messages[id];
+    delete this.steps[id];
     if (this.currentId === id) this.currentId = this.chats[0]?.id;
   }
   bump(id: string, cost: number): void {
@@ -77,5 +82,11 @@ export class ChatHistory {
   }
   setMessages(id: string, msgs: unknown[]): void {
     this.messages[id] = msgs;
+  }
+  getSteps(id: string): unknown[] {
+    return this.steps[id] ?? [];
+  }
+  setSteps(id: string, s: unknown[]): void {
+    this.steps[id] = s;
   }
 }

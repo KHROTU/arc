@@ -316,7 +316,9 @@ export class McpClient extends EventEmitter {
     };
     let res: Response;
     try {
-      res = await fetch(url, { method: "GET", headers, signal: this.httpAbort.signal });
+      const timeoutId = setTimeout(() => this.httpAbort?.abort(), 10_000);
+      res = await fetch(url, { method: "GET", headers, signal: this.httpAbort!.signal });
+      clearTimeout(timeoutId);
     } catch (e) {
       if (this.shouldRun) this.scheduleReconnect();
       throw new Error(`Failed to open MCP SSE stream: ${(e as Error).message}`);

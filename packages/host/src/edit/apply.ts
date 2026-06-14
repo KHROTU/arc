@@ -49,8 +49,39 @@ function windowedMatch(haystack: string, needle: string): { index: number; lengt
   }
   return null;
 }
+const DIFF_OPEN = /^<<<<<<< SEARCH\s*$/;
+const DIFF_DIVIDER = /^=======\s*$/;
+const DIFF_CLOSE = /^>>>>>>> REPLACE\s*$/;
+const HAS_DIFF_MARKER = /<<<<<<< SEARCH\s*(?:\r\n|\r|\n)/;
+function tryExtractDiffBlock(text: string): { search: string; replace: string } | null {
+  if (!text) return null;
+  if (!HAS_DIFF_MARKER.test(text) && !DIFF_OPEN.test(text)) return null;
+  const lines = text.split(/\r\n?|\n/);
+  let searchStart = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (DIFF_OPEN.test(lines[i])) { searchStart = i; break; }
+  }
+  if (searchStart === -1) return null;
+  let dividerIdx = -1;
+  for (let i = searchStart + 1; i < lines.length; i++) {
+    if (DIFF_DIVIDER.test(lines[i])) { dividerIdx = i; break; }
+  }
+  if (dividerIdx === -1) return null;
+  let closeIdx = -1;
+  for (let i = dividerIdx + 1; i < lines.length; i++) {
+    if (DIFF_CLOSE.test(lines[i])) { closeIdx = i; break; }
+  }
+  if (closeIdx === -1) return null;
+  const search = lines.slice(searchStart + 1, dividerIdx).join("\n");
+  const replace = lines.slice(dividerIdx + 1, closeIdx).join("\n");
+  return { search, replace };
+}
 export function applyEdit(input: ApplyEditInput): ApplyEditResult {
   const { before, search, replace, replaceAll } = input;
+  const diff = tryExtractDiffBlock(search);
+  if (diff) {
+    return applyEdit({ before, search: diff.search, replace: diff.replace, replaceAll });
+  }
   if (!search) {
     const after = before + replace;
     return {

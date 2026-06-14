@@ -68,7 +68,7 @@ describe("arc extension package", () => {
     // Find the next 1500 chars of the activate function.
     const slice = bundle.slice(activateIdx, activateIdx + 2000);
     expect(slice, "activate() should register commands and views before any throwable async work").toMatch(/registerViewsAndCommands/);
-    expect(slice, "activate() should NOT re-throw after phase 1 errors").toMatch(/phase 1 complete/);
+    expect(slice, "activate() should NOT re-throw after phase 1 errors").toMatch(/initializeAsync/);
   });
   it("registers a separate pride-flavored view container toggled by arc.isPrideMonth", () => {
     const containers = pkg.contributes.viewsContainers.activitybar as { id: string; when?: string }[];

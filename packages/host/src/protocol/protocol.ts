@@ -6,6 +6,7 @@ export interface ModelDescriptor {
   label: string;
   tier: ModelTier;
   contextWindow: number;
+  maxOutputTokens?: number;
   costPer1mIn: number;
   costPer1mOut: number;
   providers: ProviderRef[];
@@ -74,7 +75,7 @@ export interface TurnRecord {
   retracted?: boolean;
 }
 export type HostMsg =
-  | { type: "session/init"; sessionId: string; models: ModelDescriptor[]; currentModelId: string }
+  | { type: "session/init"; sessionId: string; chatId?: string; models: ModelDescriptor[]; currentModelId: string }
   | { type: "session/message"; message: ChatMessage; sessionId?: string }
   | { type: "session/assistantText"; id: string; text: string; sessionId?: string }
   | { type: "session/steps"; steps: ProcessStep[]; sessionId?: string }

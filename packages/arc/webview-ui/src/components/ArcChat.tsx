@@ -141,7 +141,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
           break;
         case "session/steps":
           if (e.sessionId && sessionIdRef.current && e.sessionId !== sessionIdRef.current) break;
-          setSteps((prev) => (e.steps.length >= prev.length ? e.steps : prev));
+          setSteps(e.steps);
           break;
         case "session/turnStart":
           if (e.sessionId && sessionIdRef.current !== e.sessionId) sessionIdRef.current = e.sessionId;
@@ -287,7 +287,8 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
         run.push(item.step);
       } else {
         const m = item.msg;
-        if (m.role === "assistant" && !m.content.trim() && m.toolCalls?.length) continue;
+        if (m.role === "assistant" && m.toolCalls?.length) continue;
+        if (m.role === "tool") continue;
         flush();
         out.push(<MessageBubble key={m.id} message={m} />);
       }
@@ -581,9 +582,7 @@ function ChatList({
                 onClick={(e) => e.stopPropagation()}
               />
             ) : (
-              <span className="arc-chatlist-title" onDoubleClick={(e) => { e.stopPropagation(); onRename(c.id); }}>
-                {truncate(c.title, 24)}
-              </span>
+              <span className="arc-chatlist-title" onDoubleClick={(e) => { e.stopPropagation(); onRename(c.id); }}>{c.title}</span>
             )}
             <span className="arc-chatlist-cost">${c.cost.toFixed(3)}</span>
             <span className="arc-chatlist-actions">

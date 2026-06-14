@@ -20,11 +20,11 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
     }, ["path"]),
   },
   "file.edit": {
-    description: "Apply a search/replace edit to an existing file.",
+    description: "Apply an edit to an existing file. PREFER the SEARCH/REPLACE block format in `search` over plain text — it expresses intent unambiguously and survives whitespace drift:\n\npath/to/file.ts\n<<<<<<< SEARCH\nexact text to find (include enough surrounding lines to be unique)\n=======\nreplacement text\n>>>>>>> REPLACE\n\nFall back to plain `search` + `replace` strings only for trivial one-line tweaks. If you must pass plain text, include enough surrounding lines to make the match unique.",
     parameters: obj({
       path: str("Workspace-relative file path."),
-      search: str("Exact text to find."),
-      replace: str("Replacement text."),
+      search: str("SEARCH/REPLACE block (preferred) or exact text to find. For SEARCH/REPLACE: include a header line, then '<<<<<<< SEARCH' / search content / '=======' / replace content / '>>>>>>> REPLACE'."),
+      replace: str("Replacement text. Ignored when `search` is a SEARCH/REPLACE block (the block's REPLACE section is used)."),
       replaceAll: bool("Replace every occurrence instead of the first."),
       runAfter: str("Optional shell command to run after the edit (e.g. 'pnpm build')."),
     }),

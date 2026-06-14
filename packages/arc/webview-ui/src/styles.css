@@ -108,12 +108,19 @@ body {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--vscode-descriptionForeground, #858585);
 }
 .arc-chatlist-list { list-style: none; margin: 0; padding: 0 6px 6px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 1px; }
-.arc-chatlist-item { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+.arc-chatlist-item { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 6px; font-size: 12.5px; cursor: pointer; position: relative; }
 .arc-chatlist-item:hover { background: var(--arc-hover); }
 .arc-chatlist-item.is-active { background: var(--vscode-list-activeSelectionBackground, var(--arc-accent-soft)); color: var(--vscode-list-activeSelectionForeground, inherit); }
-.arc-chatlist-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.arc-chatlist-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; transition: max-width 0.18s ease; }
+.arc-chatlist-item:hover .arc-chatlist-title,
+.arc-chatlist-item.is-active .arc-chatlist-title { max-width: calc(100% - 100px); }
 .arc-chatlist-rename { flex: 1; min-width: 0; background: var(--vscode-input-background, #3c3c3c); color: var(--vscode-input-foreground, #ccc); border: 1px solid var(--arc-accent); border-radius: 4px; padding: 1px 5px; font: inherit; font-size: 12.5px; outline: none; }
-.arc-chatlist-cost { font-size: 11px; color: var(--vscode-descriptionForeground, #858585); font-variant-numeric: tabular-nums; }
+.arc-chatlist-cost { font-size: 11px; color: var(--vscode-descriptionForeground, #858585); font-variant-numeric: tabular-nums; flex-shrink: 0; transition: transform 0.18s ease; }
+.arc-chatlist-item:hover .arc-chatlist-cost,
+.arc-chatlist-item.is-active .arc-chatlist-cost { transform: translateX(20px); }
+.arc-chatlist-actions { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: flex; gap: 1px; opacity: 0; pointer-events: none; transition: opacity 0.18s ease; }
+.arc-chatlist-item:hover .arc-chatlist-actions,
+.arc-chatlist-item.is-active .arc-chatlist-actions { opacity: 1; pointer-events: auto; }
 .arc-chatlist-actions { display: flex; gap: 1px; opacity: 0; }
 .arc-chatlist-item:hover .arc-chatlist-actions { opacity: 1; }
 .arc-chatlist-action { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; background: transparent; border: 0; border-radius: 4px; color: var(--vscode-descriptionForeground, #858585); cursor: pointer; }
@@ -394,7 +401,6 @@ body {
 .arc-diff-rem { background: color-mix(in srgb, var(--arc-err) 12%, transparent); }
 .arc-diff-add .arc-diff-sign { color: var(--arc-ok); opacity: 1; }
 .arc-diff-rem .arc-diff-sign { color: var(--arc-err); opacity: 1; }
-.arc-diff-context { }
 .arc-syn-kw { color: var(--arc-syn-kw); }
 .arc-syn-str { color: var(--arc-syn-str); }
 .arc-syn-num { color: var(--arc-syn-num); }
@@ -462,10 +468,11 @@ body {
 .arc-settings-head { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--arc-line); flex-shrink: 0; min-height: 44px; }
 .arc-settings-mark { width: 18px; height: 18px; object-fit: contain; }
 .arc-settings-head h1 { margin: 0; font-size: 14px; font-weight: 600; }
-.arc-settings-tabs { display: flex; gap: 2px; margin-left: auto; flex-wrap: wrap; }
-.arc-tab { display: inline-flex; align-items: center; gap: 6px; background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--vscode-descriptionForeground, #858585); padding: 6px 10px; font: inherit; font-size: 12.5px; cursor: pointer; border-radius: 5px 5px 0 0; transition: color var(--arc-dur) var(--arc-ease), background var(--arc-dur) var(--arc-ease); }
+.arc-settings-tabs { display: flex; gap: 2px; margin-left: auto; flex-wrap: wrap; position: relative; }
+.arc-tab { display: inline-flex; align-items: center; gap: 6px; background: transparent; border: 0; color: var(--vscode-descriptionForeground, #858585); padding: 6px 10px; font: inherit; font-size: 12.5px; cursor: pointer; border-radius: 5px 5px 0 0; transition: color var(--arc-dur) var(--arc-ease), background var(--arc-dur) var(--arc-ease); position: relative; }
 .arc-tab:hover { color: var(--vscode-foreground, #ccc); background: var(--arc-hover); }
-.arc-tab.is-active { color: var(--arc-accent); border-bottom-color: var(--arc-accent); }
+.arc-tab.is-active { color: var(--arc-accent); }
+.arc-tab-indicator { position: absolute; bottom: 0; left: 0; height: 2px; background: var(--arc-accent); border-radius: 1px; transition: transform 0.25s cubic-bezier(0.33, 0, 0.1, 1), width 0.25s cubic-bezier(0.33, 0, 0.1, 1); }
 .arc-settings-body { flex: 1; min-height: 0; overflow-y: auto; }
 .arc-settings-inner { max-width: 760px; margin: 0 auto; padding: 24px 24px 56px; }
 .arc-section { margin-bottom: 32px; }

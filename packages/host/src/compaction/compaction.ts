@@ -1,4 +1,7 @@
 import type { ChatMessage, ModelDescriptor } from "../protocol/protocol.js";
+const CHARS_PER_TOKEN = 4;
+const FACTOR = 1.3;
+const MIN_OUTPUT_RESERVE = 16_384;
 export interface CompactionStats {
   avgOutput: number;
   avgPrompt: number;
@@ -20,7 +23,7 @@ export class CompactionTracker {
   }
 }
 export interface CompactionConfig {
-  safetyMargin: number; 
+  safetyMargin: number;
   enforce: boolean;
   keepTail: number;
 }
@@ -33,31 +36,32 @@ export interface CompactionDecision {
   shouldCompact: boolean;
   reason: string;
   currentUsage: number;
-  projected: number;
+  usable: number;
   window: number;
+}
+function usable(model: ModelDescriptor): number {
+  const output = model.maxOutputTokens ?? MIN_OUTPUT_RESERVE;
+  return Math.max(0, model.contextWindow - Math.max(output, MIN_OUTPUT_RESERVE));
 }
 export function decideCompaction(
   messages: ChatMessage[],
   model: ModelDescriptor,
-  tracker: CompactionTracker,
-  cfg: CompactionConfig = defaultCompactionConfig,
+  _tracker: CompactionTracker,
+  _cfg: CompactionConfig = defaultCompactionConfig,
   lastKnownPromptTokens: number = 0,
+  tools?: { description?: string; inputSchema?: unknown }[],
 ): CompactionDecision {
-  const estimated = estimateTokens(messages);
+  const estimated = estimateTokens(messages, tools);
   const current = lastKnownPromptTokens > 0 ? Math.max(lastKnownPromptTokens, estimated) : estimated;
-  const stats = tracker.for(model.id);
-  const projected = current + Math.max(stats.avgOutput, 200) + Math.round(model.contextWindow * cfg.safetyMargin);
+  const limit = usable(model);
   const window = model.contextWindow;
-  if (stats.samples < 3) {
-    if (current > window * 0.75) {
-      return { shouldCompact: true, reason: "75% of window reached (insufficient avg samples)", currentUsage: current, projected, window };
-    }
-    return { shouldCompact: false, reason: "insufficient avg samples", currentUsage: current, projected, window };
+  if (limit <= 0) {
+    return { shouldCompact: false, reason: "unlimited context window", currentUsage: current, usable: limit, window };
   }
-  if (projected > window * 0.85) {
-    return { shouldCompact: true, reason: `projected ${projected} > ${window}*0.85 (avg output ${Math.round(stats.avgOutput)})`, currentUsage: current, projected, window };
+  if (current >= limit) {
+    return { shouldCompact: true, reason: `estimated ${current} >= usable ${limit}`, currentUsage: current, usable: limit, window };
   }
-  return { shouldCompact: false, reason: "headroom sufficient", currentUsage: current, projected, window };
+  return { shouldCompact: false, reason: "headroom sufficient", currentUsage: current, usable: limit, window };
 }
 export function compact(messages: ChatMessage[], cfg: CompactionConfig = defaultCompactionConfig, summarize: (msgs: ChatMessage[]) => string): ChatMessage[] {
   if (messages.length <= cfg.keepTail + 1) return messages;
@@ -93,7 +97,7 @@ export async function compactAsync(
   };
   return [...sys, summaryMsg, ...tail];
 }
-export function estimateTokens(messages: ChatMessage[]): number {
+export function estimateTokens(messages: ChatMessage[], tools?: { description?: string; inputSchema?: unknown }[]): number {
   let chars = 0;
   for (const m of messages) {
     chars += m.content.length;
@@ -107,7 +111,15 @@ export function estimateTokens(messages: ChatMessage[]): number {
       }
     }
   }
-  return Math.ceil(chars / 3.5);
+  if (tools?.length) {
+    const toolDefs = tools.map((t) => ({
+      name: t.description ? "" : "",
+      description: t.description ?? "",
+      inputSchema: t.inputSchema ?? {},
+    }));
+    chars += JSON.stringify(toolDefs).length;
+  }
+  return Math.ceil((chars / CHARS_PER_TOKEN) * FACTOR);
 }
 const ROLE_OVERHEAD: Record<string, number> = {
   system: 12,

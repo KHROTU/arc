@@ -9,4 +9,4 @@ out/
 coverage/
 .eslintcache
 .env.*
-.arc/mcp.json
+playground/.arc/mcp.json

@@ -119,8 +119,9 @@ export class Agent {
     this.abortController = new AbortController();
     try {
       const current = this.registry.getCurrent();
+      const toolSpecs = buildToolSpecs(this.opts.enabledTools ?? [], this.opts.toolContext.mcp?.listTools());
       if (current) {
-        const dec = decideCompaction(this.messages, current, this.tracker, undefined, this.lastPromptTokens);
+        const dec = decideCompaction(this.messages, current, this.tracker, undefined, this.lastPromptTokens, toolSpecs);
         if (dec.shouldCompact) {
           const before = this.messages.length;
           this.messages = await compactAsync(this.messages, (msgs) => this.summarizeForCompaction(msgs, current));
@@ -153,7 +154,6 @@ export class Agent {
       const turnTs = Date.now();
       let firstTextTs = 0;
       let thoughtStart = 0;
-      const toolSpecs = buildToolSpecs(this.opts.enabledTools ?? [], this.opts.toolContext.mcp?.listTools());
       const stream = await transport.stream({
         model,
         provider: decision.provider,

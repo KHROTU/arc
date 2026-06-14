@@ -100,8 +100,11 @@ export function recordFailure(modelId: string, providerId: string) {
 export function recordSuccess(modelId: string, providerId: string) {
   failures.clear(`${modelId}:${providerId}`);
 }
-export function estimateCost(model: ModelDescriptor, usage: { prompt: number; completion: number }): number {
-  return (usage.prompt / 1_000_000) * model.costPer1mIn + (usage.completion / 1_000_000) * model.costPer1mOut;
+export function estimateCost(model: ModelDescriptor, usage: { prompt: number; completion: number; thinking?: number }): number {
+  const thinking = usage.thinking ?? 0;
+  return (usage.prompt / 1_000_000) * model.costPer1mIn
+       + (usage.completion / 1_000_000) * model.costPer1mOut
+       + (thinking / 1_000_000) * model.costPer1mOut;
 }
 export function emptyUsage(): TurnUsage {
   return { prompt: 0, completion: 0, thinking: 0, cost: 0 };
