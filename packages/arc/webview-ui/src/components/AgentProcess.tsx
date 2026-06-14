@@ -2,7 +2,7 @@ import { useState, useEffect, memo, useCallback } from "react";
 import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
 import {
   ChevronRight, Bot, ArrowRight, Check, Circle, CircleDot,
-  HelpCircle, CornerDownLeft, Sparkles, AlertTriangle, Terminal,
+  HelpCircle, CornerDownLeft, Sparkles, AlertTriangle, Terminal, ExternalLink,
 } from "lucide-react";
 export type StepType =
   | "tool_group" | "tool" | "subagent" | "handoff"
@@ -11,6 +11,11 @@ export interface TodoItem {
   id: string;
   text: string;
   state: "pending" | "in_progress" | "done" | "skipped";
+}
+export interface DiffHunk {
+  added: boolean;
+  removed: boolean;
+  value: string;
 }
 export interface ProcessStep {
   id: string;
@@ -22,6 +27,9 @@ export interface ProcessStep {
   content?: string;
   command?: string;
   output?: string;
+  toolName?: string;
+  filePath?: string;
+  diffHunks?: DiffHunk[];
   fromModel?: string;
   toModel?: string;
   reason?: string;
@@ -67,6 +75,47 @@ const Code = memo(({ text, isOutput }: { text: string; isOutput?: boolean }) => 
   return <span className="arc-code-text" dangerouslySetInnerHTML={{ __html: highlight(text, isOutput) }} />;
 });
 Code.displayName = "Code";
+const DiffView = memo(({ hunks, filePath, onOpenFile }: { hunks: DiffHunk[]; filePath?: string; onOpenFile?: (path: string) => void }) => {
+  let oldLine = 1;
+  let newLine = 1;
+  return (
+    <div className="arc-diff">
+      {filePath && (
+        <div className="arc-diff-file">
+          <span className="arc-diff-file-icon">+</span>
+          <span className="arc-diff-file-name">{filePath}</span>
+                    {onOpenFile && (
+            <button className="arc-diff-file-open" title="Open file" onClick={(e) => { e.stopPropagation(); onOpenFile(filePath!); }}>
+              <ExternalLink size={12} />
+            </button>
+          )}
+          <span className="arc-diff-file-spacer" />
+        </div>
+      )}
+      <div className="arc-diff-body">
+        {hunks.map((h, hi) => {
+          const lines = h.value ? h.value.split("\n") : [""];
+          if (lines[lines.length - 1] === "") lines.pop();
+          return lines.map((raw, li) => {
+            const cls = h.added ? "arc-diff-add" : h.removed ? "arc-diff-rem" : "arc-diff-context";
+            const sign = h.added ? "+" : h.removed ? "-" : " ";
+            const curOld = h.removed || (!h.added && !h.removed) ? oldLine++ : undefined;
+            const curNew = h.added || (!h.added && !h.removed) ? newLine++ : undefined;
+            return (
+              <div key={`${hi}-${li}`} className={cls}>
+                <span className="arc-diff-sign">{sign}</span>
+                <span className="arc-diff-old">{curOld !== undefined ? String(curOld).padStart(3, " ") : "   "}</span>
+                <span className="arc-diff-new">{curNew !== undefined ? String(curNew).padStart(3, " ") : "   "}</span>
+                <span className="arc-diff-text">{raw}</span>
+              </div>
+            );
+          });
+        })}
+      </div>
+    </div>
+  );
+});
+DiffView.displayName = "DiffView";
 function StatusDot({ type }: { type: StepType }) {
   if (type === "result") return <Check className="arc-proc-dot-icon is-ok" size={13} strokeWidth={2.5} />;
   if (type === "error") return <AlertTriangle className="arc-proc-dot-icon is-err" size={12} strokeWidth={2.25} />;
@@ -135,8 +184,8 @@ const ClarificationBlock = memo(({ question, options }: { question?: string; opt
   </div>
 ));
 ClarificationBlock.displayName = "ClarificationBlock";
-const GroupNode = memo(({ step }: { step: ProcessStep }) => {
-  const [open, setOpen] = useState(false);
+const GroupNode = memo(({ step, onOpenFile }: { step: ProcessStep; onOpenFile?: (path: string) => void }) => {
+  const [open, setOpen] = useState(step.type === "subagent");
   const childCount = step.children?.length || 0;
   return (
     <div className="arc-proc-group">
@@ -163,7 +212,7 @@ const GroupNode = memo(({ step }: { step: ProcessStep }) => {
           >
             <div className="arc-proc-children">
               <span className="arc-proc-treeline" />
-              <StepList steps={step.children} />
+              <StepList steps={step.children} onOpenFile={onOpenFile} />
             </div>
           </motion.div>
         )}
@@ -209,10 +258,17 @@ const ThoughtNode = memo(({ step }: { step: ProcessStep }) => {
   );
 });
 ThoughtNode.displayName = "ThoughtNode";
-const ProcessNode = memo(({ step, isActive, onToggle }: { step: ProcessStep; isActive: boolean; onToggle: () => void }) => {
-  if (step.type === "tool_group" || step.type === "subagent") return <GroupNode step={step} />;
+const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile }: { step: ProcessStep; isActive: boolean; onToggle: () => void; onOpenFile?: (path: string) => void }) => {
+  if (step.type === "tool_group") return <GroupNode step={step} onOpenFile={onOpenFile} />;
+  if (step.type === "subagent") return <GroupNode step={step} onOpenFile={onOpenFile} />;
   if (step.type === "thought") return <ThoughtNode step={step} />;
-  const hasDetails = !!step.command || !!step.output || !!step.content || !!step.todos || !!step.options || step.type === "handoff";
+  const isReadTool = step.toolName === "file.read";
+  const isNoDetail = isReadTool || step.toolName === "webfetch";
+  const isWriteTool = step.toolName === "file.write";
+  const isEditTool = step.toolName === "file.edit";
+  const hasDiff = isWriteTool || isEditTool;
+  const hasChildren = !!step.children?.length;
+  const hasDetails = hasChildren || (!isNoDetail && (!!step.command || !!step.output || !!step.content || !!step.todos || !!step.options || !!step.runAfterCommand || !!step.runAfterOutput || step.type === "handoff" || (hasDiff && !!step.diffHunks?.length)));
   return (
     <motion.div initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }} transition={SPRING} className={`arc-proc-node arc-proc-node-${step.type}`}>
       <button
@@ -250,15 +306,45 @@ const ProcessNode = memo(({ step, isActive, onToggle }: { step: ProcessStep; isA
                   <div className="arc-code"><Code text={step.command} /></div>
                 </div>
               )}
-              {step.output && (
+              {hasDiff && step.diffHunks && step.diffHunks.length > 0 && (
+                <div className="arc-proc-block">
+                  <span className="arc-proc-block-label">Diff</span>
+                   <DiffView hunks={step.diffHunks} filePath={step.filePath} onOpenFile={onOpenFile} />
+                </div>
+              )}
+              {!hasDiff && step.output && (
                 <div className="arc-proc-block">
                   <span className="arc-proc-block-label">Output</span>
                   <div className={`arc-code arc-code-output ${step.type === "error" ? "is-err" : ""}`}><Code text={step.output} isOutput /></div>
                 </div>
               )}
+              {hasDiff && step.output && (
+                <div className="arc-proc-text is-result">{step.output}</div>
+              )}
+              {step.runAfterCommand && (
+                <div className="arc-proc-block">
+                  <span className="arc-proc-block-label">Run After</span>
+                  <div className="arc-code"><Code text={step.runAfterCommand} /></div>
+                </div>
+              )}
+              {step.runAfterOutput && (
+                <div className="arc-proc-block">
+                  <span className="arc-proc-block-label">Output</span>
+                  <div className="arc-code arc-code-output"><Code text={step.runAfterOutput} isOutput /></div>
+                </div>
+              )}
               {step.type === "handoff" && <HandoffBlock from={step.fromModel} to={step.toModel} reason={step.reason} />}
               {step.type === "todo_list" && step.todos && <TodoListBlock todos={step.todos} />}
               {step.type === "clarification" && <ClarificationBlock question={step.content} options={step.options} />}
+              {hasChildren && step.children && (
+                <div className="arc-proc-block">
+                  <span className="arc-proc-block-label">Process</span>
+                  <div className="arc-proc-children" style={{ marginLeft: 0, paddingLeft: 16 }}>
+                    <span className="arc-proc-treeline" />
+                    <StepList steps={step.children} onOpenFile={onOpenFile} />
+                  </div>
+                </div>
+              )}
             </div>
           </motion.div>
         )}
@@ -267,15 +353,32 @@ const ProcessNode = memo(({ step, isActive, onToggle }: { step: ProcessStep; isA
   );
 });
 ProcessNode.displayName = "ProcessNode";
-const StepList = memo(({ steps }: { steps: ProcessStep[] }) => {
-  const [activeId, setActiveId] = useState<string | null>(steps[steps.length - 1]?.id || null);
+const StepList = memo(({ steps, onOpenFile }: { steps: ProcessStep[]; onOpenFile?: (path: string) => void }) => {
+  const [openIds, setOpenIds] = useState<Set<string>>(() => {
+    const ids = new Set<string>();
+    if (steps.length) ids.add(steps[steps.length - 1].id);
+    for (const s of steps) if (s.children?.length) ids.add(s.id);
+    return ids;
+  });
   const [prevLen, setPrevLen] = useState(steps.length);
   useEffect(() => {
-    if (steps.length > prevLen) setActiveId(steps[steps.length - 1].id);
+    if (steps.length > prevLen && steps.length > 0) {
+      const lastStep = steps[steps.length - 1];
+      setOpenIds((cur) => {
+        const next = new Set(cur);
+        next.add(lastStep.id);
+        for (const s of steps) if (s.children?.length) next.add(s.id);
+        return next;
+      });
+    }
     setPrevLen(steps.length);
   }, [steps, prevLen]);
   const handleToggle = useCallback((id: string) => {
-    setActiveId((cur) => (cur === id ? null : id));
+    setOpenIds((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
   }, []);
   return (
     <>
@@ -283,15 +386,16 @@ const StepList = memo(({ steps }: { steps: ProcessStep[] }) => {
         <ProcessNode
           key={step.id}
           step={step}
-          isActive={activeId === step.id}
+          isActive={openIds.has(step.id)}
           onToggle={() => handleToggle(step.id)}
+          onOpenFile={onOpenFile}
         />
       ))}
     </>
   );
 });
 StepList.displayName = "StepList";
-export default function ArcProcessUI({ steps = [] }: { steps: ProcessStep[] }) {
+export default function ArcProcessUI({ steps = [], onOpenFile }: { steps: ProcessStep[]; onOpenFile?: (path: string) => void }) {
   if (!steps.length) return null;
   const rendered: ProcessStep[] = steps.length > 1
     ? [{ id: `called-${steps[0].id}`, type: "tool_group", title: "Called", children: steps }]
@@ -299,7 +403,7 @@ export default function ArcProcessUI({ steps = [] }: { steps: ProcessStep[] }) {
   return (
     <div className="arc-proc">
       <LayoutGroup>
-        <StepList steps={rendered} />
+        <StepList steps={rendered} onOpenFile={onOpenFile} />
       </LayoutGroup>
     </div>
   );

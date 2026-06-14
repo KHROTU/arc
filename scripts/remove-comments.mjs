@@ -32,6 +32,17 @@ function processFile(filePath) {
   let inBlockComment = false;
   const outputLines = [];
 
+  function unclosedQuotes(line, col) {
+    let dq = 0, sq = 0, bt = 0;
+    for (let j = 0; j < col; j++) {
+      if (line[j] === '\\') { j++; continue; }
+      if (line[j] === '"') dq++;
+      if (line[j] === "'") sq++;
+      if (line[j] === '`') bt++;
+    }
+    return (dq % 2 === 1) || (sq % 2 === 1) || (bt % 2 === 1);
+  }
+
   for (let li = 0; li < lines.length; li++) {
     const line = lines[li];
     const startedInBlock = inBlockComment;
@@ -75,6 +86,8 @@ function processFile(filePath) {
       }
       const insideCode = inTemplate || inSingleString || inDoubleString;
       if (ch === '/' && line[i + 1] === '/' && !insideCode) {
+        if (unclosedQuotes(line, i)) continue;
+        if (i > 0 && line[i - 1] === ':') continue;
         const prev = line.slice(0, i);
         keepLeftOf = prev.trim() ? i : 0;
         inSingleLineComment = true;
@@ -82,6 +95,7 @@ function processFile(filePath) {
         continue;
       }
       if (ch === '/' && line[i + 1] === '*' && !insideCode) {
+        if (unclosedQuotes(line, i)) continue;
         inBlockComment = true;
         // The opening `/*` is at column `i`. Everything before it is
         // live code. If the whole line is a block comment (started at

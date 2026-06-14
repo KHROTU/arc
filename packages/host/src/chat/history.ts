@@ -6,12 +6,22 @@ export interface ChatMeta {
   updatedAt: number;
   cost: number;
 }
+export interface ChatSnapshot {
+  chats: ChatMeta[];
+  currentId?: string;
+  messages: Record<string, unknown[]>;
+}
 export class ChatHistory {
   private chats: ChatMeta[] = [];
   private currentId: string | undefined;
-  load(input: { chats?: ChatMeta[]; currentId?: string }) {
+  private messages: Record<string, unknown[]> = {};
+  load(input: { chats?: ChatMeta[]; currentId?: string; messages?: Record<string, unknown[]> }) {
     this.chats = input.chats ?? [];
     this.currentId = input.currentId;
+    this.messages = input.messages ?? {};
+  }
+  snapshot(): ChatSnapshot {
+    return { chats: this.chats, currentId: this.currentId, messages: this.messages };
   }
   list(): ChatMeta[] {
     return this.chats.slice().sort((a, b) => b.updatedAt - a.updatedAt);
@@ -23,13 +33,14 @@ export class ChatHistory {
     const now = Date.now();
     const c: ChatMeta = {
       id: randomUUID(),
-      title: title?.trim() || `New chat · ${new Date(now).toLocaleString()}`,
+      title: title?.trim() || `New chat \u00b7 ${new Date(now).toLocaleString()}`,
       createdAt: now,
       updatedAt: now,
       cost: 0,
     };
     this.chats.push(c);
     this.currentId = c.id;
+    this.messages[c.id] = [];
     return c;
   }
   ensure(id?: string): ChatMeta {
@@ -54,10 +65,17 @@ export class ChatHistory {
   }
   remove(id: string): void {
     this.chats = this.chats.filter((c) => c.id !== id);
+    delete this.messages[id];
     if (this.currentId === id) this.currentId = this.chats[0]?.id;
   }
   bump(id: string, cost: number): void {
     const c = this.chats.find((x) => x.id === id);
     if (c) { c.updatedAt = Date.now(); c.cost += cost; }
+  }
+  getMessages(id: string): unknown[] {
+    return this.messages[id] ?? [];
+  }
+  setMessages(id: string, msgs: unknown[]): void {
+    this.messages[id] = msgs;
   }
 }

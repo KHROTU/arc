@@ -9,8 +9,4 @@ out/
 coverage/
 .eslintcache
 .env.*
-
-# Auto-added by export script
-.export.state.json
-.exportignore.json
-context.txt
+.arc/mcp.json

@@ -8,7 +8,7 @@ Arc incorporates or depends on the following third-party software and assets. Ea
 
 ### react, react-dom (v18.3.1)
 MIT License — Copyright (c) Meta Platforms, Inc. and affiliates.
-Used as the webview UI framework for all chat, settings, and playground surfaces.
+Used as the webview UI framework for all chat and settings surfaces.
 
 ### framer-motion (v11.5.4)
 MIT License — Copyright (c) 2018 Framer B.V.

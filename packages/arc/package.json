@@ -2,7 +2,7 @@
   "name": "arc",
   "displayName": "Arc",
   "description": "Agentic coding extension with tiered model routing, subagents, handoff, and Kilo-style checkpoints.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "arc",
   "license": "Apache-2.0",
   "engines": {
@@ -119,7 +119,7 @@
         "arc.shell.allowlist": {
           "type": "array",
           "items": { "type": "string" },
-          "default": ["ls", "cat", "grep", "rg", "git", "pnpm", "npm", "node"],
+          "default": ["ls", "dir", "cat", "type", "cp", "copy", "mv", "move", "rm", "del", "mkdir", "rmdir", "grep", "rg", "find", "findstr", "sed", "awk", "diff", "git", "gh", "pnpm", "npm", "yarn", "npx", "node", "python", "python3", "pip", "pip3", "go", "cargo", "rustc", "dotnet", "java", "javac", "make", "gcc", "g++", "curl", "wget", "tar", "gzip", "gunzip", "zip", "unzip", "ssh", "scp", "docker", "kubectl", "tsc", "eslint", "prettier", "jest", "vitest", "esbuild", "vite", "pwsh", "powershell", "Get-ChildItem", "Get-Content", "Set-Content", "New-Item", "Remove-Item", "Copy-Item", "Move-Item", "Test-Path", "Select-String", "Invoke-WebRequest", "echo", "cd", "tasklist", "taskkill", "netstat", "ping", "ipconfig", "whoami", "winget", "choco"],
           "description": "Commands that can run without explicit approval when shell.approval is 'allowlist'."
         },
         "arc.compaction.strategy": {
@@ -132,6 +132,28 @@
           "type": "number",
           "default": 0.15,
           "description": "Safety margin reserved for model output (fraction of window)."
+        },
+        "arc.search.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable semantic code search. Requires Ollama running locally for the semantic backend."
+        },
+        "arc.search.backend": {
+          "type": "string",
+          "enum": ["hash-based", "semantic"],
+          "default": "hash-based",
+          "description": "Embedding backend. 'hash-based' works offline with no model. 'semantic' uses Ollama with a local model."
+        },
+        "arc.search.modelTier": {
+          "type": "string",
+          "enum": ["low", "mid", "high"],
+          "default": "low",
+          "description": "Embedding model quality tier. low = nomic-embed-text:v1.5, mid = qwen3-embedding:0.6b, high = qwen3-embedding:8b."
+        },
+        "arc.search.ollamaUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:11434",
+          "description": "Ollama base URL for the semantic embedding backend."
         }
       }
     },

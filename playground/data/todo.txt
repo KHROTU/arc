@@ -1,10 +1,55 @@
 TODO — Arc Playground Tasks
 ============================
 
-[ ] Read and parse playground/src/config.json
-[ ] Fix the type error in playground/src/index.ts
-[ ] Replace REPLACE_ME in playground/src/utils.ts with an actual string
-[ ] Run playground/scripts/demo.sh
-[ ] Check LSP diagnostics on playground/src/index.ts
-[ ] Navigate browser to playground/web/index.html and test the form
-[ ] Write results to playground/data/output.txt
+[ ] Read and parse src/config.json
+[ ] Fix the type error in src/index.ts
+[ ] Replace REPLACE_ME in src/utils.ts with an actual string
+[ ] Run scripts/demo.ps1
+[ ] Check LSP diagnostics on src/index.ts
+[ ] Navigate browser to web/index.html and test the form
+[ ] Write results to data/output.txt
+[ ] Fetch https://example.com using webfetch and verify HTML content
+[ ] Run scripts/slow.ps1 with a 3-second timeout (should be killed)
+[ ] Run scripts/slow.ps1 with timeout=-1 (no limit, should complete)
+[ ] Edit src/utils.ts to change helper() return, with runAfter set to scripts/build.ps1
+[ ] Write data/generated.txt with runAfter set to scripts/build.ps1
+
+## file.read offset/limit
+[ ] Read src/utils.ts with offset=1, limit=5 (first 5 lines)
+[ ] Read data/sample.json with offset=2, limit=10 (lines 2-11)
+[ ] Read src/index.ts with offset=8, limit=1 (line 8 only: the greet function signature)
+[ ] Read src/utils.ts with offset=5 (lines 5 to end: countLines onward)
+
+## file.grep
+[ ] Grep for "REPLACE_ME" across the workspace
+[ ] Grep for "export function" across *.ts files (include='*.ts')
+[ ] Grep for "import" across *.ts files in src/ (include='src/*.ts')
+[ ] Grep for "status" across *.json files (include='*.json')
+
+## file.glob
+[ ] Glob for "**/*.ts" to list all TypeScript files in the workspace
+[ ] Glob for "src/**/*" to list all files under src/
+[ ] Glob for "scripts/*.ps1" to list all PowerShell scripts
+
+## shell.backgroundRun + shell.check
+[ ] Background run scripts/slow.ps1, then shell.check to see partial output
+[ ] Wait a few seconds, shell.check again (should show more progress)
+[ ] Background run scripts/interactive.ps1, then shell.check for prompt
+
+## shell.write (stdin)
+[ ] Background run scripts/interactive.ps1, wait for prompt via shell.check, then shell.write "Arc" to answer the prompt
+[ ] Shell.check again to verify the script echoed the answer
+
+## Tier 2: Subagent Features
+
+## subagent.spawn batch (parallel spawning)
+[ ] Spawn 3 subagents in parallel using batch mode to count lines in src/index.ts, src/utils.ts, and src/style.css
+[ ] Verify each subagent result is reported separately in the output
+
+## subagent.spawn with rules (command approval routing)
+[ ] Spawn a subagent named "auditor" with rules.blockedCommands set to ["rm", "del", "rmdir"], tasking it to list files and attempt a blocked command
+[ ] Verify that the blocked command triggers parent approval (should see clarification or approval card)
+[ ] Spawn a subagent with rules.requireApproval set to true, so all shell commands require parent approval
+
+## subagent streaming (live progress)
+[ ] Spawn a subagent that reads and reports on 3-4 files sequentially — watch the purple-bordered subagent streaming card appear in the transcript as the subagent works

@@ -5,6 +5,7 @@
       "name": "Run Arc Extension",
       "type": "extensionHost",
       "request": "launch",
+      "folder": "${workspaceFolder}/playground",
       "args": [
         "--extensionDevelopmentPath=${workspaceFolder}/packages/arc"
       ],
@@ -20,6 +21,7 @@
       "name": "Run Arc Extension (watch + reload)",
       "type": "extensionHost",
       "request": "launch",
+      "folder": "${workspaceFolder}/playground",
       "args": [
         "--extensionDevelopmentPath=${workspaceFolder}/packages/arc"
       ],

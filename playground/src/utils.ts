@@ -1,5 +1,5 @@
 export function helper(): string {
-  return "REPLACE_ME";
+  return "Arc Enhanced Assistant";
 }
 
 export function countLines(text: string): number {

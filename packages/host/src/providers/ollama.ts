@@ -1,18 +1,42 @@
 import { AsyncEventQueue, readableToAsyncIterable } from "../util/stream.js";
-import type { StreamEvent, StreamHandle, StreamRequest, Transport } from "./transport.js";
+import { fromApiToolName, toApiToolName, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
 export const ollamaTransport: Transport = {
   kind: "ollama",
   async stream(req: StreamRequest): Promise<StreamHandle> {
     const base = (req.provider.baseUrl || "http://127.0.0.1:11434").replace(/\/$/, "");
     const remoteModel = req.model.providers.find((p) => p.id === req.provider.id)?.remoteModel ?? req.model.id;
+    const body: Record<string, unknown> = {
+      model: remoteModel,
+      stream: true,
+      messages: req.messages.map((m) => {
+        if (m.role === "tool") {
+          return { role: "tool", tool_call_id: m.toolCallId, content: m.content };
+        }
+        if (m.role === "assistant" && m.toolCalls?.length) {
+          const msg: Record<string, unknown> = { role: "assistant" };
+          if (m.thinking) msg.thinking = m.thinking;
+          msg.content = m.content;
+          msg.tool_calls = m.toolCalls.map((t) => ({
+            function: { name: toApiToolName(t.name), arguments: t.args },
+          }));
+          return msg;
+        }
+        const msg: Record<string, unknown> = { role: m.role };
+        if (m.role === "assistant" && m.thinking) msg.thinking = m.thinking;
+        msg.content = m.content;
+        return msg;
+      }),
+    };
+    if (req.tools?.length) {
+      body.tools = req.tools.map((t) => ({
+        type: "function",
+        function: { name: toApiToolName(t.name), description: t.description, parameters: t.parameters },
+      }));
+    }
     const res = await fetch(`${base}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model: remoteModel,
-        stream: true,
-        messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
-      }),
+      body: JSON.stringify(body),
       signal: req.signal,
     });
     if (!res.ok || !res.body) {
@@ -28,6 +52,21 @@ export const ollamaTransport: Transport = {
         const j = JSON.parse(t);
         if (j.message?.content) q.push({ type: "text", delta: j.message.content });
         if (j.message?.thinking) q.push({ type: "thinking", delta: j.message.thinking });
+        if (j.message?.tool_calls?.length) {
+          for (const tc of j.message.tool_calls) {
+            if (tc.function?.name) {
+              const args = typeof tc.function.arguments === "string"
+                ? safeParseArgs(tc.function.arguments)
+                : tc.function.arguments ?? {};
+              q.push({
+                type: "tool_call",
+                id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                name: fromApiToolName(tc.function.name),
+                args: args ?? {},
+              });
+            }
+          }
+        }
         if (j.done) {
           if (j.prompt_eval_count || j.eval_count) {
             q.push({
@@ -67,3 +106,11 @@ export const ollamaTransport: Transport = {
   };
   },
 };
+function safeParseArgs(s: string | undefined): Record<string, unknown> | undefined {
+  if (!s) return undefined;
+  try {
+    return JSON.parse(s);
+  } catch {
+    return undefined;
+  }
+}

@@ -1,12 +1,21 @@
 {
   "app": {
     "name": "Arc Agent Playground",
-    "version": "0.1.0",
+    "version": "0.3.0",
     "debug": true
   },
   "features": {
-    "tools": ["file.read", "file.edit", "file.write", "shell.run", "lsp.problems", "browser.navigate", "todo.write", "subagent.spawn", "handoff", "clarification.askUser"],
-    "tiers": ["free", "light", "default", "heavy"]
+    "tools": ["file.read", "file.edit", "file.write", "file.grep", "file.glob", "shell.run", "shell.backgroundRun", "shell.check", "shell.write", "webfetch", "lsp.problems", "browser.navigate", "todo.write", "subagent.spawn", "subagent.askParent", "handoff", "clarification.askUser"],
+    "tiers": ["free", "light", "default", "heavy"],
+    "newParams": ["timeout", "runAfter", "offset", "limit", "include", "batch", "rules", "blockedCommands", "requireApproval"]
+  },
+  "subagent": {
+    "batchMode": true,
+    "maxParallel": 5,
+    "rules": {
+      "blockedCommands": ["rm", "rmdir", "del", "format", "shutdown"],
+      "requireApproval": false
+    }
   },
   "limits": {
     "maxResults": 100,

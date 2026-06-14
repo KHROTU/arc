@@ -41,8 +41,10 @@ export function decideCompaction(
   model: ModelDescriptor,
   tracker: CompactionTracker,
   cfg: CompactionConfig = defaultCompactionConfig,
+  lastKnownPromptTokens: number = 0,
 ): CompactionDecision {
-  const current = estimateTokens(messages);
+  const estimated = estimateTokens(messages);
+  const current = lastKnownPromptTokens > 0 ? Math.max(lastKnownPromptTokens, estimated) : estimated;
   const stats = tracker.for(model.id);
   const projected = current + Math.max(stats.avgOutput, 200) + Math.round(model.contextWindow * cfg.safetyMargin);
   const window = model.contextWindow;
@@ -72,11 +74,47 @@ export function compact(messages: ChatMessage[], cfg: CompactionConfig = default
   };
   return [...sys, summaryMsg, ...tail];
 }
+export async function compactAsync(
+  messages: ChatMessage[],
+  summarize: (msgs: ChatMessage[]) => Promise<string>,
+  cfg: CompactionConfig = defaultCompactionConfig,
+): Promise<ChatMessage[]> {
+  if (messages.length <= cfg.keepTail + 1) return messages;
+  const sys = messages.filter((m) => m.role === "system");
+  const tail = messages.slice(-cfg.keepTail);
+  const middle = messages.slice(sys.length, messages.length - cfg.keepTail);
+  if (middle.length === 0) return messages;
+  const summary = await summarize(middle);
+  const summaryMsg: ChatMessage = {
+    id: `summary-${Date.now()}`,
+    role: "system",
+    content: `## Compaction summary of ${middle.length} earlier messages\n\n${summary}`,
+    ts: Date.now(),
+  };
+  return [...sys, summaryMsg, ...tail];
+}
 export function estimateTokens(messages: ChatMessage[]): number {
   let chars = 0;
-  for (const m of messages) chars += m.content.length;
   for (const m of messages) {
-    if (m.toolCalls) for (const t of m.toolCalls) chars += JSON.stringify(t.args).length + t.name.length;
+    chars += m.content.length;
+    if (m.thinking) chars += m.thinking.length;
+    if (m.toolCallId) chars += m.toolCallId.length;
+    chars += ROLE_OVERHEAD[m.role] ?? ROLE_OVERHEAD.default;
+    if (m.toolCalls) {
+      for (const t of m.toolCalls) {
+        chars += t.name.length + JSON.stringify(t.args).length;
+        chars += TOOL_CALL_OVERHEAD;
+      }
+    }
   }
-  return Math.ceil(chars / 4);
+  return Math.ceil(chars / 3.5);
 }
+const ROLE_OVERHEAD: Record<string, number> = {
+  system: 12,
+  user: 10,
+  assistant: 12,
+  tool: 16,
+  developer: 12,
+  default: 8,
+};
+const TOOL_CALL_OVERHEAD = 24;

@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Settings2, Plus, Trash2, Pencil, Maximize2, X, ArrowRight, FoldVertical } from "lucide-react";
+import { Settings2, Plus, Trash2, Pencil, Maximize2, X, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import ArcProcessUI, { type ProcessStep } from "./AgentProcess";
 import Composer from "./Composer";
-import type { ModelDescriptor, ModelTier, TurnUsage, ChatMessage } from "@arc/host/protocol";
+import SettingsModal from "./SettingsView";
+import type { ModelDescriptor, ModelTier, TurnUsage, ChatMessage, ProviderConfig } from "@arc/host/protocol";
 import { useArcLogo, swapOnError } from "../hooks/useArcLogo";
 import { renderMarkdown } from "../util/markdown";
 type ChatMeta = { id: string; title: string; updatedAt: number; cost: number; isActive: boolean };
@@ -14,9 +15,35 @@ type Props = {
   prideLogo: string;
   prideActive: boolean;
   variant: "sidebar" | "fullscreen";
-  compressIcon?: string;
 };
 const TIER_LABEL: Record<ModelTier, string> = { free: "free", light: "light", default: "default", heavy: "heavy" };
+const WAVE_BAR = { transform: "scaleY(0.28)" };
+function WaveSpinner() {
+  return (
+    <svg className="arc-wave" width="28" height="14" viewBox="0 0 28 14">
+      <g fill="var(--vscode-descriptionForeground, #858585)">
+        <rect className="arc-wave-bar" style={{ ...WAVE_BAR, animationDelay: "0s" }}    x="0"  y="0" width="4" height="14" rx="2" />
+        <rect className="arc-wave-bar" style={{ ...WAVE_BAR, animationDelay: "0.10s" }} x="6"  y="0" width="4" height="14" rx="2" />
+        <rect className="arc-wave-bar" style={{ ...WAVE_BAR, animationDelay: "0.20s" }} x="12" y="0" width="4" height="14" rx="2" />
+        <rect className="arc-wave-bar" style={{ ...WAVE_BAR, animationDelay: "0.30s" }} x="18" y="0" width="4" height="14" rx="2" />
+        <rect className="arc-wave-bar" style={{ ...WAVE_BAR, animationDelay: "0.40s" }} x="24" y="0" width="4" height="14" rx="2" />
+      </g>
+    </svg>
+  );
+}
+function RippleSpinner() {
+  return (
+    <svg className="arc-wave" width="28" height="14" viewBox="0 0 28 14">
+      <g fill="var(--vscode-descriptionForeground, #858585)">
+        <rect className="arc-ripple-bar" style={{ animationDelay: "0.50s" }} x="0"  y="0" width="4" height="14" rx="2" />
+        <rect className="arc-ripple-bar" style={{ animationDelay: "0.25s" }} x="6"  y="0" width="4" height="14" rx="2" />
+        <rect className="arc-ripple-bar" style={{ animationDelay: "0s" }}    x="12" y="0" width="4" height="14" rx="2" />
+        <rect className="arc-ripple-bar" style={{ animationDelay: "0.25s" }} x="18" y="0" width="4" height="14" rx="2" />
+        <rect className="arc-ripple-bar" style={{ animationDelay: "0.50s" }} x="24" y="0" width="4" height="14" rx="2" />
+      </g>
+    </svg>
+  );
+}
 export default function ArcChat({ client, monoLogo, prideLogo, prideActive, variant }: Props) {
   const logoUri = useArcLogo(monoLogo, prideLogo, prideActive);
   const [chats, setChats] = useState<ChatMeta[]>([]);
@@ -24,8 +51,10 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
   const [steps, setSteps] = useState<ProcessStep[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState<{ id: string; text: string } | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [waiting, setWaiting] = useState(false);
   const [clarification, setClarification] = useState<{ id: string; question: string; options: string[] } | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; code?: string } | null>(null);
   const [handoff, setHandoff] = useState<{ from: string; to: string; reason: string } | null>(null);
   const [, setUsage] = useState<TurnUsage | null>(null);
   const [ctxStats, setCtxStats] = useState<{ usedPct: number; tokens: number; window: number; cost: number } | null>(null);
@@ -34,11 +63,15 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
   const [pendingAttachment, setPendingAttachment] = useState<string | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(true);
   const [hasEverSent, setHasEverSent] = useState(false);
-  const [lastTurnError, setLastTurnError] = useState<string | null>(null);
+  const [lastTurnError, setLastTurnError] = useState<{ message: string; code?: string } | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [providers, setProviders] = useState<ProviderConfig[]>([]);
+  const [approval, setApproval] = useState<{ id: string; description: string; kind: string } | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const pendingTextRef = useRef<{ id: string; text: string } | null>(null);
   const rafRef = useRef<number | null>(null);
+  const sessionIdRef = useRef<string>("");
   const cancelStreamFlush = () => {
     if (rafRef.current != null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
     pendingTextRef.current = null;
@@ -54,6 +87,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
         case "chat/list": setChats(e.chats); break;
         case "chat/current":
           cancelStreamFlush();
+          sessionIdRef.current = e.chatId;
           setActiveId(e.chatId);
           setShowOnboarding(true);
           setHasEverSent(false);
@@ -63,6 +97,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
           setLastTurnError(null);
           break;
         case "session/assistantText":
+          if (e.sessionId && sessionIdRef.current && e.sessionId !== sessionIdRef.current) break;
           pendingTextRef.current = { id: e.id, text: e.text };
           if (rafRef.current == null) {
             rafRef.current = requestAnimationFrame(() => {
@@ -73,9 +108,13 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
           }
           break;
         case "session/message":
+          if (e.sessionId && sessionIdRef.current && e.sessionId !== sessionIdRef.current) break;
           if (e.message.role === "assistant") {
             cancelStreamFlush();
             setStreaming((s) => (s && (s.id === e.message.id || s.id === "pending") ? null : s));
+            if (e.message.toolCalls?.length) {
+              setStreaming({ id: "pending", text: "" });
+            }
           }
           setMessages((prev) => {
             const idx = prev.findIndex((m) => m.id === e.message.id);
@@ -101,9 +140,12 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
           });
           break;
         case "session/steps":
+          if (e.sessionId && sessionIdRef.current && e.sessionId !== sessionIdRef.current) break;
           setSteps((prev) => (e.steps.length >= prev.length ? e.steps : prev));
           break;
-        case "session/turnStart": setStreaming({ id: "pending", text: "" }); setShowOnboarding(false); setLastTurnError(null); break;
+        case "session/turnStart":
+          if (e.sessionId && sessionIdRef.current !== e.sessionId) sessionIdRef.current = e.sessionId;
+          setStreaming({ id: "pending", text: "" }); setShowOnboarding(false); setLastTurnError(null); break;
         case "session/turnEnd": cancelStreamFlush(); setStreaming(null); break;
         case "session/clarification": setClarification({ id: e.id, question: e.question, options: e.options }); break;
         case "session/handoff":
@@ -114,9 +156,14 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
         case "session/usage": setUsage(e.usage); break;
         case "context/stats": setCtxStats(e); break;
         case "model/list": setModels(e.models); setCurrentModel(e.currentModelId); break;
+        case "provider/list": setProviders(e.providers); break;
+        case "ui/showSettings": setShowSettings(true); break;
+        case "approval/request":
+          setApproval({ id: e.id, description: e.description, kind: e.kind });
+          break;
         case "error":
-          setError(e.message);
-          setLastTurnError(e.message);
+          setError({ message: e.message, code: e.code });
+          setLastTurnError({ message: e.message, code: e.code });
           setTimeout(() => setError(null), 4500);
           break;
       }
@@ -124,6 +171,14 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
     client.send({ type: "ready" });
     return () => { off(); cancelStreamFlush(); };
   }, [client]);
+  useEffect(() => {
+    if (streaming && !streaming.text) {
+      setWaiting(false);
+      const id = setTimeout(() => setWaiting(true), 3000);
+      return () => clearTimeout(id);
+    }
+    setWaiting(false);
+  }, [streaming]);
   const atBottomRef = useRef(true);
   const onTranscriptScroll = () => {
     const el = transcriptRef.current;
@@ -149,9 +204,56 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
   const renameChat = (id: string, title: string) => client.send({ type: "chat/rename", chatId: id, title });
   const deleteChat = (id: string) => client.send({ type: "chat/delete", chatId: id });
   const compact = () => client.send({ type: "chat/compact" });
-  const openSettings = () => client.send({ type: "ui/openSettings" });
+  const openSettings = () => setShowSettings(true);
+  const openFile = (path: string) => { console.log("[arc] openFile", path); client.send({ type: "ui/openFile", path }); };
   const openFullscreen = () => client.send({ type: "ui/openFullscreen" });
   const selectModel = (id: string) => client.send({ type: "model/select", modelId: id });
+  const respondApproval = (allowed: boolean) => {
+    if (!approval) return;
+    client.send({ type: "approval/response", id: approval.id, allowed });
+    setApproval(null);
+  };
+  useEffect(() => {
+    if (!approval) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { respondApproval(false); e.preventDefault(); }
+      if (e.key === "Enter" && !e.ctrlKey && !e.metaKey) { respondApproval(true); e.preventDefault(); }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [approval]);
+  useEffect(() => {
+    if (!clarification) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key >= "1" && e.key <= "9" && !e.ctrlKey && !e.metaKey) {
+        const idx = parseInt(e.key) - 1;
+        if (idx < clarification.options.length) {
+          client.send({ type: "chat/answerClarification", id: clarification.id, answer: clarification.options[idx] });
+          setClarification(null);
+          e.preventDefault();
+        }
+      }
+      if (e.key === "Escape") { setClarification(null); e.preventDefault(); }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [clarification]);
+  useEffect(() => {
+    const onFocus = () => {
+      const active = document.activeElement;
+      if (!active || active === document.body || active === document.getElementById("root")) {
+        (document.querySelector(".arc-composer textarea") as HTMLTextAreaElement)?.focus();
+        return;
+      }
+      const tag = active.tagName.toLowerCase();
+      const isEditable = active.getAttribute("contenteditable") === "true";
+      if (tag !== "input" && tag !== "textarea" && tag !== "select" && !isEditable) {
+        (document.querySelector(".arc-composer textarea") as HTMLTextAreaElement)?.focus();
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
   const cur = models.find((m) => m.id === currentModel);
   const pct = ctxStats?.usedPct ?? 0;
   const chatCost = ctxStats?.cost ?? 0;
@@ -176,7 +278,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
     let run: ProcessStep[] = [];
     const flush = () => {
       if (run.length) {
-        out.push(<ArcProcessUI key={`steps-${run[0].id}`} steps={run} />);
+        out.push(<ArcProcessUI key={`steps-${run[0].id}`} steps={run} onOpenFile={openFile} />);
         run = [];
       }
     };
@@ -203,7 +305,9 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
     <div className={`arc-shell arc-shell-${variant}`}>
       <header className="arc-topbar">
         {variant === "fullscreen" && (
-          <img className="arc-mark" src={logoUri} alt="Arc" onError={swapOnError(monoLogo)} />
+          <button className="arc-iconbtn" title={sidebarCollapsed ? "Show chat list" : "Hide chat list"} onClick={() => setSidebarCollapsed((c) => !c)}>
+            {sidebarCollapsed ? <PanelLeft size={14} /> : <PanelLeftClose size={14} />}
+          </button>
         )}
         <div className="arc-model">
           <select className="arc-modelpicker" value={currentModel} onChange={(e) => selectModel(e.target.value)}>
@@ -229,7 +333,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
         </button>
       </header>
       <div className={`arc-body arc-body-${variant}`}>
-        {variant === "fullscreen" && (
+        {variant === "fullscreen" && !sidebarCollapsed && (
           <ChatList
             chats={chats}
             activeId={activeId}
@@ -248,16 +352,13 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
             {handoff && (
               <motion.div
                 key={handoff.from + handoff.to}
-                initial={{ opacity: 0, y: -8, scale: 0.97 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -8, scale: 0.97 }}
-                transition={{ type: "spring", stiffness: 450, damping: 30 }}
-                className="arc-handoff-banner"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.3, ease: [0.2, 0.8, 0.2, 1] }}
+                className="arc-handoff-sep"
               >
-                <span className="arc-handoff-from">{handoff.from}</span>
-                <ArrowRight size={12} />
-                <span className="arc-handoff-to">{handoff.to}</span>
-                <span className="arc-handoff-reason">{handoff.reason}</span>
+                <span className="arc-handoff-sep-label">{handoff.to}</span>
               </motion.div>
             )}
           </AnimatePresence>
@@ -268,44 +369,102 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
             {timelineNodes}
             {lastTurnError && !streaming && (
               <div className="arc-transcript-error" role="status">
-                <span>{lastTurnError}</span>
+                {lastTurnError.code && <span className="arc-error-code">{errorLabel(lastTurnError.code)}</span>}
+                <span>{lastTurnError.message}</span>
               </div>
             )}
             {streaming && (
               <div className="arc-streaming" aria-live="polite">
                 {streaming.text
                   ? <span className="arc-streaming-text arc-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(streaming.text) }} />
-                  : <span className="arc-working">Working<span className="arc-working-dots" /></span>}
-                <span className="arc-cursor" />
+                  : <span className="arc-working">
+                      {waiting ? <RippleSpinner /> : <WaveSpinner />}
+                      {waiting ? "Waiting…" : "Working…"}
+                    </span>}
               </div>
             )}
-            <AnimatePresence>
-              {clarification && (
-                <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }} className="arc-clarification">
-                  <div className="arc-clarification-q">{clarification.question}</div>
-                  <div className="arc-clarification-options">
-                    {clarification.options.map((opt) => (
-                      <button
-                        key={opt}
-                        className="arc-chip"
-                        onClick={() => {
-                          client.send({ type: "chat/answerClarification", id: clarification.id, answer: opt });
-                          setClarification(null);
-                        }}
-                      >
-                        {opt}
-                      </button>
-                    ))}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
           </div>
+          <AnimatePresence>
+            {clarification && (
+              <motion.div
+                initial={{ opacity: 0, x: -4 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -4 }}
+                transition={{ type: "spring", stiffness: 450, damping: 30 }}
+                className="arc-approval"
+              >
+                <div className="arc-approval-row">
+                  <HelpCircle size={14} className="arc-clar-icon" />
+                  <span className="arc-approval-label">Clarification needed</span>
+                </div>
+                <div className="arc-approval-q">{clarification.question}</div>
+                <div className="arc-clar-options">
+                  {clarification.options.map((opt, i) => (
+                    <button
+                      key={opt}
+                      onClick={() => {
+                        client.send({ type: "chat/answerClarification", id: clarification.id, answer: opt });
+                        setClarification(null);
+                      }}
+                    >
+                      {opt}<kbd>{i + 1}</kbd>
+                    </button>
+                  ))}
+                </div>
+                <div className="arc-clar-custom">
+                  <input
+                    type="text"
+                    placeholder="Type your answer…"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        client.send({ type: "chat/answerClarification", id: clarification.id, answer: (e.target as HTMLInputElement).value });
+                        setClarification(null);
+                      }
+                    }}
+                  />
+                  <button onClick={() => {
+                    const val = (document.querySelector(".arc-clar-custom input") as HTMLInputElement)?.value;
+                    if (val) {
+                      client.send({ type: "chat/answerClarification", id: clarification.id, answer: val });
+                      setClarification(null);
+                    }
+                  }}>↩</button>
+                </div>
+              </motion.div>
+            )}
+            {approval && (
+              <motion.div
+                initial={{ opacity: 0, x: -4 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -4 }}
+                transition={{ type: "spring", stiffness: 450, damping: 30 }}
+                className="arc-approval"
+              >
+                <div className="arc-approval-row">
+                  <span className="arc-approval-dot" />
+                  <span className="arc-approval-label">Shell command</span>
+                  <span className="arc-approval-meta">needs approval</span>
+                </div>
+                <div className="arc-approval-q">{approval.description.split("\n\n")[0]}</div>
+                {approval.description.includes("\n\n") && (
+                  <div className="arc-approval-body">{approval.description.split("\n\n").slice(1).join("\n\n")}</div>
+                )}
+                <div className="arc-approval-actions">
+                  <button className="arc-approval-allow" onClick={() => respondApproval(true)} autoFocus>
+                    Allow <kbd>Enter</kbd>
+                  </button>
+                  <button className="arc-approval-deny" onClick={() => respondApproval(false)}>
+                    Deny <kbd>Esc</kbd>
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
           <footer className="arc-footer">
             <AnimatePresence>
               {error && (
                 <motion.div initial={{ y: 10, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 10, opacity: 0 }} className="arc-errorbar">
-                  <X size={13} /> <span>{error}</span>
+                  <X size={13} /> {error.code && <span className="arc-error-code">{errorLabel(error.code)}</span>} <span>{error.message}</span>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -319,6 +478,17 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
           </footer>
         </main>
       </div>
+      {showSettings && (
+        <SettingsModal
+          client={client}
+          onClose={() => setShowSettings(false)}
+          models={models}
+          providers={providers}
+          currentModelId={currentModel}
+          monoLogo={monoLogo}
+          prideLogo={prideLogo}
+        />
+      )}
     </div>
   );
 }
@@ -363,11 +533,11 @@ function Onboarding({ logoUri, monoLogo, hasModels, onOpenSettings }: { logoUri:
     <div className="arc-onboarding">
       <img className="arc-onboarding-mark" src={logoUri} alt="Arc" onError={swapOnError(monoLogo)} />
       <h2>Welcome to Arc</h2>
-      <p>Arc picks the right model per subtask, hands hard problems to heavier models, and brings you back when it's done.</p>
+      <p>Arc orchestrates models by task, escalating complex work to heavier models and returning control when done.</p>
       <ol className="arc-onboarding-steps">
         <li><span className="arc-onboarding-num">1</span> Add a <strong>provider</strong> and bind it to a <strong>model</strong> with a tier.</li>
-        <li><span className="arc-onboarding-num">2</span> Pick your model in the top bar.</li>
-        <li><span className="arc-onboarding-num">3</span> Describe a task below — Arc takes it from there.</li>
+        <li><span className="arc-onboarding-num">2</span> Pick your model in the selector above.</li>
+        <li><span className="arc-onboarding-num">3</span> Describe your task below — Arc handles the rest.</li>
       </ol>
       {!hasModels && <button className="arc-btn" onClick={onOpenSettings}><Settings2 size={14} /> Open settings</button>}
     </div>
@@ -442,4 +612,16 @@ function ChatList({
 }
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+function errorLabel(code: string): string {
+  switch (code) {
+    case "timeout": return "Timeout";
+    case "rate_limit": return "Rate Limit";
+    case "auth": return "Auth";
+    case "provider": return "Provider";
+    case "malformed": return "Malformed";
+    case "network": return "Network";
+    case "aborted": return "Aborted";
+    default: return code;
+  }
 }

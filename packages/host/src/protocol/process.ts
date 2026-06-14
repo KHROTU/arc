@@ -13,6 +13,11 @@ export interface TodoItem {
   text: string;
   state: "pending" | "in_progress" | "done" | "skipped";
 }
+export interface DiffHunk {
+  added: boolean;
+  removed: boolean;
+  value: string;
+}
 export interface ProcessStep {
   id: string;
   type: StepType;
@@ -23,6 +28,11 @@ export interface ProcessStep {
   content?: string;
   command?: string;
   output?: string;
+  runAfterCommand?: string;
+  runAfterOutput?: string;
+  toolName?: string;
+  filePath?: string;
+  diffHunks?: DiffHunk[];
   fromModel?: string;
   toModel?: string;
   reason?: string;

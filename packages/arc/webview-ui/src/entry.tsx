@@ -17,12 +17,11 @@ if (!root) {
     root.appendChild(el);
   });
   try {
-    const mode = (root.getAttribute("data-mode") as "sidebar" | "fullscreen" | "playground" | "settings") || "sidebar";
+    const mode = (root.getAttribute("data-mode") as "sidebar" | "fullscreen" | "settings") || "sidebar";
     const mono = root.getAttribute("data-mono") || "";
     const pride = root.getAttribute("data-pride") || "";
     const isPride = root.getAttribute("data-pride-active") === "true";
-    const compress = root.getAttribute("data-compress") || "";
-    createRoot(root).render(<App mode={mode} monoLogo={mono} prideLogo={pride} prideActive={isPride} compressIcon={compress} />);
+    createRoot(root).render(<App mode={mode} monoLogo={mono} prideLogo={pride} prideActive={isPride} />);
   } catch (err) {
     root.innerHTML = `<pre style="color:#f88;padding:20px;white-space:pre-wrap;font:12px monospace">${(err as Error)?.stack ?? String(err)}</pre>`;
   }

@@ -35,6 +35,30 @@
       "name": "Check diagnostics",
       "tool": "lsp.problems",
       "status": "pending"
+    },
+    {
+      "id": 6,
+      "name": "Fetch a web URL",
+      "tool": "webfetch",
+      "status": "pending"
+    },
+    {
+      "id": 7,
+      "name": "Run slow script with timeout",
+      "tool": "shell.run",
+      "status": "pending"
+    },
+    {
+      "id": 8,
+      "name": "Edit file then run after command",
+      "tool": "file.edit",
+      "status": "pending"
+    },
+    {
+      "id": 9,
+      "name": "Write file then run after command",
+      "tool": "file.write",
+      "status": "pending"
     }
   ],
   "settings": {

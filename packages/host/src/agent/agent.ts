@@ -3,12 +3,12 @@ import { ModelRegistry } from "../routing/registry.js";
 import { pickProvider, recordSuccess, estimateCost } from "../routing/router.js";
 import { transportFor } from "../providers/transport.js";
 import { CheckpointStore } from "../checkpoint/store.js";
-import { compact, decideCompaction, CompactionTracker } from "../compaction/compaction.js";
+import { compactAsync, decideCompaction, CompactionTracker } from "../compaction/compaction.js";
 import { defaultPolicy, nextModelForHandoff, type HandoffRecord } from "../routing/handoff.js";
 import { tools as builtinTools, type ToolContext } from "./tools.js";
-import { buildToolSpecs } from "./tool-specs.js";
+import { buildToolSpecs, isMcpToolSpec, parseMcpToolSpec } from "./tool-specs.js";
 import { SubagentRunner } from "./subagent.js";
-import type { ChatMessage, ToolCall, TurnUsage } from "../protocol/protocol.js";
+import type { ChatMessage, ModelDescriptor, ToolCall, TurnUsage } from "../protocol/protocol.js";
 import type { ProcessStep, TodoItem } from "../protocol/process.js";
 const PSEUDO_TOOLS = new Set(["handoff", "subagent.spawn", "subagent.askParent", "clarification.askUser"]);
 export interface AgentEventSink {
@@ -35,12 +35,14 @@ export interface AgentOptions {
   isMain: boolean;
   ownerTier?: import("../protocol/protocol.js").ModelTier;
   parent?: Agent;
+  initialMessages?: ChatMessage[];
 }
 export class Agent {
   private messages: ChatMessage[] = [];
   private steps: ProcessStep[] = [];
   private usageByModel: Record<string, TurnUsage> = {};
   private tracker = new CompactionTracker();
+  private lastPromptTokens = 0;
   private handoffs: HandoffRecord[] = [];
   private todoItems: TodoItem[] = [];
   private abortController?: AbortController;
@@ -56,6 +58,9 @@ export class Agent {
     this.subagentRunner = new SubagentRunner(registry, store);
     if (opts.systemPrompt) {
       this.messages.push({ id: randomUUID(), role: "system", content: opts.systemPrompt, ts: Date.now() });
+    }
+    if (opts.initialMessages?.length) {
+      this.messages.push(...opts.initialMessages);
     }
   }
   getMessages() { return this.messages.slice(); }
@@ -115,10 +120,10 @@ export class Agent {
     try {
       const current = this.registry.getCurrent();
       if (current) {
-        const dec = decideCompaction(this.messages, current, this.tracker);
+        const dec = decideCompaction(this.messages, current, this.tracker, undefined, this.lastPromptTokens);
         if (dec.shouldCompact) {
           const before = this.messages.length;
-          this.messages = compact(this.messages, undefined, (msgs) => summarizeInProcess(msgs));
+          this.messages = await compactAsync(this.messages, (msgs) => this.summarizeForCompaction(msgs, current));
           this.sink.compaction(before, this.messages.length, dec.reason);
         }
       }
@@ -148,7 +153,7 @@ export class Agent {
       const turnTs = Date.now();
       let firstTextTs = 0;
       let thoughtStart = 0;
-      const toolSpecs = buildToolSpecs(this.opts.enabledTools ?? []);
+      const toolSpecs = buildToolSpecs(this.opts.enabledTools ?? [], this.opts.toolContext.mcp?.listTools());
       const stream = await transport.stream({
         model,
         provider: decision.provider,
@@ -181,8 +186,9 @@ export class Agent {
                 id: ev.id,
                 type: "tool",
                 title: prettyToolTitle(ev.name, ev.args),
+                toolName: ev.name,
                 content: "",
-                command: ev.name === "shell.run" ? String(ev.args.command ?? "") : undefined,
+                command: (ev.name === "shell.run" || ev.name === "shell.backgroundRun") ? String(ev.args.command ?? "") : undefined,
               });
             }
             break;
@@ -194,6 +200,9 @@ export class Agent {
             this.tracker.observe(model.id, ev.usage);
             this.usageByModel[model.id] = addUsage(this.usageByModel[model.id], ev.usage);
             this.usageByModel[model.id].cost = estimateCost(model, this.usageByModel[model.id]);
+            if (typeof ev.usage.prompt === "number" && ev.usage.prompt > 0) {
+              this.lastPromptTokens = Math.max(this.lastPromptTokens, ev.usage.prompt);
+            }
             this.sink.usage(this.usageByModel[model.id], this.usageByModel);
             recordSuccess(model.id, decision.provider.id);
             break;
@@ -212,6 +221,7 @@ export class Agent {
         id: assistantId,
         role: "assistant",
         content: text,
+        thinking: thinking || undefined,
         toolCalls: toolCalls.length ? toolCalls : undefined,
         ts: firstTextTs || turnTs,
         meta: { modelId: model.id, providerId: decision.provider.id, tier: model.tier },
@@ -219,9 +229,10 @@ export class Agent {
       this.messages.push(finalAssistant);
       this.sink.message(finalAssistant);
       if (toolCalls.length) {
-        for (const tc of toolCalls) {
+        const tcs = this.abortController.signal.aborted ? [] : this.partitionToolCalls(toolCalls);
+        for (const phase of tcs) {
           if (this.abortController.signal.aborted) break;
-          await this.executeToolCall(tc, turnId);
+          await this.executePhase(phase, turnId);
         }
         if (!this.abortController.signal.aborted) {
           await this.runTurn();
@@ -268,7 +279,66 @@ export class Agent {
       this.active = false;
     }
   }
+  private partitionToolCalls(toolCalls: ToolCall[]): ToolCall[][] {
+    const phases: ToolCall[][] = [];
+    const parallelSafe = (n: string): boolean =>
+      n !== "handoff" && n !== "subagent.spawn";
+    let current: ToolCall[] = [];
+    for (const tc of toolCalls) {
+      if (current.length === 0) {
+        current.push(tc);
+        continue;
+      }
+      const curSafe = parallelSafe(current[0].name);
+      const newSafe = parallelSafe(tc.name);
+      if (curSafe === newSafe) {
+        current.push(tc);
+      } else {
+        phases.push(current);
+        current = [tc];
+      }
+    }
+    if (current.length) phases.push(current);
+    return phases;
+  }
+  private async executePhase(phase: ToolCall[], turnId: string): Promise<void> {
+    if (phase.length === 1) {
+      await this.executeToolCall(phase[0], turnId);
+      return;
+    }
+    const settled = await Promise.allSettled(phase.map((tc) => this.executeToolCall(tc, turnId)));
+    for (let i = 0; i < settled.length; i++) {
+      const r = settled[i];
+      if (r.status === "rejected") {
+        const tc = phase[i];
+        const msg = `Tool error (parallel): ${(r.reason as Error)?.message ?? r.reason}`;
+        this.appendToolOutput(tc.id, msg, false);
+        this.messages.push({ id: randomUUID(), role: "tool", content: msg, toolCallId: tc.id, ts: Date.now() });
+      }
+    }
+  }
   private async executeToolCall(tc: ToolCall, turnId: string) {
+    if (isMcpToolSpec(tc.name)) {
+      const parsed = parseMcpToolSpec(tc.name);
+      if (!parsed) {
+        const out = { ok: false, output: `Bad MCP tool spec: ${tc.name}` };
+        this.appendToolOutput(tc.id, out.output, out.ok);
+        this.messages.push({ id: randomUUID(), role: "tool", content: out.output, toolCallId: tc.id, ts: Date.now() });
+        return;
+      }
+      const mcp = this.opts.toolContext.mcp;
+      if (!mcp) {
+        const out = { ok: false, output: "MCP not available." };
+        this.appendToolOutput(tc.id, out.output, out.ok);
+        this.messages.push({ id: randomUUID(), role: "tool", content: out.output, toolCallId: tc.id, ts: Date.now() });
+        return;
+      }
+      const result = await mcp.call(parsed.server, parsed.tool, tc.args);
+      const out = { ok: result.ok, output: typeof result.output === "string" ? result.output : JSON.stringify(result.output, null, 2) };
+      this.appendToolOutput(tc.id, out.output, out.ok);
+      this.messages.push({ id: randomUUID(), role: "tool", content: out.output, toolCallId: tc.id, ts: Date.now() });
+      return;
+    }
     const def = builtinTools[tc.name];
     const isPseudo = PSEUDO_TOOLS.has(tc.name);
     if (!def && !isPseudo) {
@@ -307,20 +377,76 @@ export class Agent {
         this.appendToolOutput(tc.id, "Subagents cannot spawn further subagents.", false);
         return;
       }
-      const spec: import("./subagent.js").SubagentSpec = {
-        name: String(tc.args.name ?? "subagent"),
-        instructions: String(tc.args.instructions ?? ""),
-        tier: (tc.args.tier as import("../protocol/protocol.js").ModelTier | undefined) ?? undefined,
-        modelId: tc.args.modelId ? String(tc.args.modelId) : undefined,
-      };
       const parent = this.registry.getCurrent();
       if (!parent) {
         this.appendToolOutput(tc.id, "No current model to spawn from.", false);
         return;
       }
+      const batch = Array.isArray(tc.args.batch) ? (tc.args.batch as any[]) : null;
+      if (batch && batch.length) {
+        const specs: import("./subagent.js").SubagentSpec[] = batch.map((b: any) => ({
+          name: String(b.name ?? "subagent"),
+          instructions: String(b.instructions ?? ""),
+          tier: (b.tier as import("../protocol/protocol.js").ModelTier | undefined) ?? undefined,
+          modelId: b.modelId ? String(b.modelId) : undefined,
+          rules: b.rules as import("./subagent.js").SubagentRules | undefined,
+        }));
+        const results = await this.subagentRunner.runBatch(specs, parent, {
+          ...this.opts.toolContext,
+          root: this.opts.workspaceRoot,
+          shell: { policy: "allowlist" as const, allowlist: [] },
+          requestApproval: this.opts.approveShell,
+        }, (question: string, options: string[]) => this.askFromSubagent(question, options, parent));
+        const outputs = results.map((r, i) =>
+          r.ok ? `[${specs[i].name}] ${r.output}` : `[${specs[i].name}] FAILED: ${r.output}`,
+        );
+        const combinedOutput = outputs.join("\n\n");
+        this.appendToolOutput(tc.id, combinedOutput, results.every((r) => r.ok));
+        this.messages.push({
+          id: randomUUID(),
+          role: "tool",
+          content: combinedOutput,
+          toolCallId: tc.id,
+          ts: Date.now(),
+        });
+        const allChildren: ProcessStep[] = [];
+        for (let i = 0; i < results.length; i++) {
+          const result = results[i];
+          const spec = specs[i];
+          if (result.steps.length) {
+            allChildren.push({ id: `sub-${tc.id}-${i}`, type: "subagent", title: spec.name, children: result.steps, ts: Date.now() });
+          }
+          if (result.todo.length) {
+            const idPrefix = `sub-${tc.id}-${i}-`;
+            const rolled: TodoItem[] = result.todo.map((t) => ({ id: idPrefix + t.id, text: `[${spec.name}] ${t.text}`, state: t.state }));
+            this.todoItems = [...this.todoItems, ...rolled];
+          }
+        }
+        if (allChildren.length) {
+          this.appendStepChildren(tc.id, allChildren);
+        }
+        if (this.todoItems.length) {
+          const stepId = `todo-${turnId}-${randomUUID().slice(0, 6)}`;
+          this.steps.push({ id: stepId, type: "todo_list", title: "Plan", todos: this.todoItems, ts: Date.now() });
+          this.sink.steps(this.steps);
+          this.sink.todo(this.todoItems);
+        }
+        return;
+      }
+      const spec: import("./subagent.js").SubagentSpec = {
+        name: String(tc.args.name ?? "subagent"),
+        instructions: String(tc.args.instructions ?? ""),
+        tier: (tc.args.tier as import("../protocol/protocol.js").ModelTier | undefined) ?? undefined,
+        modelId: tc.args.modelId ? String(tc.args.modelId) : undefined,
+        rules: tc.args.rules as import("./subagent.js").SubagentRules | undefined,
+      };
       const result = await this.subagentRunner.run(spec, parent, {
         ...this.opts.toolContext,
         root: this.opts.workspaceRoot,
+        shell: { policy: "allowlist" as const, allowlist: [] },
+        requestApproval: this.opts.approveShell,
+      }, (question: string, options: string[]) => this.askFromSubagent(question, options, parent), (steps) => {
+        this.appendStepChildren(tc.id, steps);
       });
       this.appendToolOutput(tc.id, result.ok ? result.output : `Subagent failed: ${result.output}`, result.ok);
       this.messages.push({
@@ -331,9 +457,7 @@ export class Agent {
         ts: Date.now(),
       });
       if (result.steps.length) {
-        const sub = { id: `sub-${tc.id}`, type: "subagent" as const, title: spec.name, children: result.steps, ts: Date.now() };
-        this.steps.push(sub);
-        this.sink.steps(this.steps);
+        this.appendStepChildren(tc.id, result.steps);
       }
       if (result.todo.length) {
         const idPrefix = `sub-${tc.id}-`;
@@ -349,10 +473,12 @@ export class Agent {
     if (tc.name === "subagent.askParent") {
       if (this.opts.isMain) {
         this.appendToolOutput(tc.id, "The main agent cannot ask its parent (it has no parent).", false);
+        this.messages.push({ id: randomUUID(), role: "tool", content: "The main agent cannot ask its parent (it has no parent).", toolCallId: tc.id, ts: Date.now() });
         return;
       }
       if (!this.opts.parent) {
         this.appendToolOutput(tc.id, "No parent agent available.", false);
+        this.messages.push({ id: randomUUID(), role: "tool", content: "No parent agent available.", toolCallId: tc.id, ts: Date.now() });
         return;
       }
       const question = String(tc.args.question ?? "");
@@ -400,7 +526,8 @@ export class Agent {
       root: this.opts.workspaceRoot,
       workspacePath: this.opts.workspaceRoot,
       shell: { policy: "allowlist", allowlist: [] },
-      requestApproval: this.opts.approveShell,
+      requestApproval: this.opts.approveShell ?? (this.opts.toolContext as any).requestApproval,
+      onChunk: this.makeChunkHandler(tc),
     };
     let result;
     try {
@@ -408,7 +535,8 @@ export class Agent {
     } catch (e) {
       result = { ok: false, output: `Tool error: ${(e as Error).message}` };
     }
-    this.appendToolOutput(tc.id, result.output, result.ok, result.ok ? undefined : prettyToolTitle(tc.name, tc.args, false));
+    const isEditOrWrite = tc.name === "file.edit" || tc.name === "file.write";
+    this.appendToolOutput(tc.id, isEditOrWrite ? "" : result.output, result.ok, result.ok ? undefined : prettyToolTitle(tc.name, tc.args, false), result.diffHunks, result.filePath, result.runAfter?.command, result.runAfter?.output);
     if (result.todoState) {
       this.todoItems = result.todoState.items.map((it) => ({ ...it }));
       const stepId = `todo-${turnId}-${randomUUID().slice(0, 6)}`;
@@ -416,7 +544,10 @@ export class Agent {
       this.sink.steps(this.steps);
       this.sink.todo(this.todoItems);
     }
-    this.messages.push({ id: randomUUID(), role: "tool", content: result.output, toolCallId: tc.id, ts: Date.now() });
+    const toolContent = result.runAfter
+      ? `${result.output}\n[runAfter] ${result.runAfter.command}\n${result.runAfter.output}`
+      : result.output;
+    this.messages.push({ id: randomUUID(), role: "tool", content: toolContent, toolCallId: tc.id, ts: Date.now() });
     if (result.touchedFiles && result.touchedFiles.length && this.opts.toolContext.summaryForFiles) {
       const summary = await this.opts.toolContext.summaryForFiles(result.touchedFiles);
       if (summary.text) {
@@ -432,8 +563,46 @@ export class Agent {
       }
     }
   }
-  private askFromSubagent(question: string, options: string[]): Promise<string> {
-    return this.askUserInteractive(question, options);
+  askFromSubagent(question: string, options: string[], parentModel?: import("../protocol/protocol.js").ModelDescriptor): Promise<string> {
+    return this.askModel(question, options, parentModel);
+  }
+  private async askModel(question: string, options: string[], parentModel?: import("../protocol/protocol.js").ModelDescriptor): Promise<string> {
+    const model = parentModel ?? this.registry.getCurrent();
+    if (!model) return options[options.length - 1] ?? "";
+    const decision = pickProvider(this.registry, model);
+    if (!decision) return options[options.length - 1] ?? "";
+    const transport = transportFor(decision.provider);
+    try {
+      const optsStr = options.map((o, i) => `${i + 1}. ${o}`).join("\n");
+      const prompt: ChatMessage[] = [
+        { id: randomUUID(), role: "system", content: `You are an agentic coding assistant. A subagent you delegated work to is asking for your approval. Answer with ONLY a single digit (1 or 2) corresponding to the option. Do not explain.`, ts: Date.now() },
+        { id: randomUUID(), role: "user", content: `${question}\n\nOptions:\n${optsStr}`, ts: Date.now() },
+      ];
+      const stream = await transport.stream({
+        model,
+        provider: decision.provider,
+        messages: prompt,
+        signal: AbortSignal.timeout(10_000),
+      });
+      let text = "";
+      for await (const ev of stream.events) {
+        if (ev.type === "text") text += ev.delta;
+        if (ev.type === "done") break;
+        if (ev.type === "error") break;
+      }
+      const answer = text.trim();
+      const digitMatch = answer.match(/^[12]/);
+      if (digitMatch) {
+        const idx = parseInt(digitMatch[0]) - 1;
+        if (idx >= 0 && idx < options.length) return options[idx];
+      }
+      const lower = answer.toLowerCase();
+      if (lower.includes(options[options.length - 1].toLowerCase())) return options[options.length - 1];
+      if (lower.includes(options[0].toLowerCase())) return options[0];
+      return options[options.length - 1];
+    } catch {
+      return options[options.length - 1] ?? "";
+    }
   }
   private askUserInteractive(question: string, options: string[]): Promise<string> {
     return new Promise((resolve) => {
@@ -448,14 +617,101 @@ export class Agent {
       }, 5 * 60_000);
     });
   }
+  private async summarizeForCompaction(msgs: ChatMessage[], fallback: ModelDescriptor): Promise<string> {
+    try {
+      const provider = pickProvider(this.registry, fallback);
+      if (!provider) return summarizeInProcess(msgs);
+      const transport = transportFor(provider.provider);
+      const transcript = renderForSummary(msgs);
+      const prompt: ChatMessage[] = [
+        {
+          id: randomUUID(),
+          role: "system",
+          content: "You are a context compressor for an agentic coding assistant. Summarize the prior conversation so the assistant can continue the task. Preserve:\n- Concrete decisions made and the reasoning.\n- File paths touched and what changed (read/edit/write, with brief description).\n- Error messages and their resolutions.\n- Outstanding TODOs or unfinished work.\n- Key user preferences or constraints mentioned.\n\nUse terse bullet points. Skip pleasantries. Do not invent facts.",
+          ts: Date.now(),
+        },
+        {
+          id: randomUUID(),
+          role: "user",
+          content: transcript,
+          ts: Date.now(),
+        },
+      ];
+      const stream = await transport.stream({
+        model: fallback,
+        provider: provider.provider,
+        messages: prompt,
+        signal: AbortSignal.timeout(20_000),
+      });
+      let text = "";
+      for await (const ev of stream.events) {
+        if (ev.type === "text") text += ev.delta;
+        if (ev.type === "done" || ev.type === "error") break;
+      }
+      const cleaned = text.trim();
+      if (!cleaned) return summarizeInProcess(msgs);
+      return cleaned.length > 4000 ? cleaned.slice(0, 4000) + "\n…(truncated)" : cleaned;
+    } catch {
+      return summarizeInProcess(msgs);
+    }
+  }
   private openStep(step: ProcessStep) {
     this.steps.push({ ...step, ts: step.ts ?? Date.now() });
     this.sink.steps(this.steps);
   }
-  private appendToolOutput(id: string, output: string, ok: boolean, title?: string) {
+  private makeChunkHandler(tc: ToolCall): (stream: "stdout" | "stderr", text: string) => void {
+    let buffer = "";
+    let lastFlush = 0;
+    let pendingFlush: ReturnType<typeof setTimeout> | undefined;
+    const flush = () => {
+      pendingFlush = undefined;
+      if (!buffer) return;
+      const snapshot = buffer;
+      buffer = "";
+      lastFlush = Date.now();
+      for (let i = this.steps.length - 1; i >= 0; i--) {
+        if (this.steps[i].id === tc.id) {
+          const step = this.steps[i];
+          const next = (step.output ?? "") + snapshot;
+          this.steps[i] = { ...step, output: next.length > 8000 ? next.slice(-8000) : next, pending: true };
+          this.sink.steps(this.steps);
+          return;
+        }
+      }
+    };
+    return (_stream, text) => {
+      buffer += text;
+      const now = Date.now();
+      if (now - lastFlush >= 80) {
+        flush();
+      } else if (!pendingFlush) {
+        pendingFlush = setTimeout(flush, 80);
+      }
+    };
+  }
+  private appendToolOutput(id: string, output: string, ok: boolean, title?: string, diffHunks?: import("../protocol/process.js").DiffHunk[], filePath?: string, runAfterCommand?: string, runAfterOutput?: string) {
     for (let i = this.steps.length - 1; i >= 0; i--) {
       if (this.steps[i].id === id) {
-        this.steps[i] = { ...this.steps[i], output, type: ok ? this.steps[i].type : "error", ...(title ? { title } : {}) };
+        this.steps[i] = {
+          ...this.steps[i],
+          output,
+          pending: false,
+          type: ok ? this.steps[i].type : "error",
+          ...(title ? { title } : {}),
+          ...(diffHunks ? { diffHunks } : {}),
+          ...(filePath !== undefined ? { filePath } : {}),
+          ...(runAfterCommand ? { runAfterCommand } : {}),
+          ...(runAfterOutput ? { runAfterOutput } : {}),
+        };
+        this.sink.steps(this.steps);
+        return;
+      }
+    }
+  }
+  private appendStepChildren(id: string, children: ProcessStep[]) {
+    for (let i = this.steps.length - 1; i >= 0; i--) {
+      if (this.steps[i].id === id) {
+        this.steps[i] = { ...this.steps[i], children };
         this.sink.steps(this.steps);
         return;
       }
@@ -494,12 +750,25 @@ function addUsage(a: TurnUsage | undefined, b: TurnUsage): TurnUsage {
 function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true): string {
   const path = String(args.path ?? args.file ?? "");
   const clip = (s: string, n = 64) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+  const rangeInfo = (): string => {
+    const o = args.offset ? Number(args.offset) : undefined;
+    const l = args.limit ? Number(args.limit) : undefined;
+    if (!o && !l) return "";
+    if (o && l) return ` [L${o}-L${o + l - 1}]`;
+    if (o) return ` [L${o}+]`;
+    return ` [${l} lines]`;
+  };
   if (!ok) {
     switch (name) {
-      case "file.read": return `Failed to read ${path}`;
+      case "file.read": return `Failed to read ${path}${rangeInfo()}`;
       case "file.edit": return `Failed to edit ${path}`;
       case "file.write": return `Failed to write ${path}`;
+      case "file.grep": return `Grep failed: ${clip(String(args.pattern ?? ""))}`;
+      case "file.glob": return `Glob failed: ${clip(String(args.pattern ?? ""))}`;
       case "shell.run": return `Command failed: ${clip(String(args.command ?? ""))}`;
+      case "shell.backgroundRun": return `Background command failed: ${clip(String(args.command ?? ""))}`;
+      case "shell.check": return `Failed to check process ${args.id ?? ""}`;
+      case "shell.write": return `Failed to write to process ${args.id ?? ""}`;
       case "lsp.problems": return "Failed to check problems";
       case "lsp.problemsFor": return `Failed to check ${path}`;
       case "todo.write": return "Failed to update plan";
@@ -509,17 +778,32 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
       case "browser.screenshot": return "Failed to take screenshot";
       case "browser.evaluate": return "Failed to evaluate script";
       case "browser.readDom": return "Failed to read page DOM";
+      case "browser.close": return "Failed to close browser";
       case "mcp.call": return `Failed MCP ${args.server ?? ""}/${args.tool ?? ""}`;
+      case "mcp.create": return `Failed to register MCP server ${args.name ?? ""}`;
+      case "mcp.remove": return `Failed to remove MCP server ${args.name ?? ""}`;
+      case "mcp.toggle": return `Failed to toggle MCP server ${args.name ?? ""}`;
+      case "mcp.resources/list": return `Failed to list MCP resources on ${args.server ?? ""}`;
+      case "mcp.resources/read": return `Failed to read MCP resource ${args.uri ?? ""}`;
+      case "mcp.prompts/list": return `Failed to list MCP prompts on ${args.server ?? ""}`;
+      case "mcp.prompts/get": return `Failed to get MCP prompt ${args.name ?? ""}`;
       case "subagent.spawn": return `Subagent ${args.name ?? ""} failed`;
       case "handoff": return `Handoff failed`;
+      case "file.semanticSearch": return `Semantic search failed: ${clip(String(args.query ?? ""))}`;
+      case "webfetch": return `Failed to fetch ${clip(String(args.url ?? ""))}`;
       default: return `Failed: ${name}`;
     }
   }
   switch (name) {
-    case "file.read": return `Read ${path}`;
+    case "file.read": return `Read ${path}${rangeInfo()}`;
     case "file.edit": return `Edited ${path}`;
     case "file.write": return `Wrote ${path}`;
+    case "file.grep": return `Grepped /${clip(String(args.pattern ?? ""))}/`;
+    case "file.glob": return `Globbed ${clip(String(args.pattern ?? ""))}`;
     case "shell.run": return `Ran ${clip(String(args.command ?? ""))}`;
+    case "shell.backgroundRun": return `Started ${clip(String(args.command ?? ""))}`;
+    case "shell.check": return `Checked process ${args.id ?? ""}`;
+    case "shell.write": return `Wrote to process ${args.id ?? ""}`;
     case "lsp.problems": return "Checked workspace problems";
     case "lsp.problemsFor": return `Checked problems in ${path}`;
     case "todo.write": return "Updated plan";
@@ -531,10 +815,19 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
     case "browser.readDom": return "Read page DOM";
     case "browser.close": return "Closed browser";
     case "mcp.call": return `Called ${args.server ?? ""}/${args.tool ?? ""}`;
+    case "mcp.create": return `Registered MCP server ${args.name ?? ""}`;
+    case "mcp.remove": return `Removed MCP server ${args.name ?? ""}`;
+    case "mcp.toggle": return `Toggled MCP server ${args.name ?? ""}`;
+    case "mcp.resources/list": return `Listed MCP resources on ${args.server ?? ""}`;
+    case "mcp.resources/read": return `Read MCP resource ${args.uri ?? ""}`;
+    case "mcp.prompts/list": return `Listed MCP prompts on ${args.server ?? ""}`;
+    case "mcp.prompts/get": return `Fetched MCP prompt ${args.name ?? ""}`;
     case "subagent.spawn": return `Spawned subagent ${args.name ?? ""}`;
     case "subagent.askParent": return `Asked parent: ${clip(String(args.question ?? ""), 80)}`;
     case "handoff": return `Handed off (${args.direction ?? "escalate"})`;
     case "clarification.askUser": return `Asked: ${clip(String(args.question ?? ""), 80)}`;
+    case "file.semanticSearch": return `Searched: ${clip(String(args.query ?? ""), 80)}`;
+    case "webfetch": return `Fetched ${clip(String(args.url ?? ""))}`;
     default: return name;
   }
 }
@@ -546,4 +839,21 @@ function summarizeInProcess(msgs: ChatMessage[]): string {
     else if (m.role === "user") lines.push(`- [user]: ${m.content.slice(0, 120)}`);
   }
   return lines.join("\n");
+}
+function renderForSummary(msgs: ChatMessage[]): string {
+  const out: string[] = [];
+  for (const m of msgs) {
+    if (m.role === "system") {
+      if (m.content.startsWith("## Compaction summary")) continue;
+      out.push(`[system] ${m.content.slice(0, 300)}`);
+    } else if (m.role === "user") {
+      out.push(`[user] ${m.content}`);
+    } else if (m.role === "assistant") {
+      const tc = m.toolCalls?.length ? ` tools=${m.toolCalls.map((t) => `${t.name}(${JSON.stringify(t.args).slice(0, 80)})`).join("; ")}` : "";
+      out.push(`[assistant] ${m.content.slice(0, 300)}${tc}`);
+    } else if (m.role === "tool") {
+      out.push(`[tool:${m.toolCallId ?? ""}] ${m.content.slice(0, 300)}`);
+    }
+  }
+  return out.join("\n");
 }

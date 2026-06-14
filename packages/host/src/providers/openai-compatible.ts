@@ -12,26 +12,34 @@ export const openAICompatibleTransport: Transport & { withBase: (base: string) =
 async function streamWithBase(req: StreamRequest, baseOverride: string): Promise<StreamHandle> {
   const base = baseOverride || req.provider.baseUrl || "https://api.openai.com/v1";
   const remoteModel = req.model.providers.find((p) => p.id === req.provider.id)?.remoteModel ?? req.model.id;
+  const hasThinking = req.messages.some((m) => m.role === "assistant" && m.thinking);
   const body: Record<string, unknown> = {
     model: remoteModel,
     stream: true,
     temperature: req.temperature ?? 0.2,
-    messages: req.messages.map(toOpenAIMessage),
+    messages: req.messages.map((m) => toOpenAIMessage(m)),
   };
   if (req.tools?.length) {
     body.tools = req.tools.map((t) => ({
       type: "function",
       function: { name: toApiToolName(t.name), description: t.description, parameters: t.parameters },
     }));
-    body.tool_choice = "auto";
+  }
+  if (hasThinking) {
+    body.reasoning_effort = "high";
+    body.thinking = { type: "enabled" };
+  }
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (req.provider.apiKey) headers.authorization = `Bearer ${req.provider.apiKey}`;
+  if (req.provider.kind === "openrouter") {
+    headers["http-referer"] = "https://arc.dev";
+    headers["x-openrouter-title"] = "Arc";
+  } else {
+    headers["x-title"] = "Arc";
   }
   const res = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: req.provider.apiKey ? `Bearer ${req.provider.apiKey}` : "",
-      "x-title": "Arc",
-    },
+    headers,
     body: JSON.stringify(body),
     signal: req.signal,
   });
@@ -133,15 +141,18 @@ function toOpenAIMessage(m: import("../protocol/protocol.js").ChatMessage) {
     return { role: "tool", tool_call_id: m.toolCallId, content: m.content };
   }
   if (m.role === "assistant" && m.toolCalls?.length) {
-    return {
-      role: "assistant",
-      content: m.content,
-      tool_calls: m.toolCalls.map((t) => ({
-        id: t.id,
-        type: "function",
-        function: { name: toApiToolName(t.name), arguments: JSON.stringify(t.args) },
-      })),
-    };
+    const msg: Record<string, unknown> = { role: "assistant" };
+    msg.reasoning_content = m.thinking || "";
+    msg.content = m.content;
+    msg.tool_calls = m.toolCalls.map((t) => ({
+      id: t.id,
+      type: "function",
+      function: { name: toApiToolName(t.name), arguments: JSON.stringify(t.args) },
+    }));
+    return msg;
+  }
+  if (m.role === "assistant" && m.thinking) {
+    return { role: "assistant", reasoning_content: m.thinking, content: m.content };
   }
   return { role: m.role, content: m.content };
 }

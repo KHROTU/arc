@@ -1,0 +1,7 @@
+List of URLs for webfetch tool testing:
+
+1. https://example.com — Simple HTML page (should return raw HTML)
+2. https://httpbin.org/html — Structured HTML with known content
+3. https://httpbin.org/json — JSON response
+4. https://httpbin.org/status/404 — Deliberate 404 for error handling
+5. https://this-domain-does-not-exist-arc-test.invalid — DNS failure for error handling

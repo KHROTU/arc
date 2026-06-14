@@ -3,9 +3,16 @@ import * as path from "node:path";
 import { applyEdit, type ApplyEditResult } from "./apply.js";
 export class FileEditor {
   constructor(private root: string) {}
-  async read(file: string): Promise<string> {
+  async read(file: string, opts?: { offset?: number; limit?: number }): Promise<string> {
     const full = this.resolve(file);
-    return fs.readFile(full, "utf-8");
+    const raw = await fs.readFile(full, "utf-8");
+    const offset = opts?.offset ?? 1;
+    const limit = opts?.limit;
+    if (offset === 1 && limit === undefined) return raw;
+    const lines = raw.split("\n");
+    const start = Math.max(1, offset);
+    const end = limit !== undefined ? Math.min(lines.length, start + limit - 1) : lines.length;
+    return lines.slice(start - 1, end).join("\n");
   }
   async exists(file: string): Promise<boolean> {
     try {
