@@ -49,6 +49,7 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
   }
   const q = new AsyncEventQueue<StreamEvent>();
   let aborted = false;
+  let lastUsage: { prompt: number; completion: number; thinking: number; cost: number } | undefined;
   const toolAcc = new Map<number, { id: string; name: string; args: string }>();
   const flushToolCalls = () => {
     for (const entry of toolAcc.values()) {
@@ -76,6 +77,7 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
           const payload = line.slice(5).trim();
           if (payload === "[DONE]") {
             flushToolCalls();
+            if (lastUsage) { q.push({ type: "usage", usage: lastUsage }); lastUsage = undefined; }
             q.push({ type: "done" });
             q.close();
             return;
@@ -99,15 +101,12 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
             }
             if (choice.finish_reason === "tool_calls") flushToolCalls();
             if (json.usage) {
-              q.push({
-                type: "usage",
-                usage: {
-                  prompt: json.usage.prompt_tokens ?? 0,
-                  completion: json.usage.completion_tokens ?? 0,
-                  thinking: 0,
-                  cost: 0,
-                },
-              });
+              lastUsage = {
+                prompt: json.usage.prompt_tokens ?? 0,
+                completion: json.usage.completion_tokens ?? 0,
+                thinking: 0,
+                cost: 0,
+              };
             }
           } catch {
           }
@@ -116,7 +115,10 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
     } catch (e) {
       if (!aborted) q.push({ type: "error", message: (e as Error).message });
     } finally {
-      if (!aborted) flushToolCalls();
+      if (!aborted) {
+        flushToolCalls();
+        if (lastUsage) q.push({ type: "usage", usage: lastUsage });
+      }
       q.close();
     }
   })();

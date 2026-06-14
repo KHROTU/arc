@@ -42,7 +42,7 @@ Arc is built for speed and precision. It combines a sophisticated multi-model or
 Arc aims to provide a top-of-the-line agentic experience with a minimal footprint. By optimizing our dependency tree and focusing on native VS Code APIs, we keep the extension fast and portable.
 
 | Extension | VSIX Size (as of June 14th, 2026) |
-| :--- | :--- |
+| :--- | :--- | :--- |
 | **Arc** | **0.69 MB** |
 | Cline | 9.93 MB |
 | Roo Code | 29.40 MB |
@@ -56,7 +56,7 @@ Arc aims to provide a top-of-the-line agentic experience with a minimal footprin
 Install the VSIX directly via the VS Code CLI:
 
 ```bash
-code --install-extension packages/arc/arc-0.0.2-alpha.2.vsix
+code --install-extension packages/arc/arc-0.0.2.vsix
 ```
 
 ### Development
