@@ -13,8 +13,8 @@ export interface ToolSpec {
   description: string;
   parameters: Record<string, unknown>;
 }
-export const toApiToolName = (name: string): string => name.replace(/\./g, "__");
-export const fromApiToolName = (name: string): string => name.replace(/__/g, ".");
+export const toApiToolName = (name: string): string => name.replace(/\./g, "__").replace(/\//g, "--");
+export const fromApiToolName = (name: string): string => name.replace(/__/g, ".").replace(/--/g, "/");
 export interface StreamRequest {
   model: import("../protocol/protocol.js").ModelDescriptor;
   provider: import("../protocol/protocol.js").ProviderConfig;
