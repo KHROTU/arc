@@ -4,7 +4,7 @@ import type { RpcClient, HostEvent } from "../rpc";
 import type { ModelDescriptor, ModelTier, ProviderConfig, ProviderKind } from "@arc/host/protocol";
 import { PROVIDERS } from "@arc/host/catalog";
 import { useArcLogo } from "../hooks/useArcLogo";
-type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderConfig[]; currentModelId: string; monoLogo: string; prideLogo: string };
+type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderConfig[]; monoLogo: string; prideLogo: string };
 const TIERS: ModelTier[] = ["free", "light", "default", "heavy"];
 type Tab = "models" | "providers" | "mcp" | "behavior" | "search";
 const TABS: { value: Tab; label: string; icon: React.ReactNode }[] = [
@@ -14,7 +14,7 @@ const TABS: { value: Tab; label: string; icon: React.ReactNode }[] = [
   { value: "behavior", label: "Behavior", icon: <SlidersHorizontal size={15} /> },
   { value: "search", label: "Search", icon: <Search size={15} /> },
 ];
-export default function SettingsModal({ client, onClose, models, providers, currentModelId, monoLogo, prideLogo }: Props) {
+export default function SettingsModal({ client, onClose, models, providers, monoLogo, prideLogo }: Props) {
   const [tab, setTab] = useState<Tab>("models");
   const logoUri = useArcLogo(monoLogo, prideLogo, false);
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
@@ -517,7 +517,7 @@ function AboutSection({ logoUri }: { logoUri: string }) {
       <div className="arc-about">
         <img className="arc-about-logo" src={logoUri} alt="Arc" />
         <h1 className="arc-about-name">Arc</h1>
-        <p className="arc-about-version">v0.0.2-alpha.3</p>
+        <p className="arc-about-version">v0.0.2-alpha.4</p>
         <p className="arc-about-alpha" style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12, color: "var(--vscode-descriptionForeground)", marginTop: 8 }}>
           <Info size={16} style={{ flexShrink: 0, marginTop: 1 }} />
           <span>This extension is in <strong>alpha testing</strong>. Features, APIs, and configuration formats may change without notice.</span>

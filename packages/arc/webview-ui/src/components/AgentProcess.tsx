@@ -27,6 +27,8 @@ export interface ProcessStep {
   content?: string;
   command?: string;
   output?: string;
+  runAfterCommand?: string;
+  runAfterOutput?: string;
   toolName?: string;
   filePath?: string;
   diffHunks?: DiffHunk[];

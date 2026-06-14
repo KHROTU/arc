@@ -8,9 +8,10 @@ import SettingsModal from "./SettingsView";
 import type { ModelDescriptor, ModelTier, TurnUsage, ChatMessage, ProviderConfig } from "@arc/host/protocol";
 import { useArcLogo, swapOnError } from "../hooks/useArcLogo";
 import { renderMarkdown } from "../util/markdown";
+import type { RpcClient } from "../rpc";
 type ChatMeta = { id: string; title: string; updatedAt: number; cost: number; isActive: boolean };
 type Props = {
-  client: { send: (m: any) => void; on: (l: (e: any) => void) => () => void };
+  client: RpcClient;
   monoLogo: string;
   prideLogo: string;
   prideActive: boolean;
@@ -298,7 +299,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
   }, [timeline]);
   const latestTodos = useMemo(() => {
     for (let i = steps.length - 1; i >= 0; i--) {
-      if (steps[i].type === "todo_list" && steps[i].todos?.length) return steps[i].todos;
+      if (steps[i].type === "todo_list" && steps[i].todos?.length) return steps[i].todos ?? null;
     }
     return null;
   }, [steps]);
@@ -485,7 +486,6 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
           onClose={() => setShowSettings(false)}
           models={models}
           providers={providers}
-          currentModelId={currentModel}
           monoLogo={monoLogo}
           prideLogo={prideLogo}
         />
@@ -608,9 +608,6 @@ function ChatList({
       )}
     </aside>
   );
-}
-function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 function errorLabel(code: string): string {
   switch (code) {

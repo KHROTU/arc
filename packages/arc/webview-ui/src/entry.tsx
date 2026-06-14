@@ -17,7 +17,7 @@ if (!root) {
     root.appendChild(el);
   });
   try {
-    const mode = (root.getAttribute("data-mode") as "sidebar" | "fullscreen" | "settings") || "sidebar";
+    const mode = (root.getAttribute("data-mode") as "sidebar" | "fullscreen") || "sidebar";
     const mono = root.getAttribute("data-mono") || "";
     const pride = root.getAttribute("data-pride") || "";
     const isPride = root.getAttribute("data-pride-active") === "true";

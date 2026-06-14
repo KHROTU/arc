@@ -24,7 +24,7 @@ let chatsFilePath: string;
 let chatHistory: ChatHistory;
 let initResolve: (() => void) | undefined;
 const initReady = new Promise<void>((r) => { initResolve = r; });
-type Session = { id: string; panel?: vscode.WebviewPanel; view?: vscode.WebviewView; agent: Agent; agentReady?: Promise<Agent>; steps: ProcessStep[]; messages: import("@arc/host").ChatMessage[]; };
+type Session = { id: string; panel?: vscode.WebviewPanel; view?: vscode.WebviewView; agent: Agent; agentReady?: Promise<Agent | undefined>; steps: ProcessStep[]; messages: import("@arc/host").ChatMessage[]; };
 const sidebarSession: Session = { id: "sidebar", agent: undefined as unknown as Agent, steps: [], messages: [] };
 const fullscreenSessions = new Map<string, Session>();
 const chatSessions = new Map<string, Session>();

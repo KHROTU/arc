@@ -1,6 +1,6 @@
 {
   "name": "@arc/host",
-  "version": "0.0.2-alpha.3",
+  "version": "0.0.2-alpha.4",
   "private": true,
   "type": "commonjs",
   "main": "dist/index.js",
@@ -29,18 +29,18 @@
   },
   "dependencies": {
     "vscode-uri": "3.0.8",
-    "diff": "5.2.0"
+    "diff": "5.2.2"
   },
   "devDependencies": {
     "typescript": "5.5.4",
     "@types/node": "20.14.10",
-    "@types/diff": "5.2.1",
+    "@types/diff": "5.2.2",
     "vitest": "2.0.5"
   },
   "optionalDependencies": {
-    "playwright": "1.47.0"
+    "playwright": "1.55.1"
   },
   "peerDependencies": {
-    "playwright": "1.47.0"
+    "playwright": "1.55.1"
   }
 }
