@@ -1,4 +1,4 @@
-# Arc
+<p align="center"><img src="packages/arc/assets/arc-logo-mono-text.svg" alt="Arc" /></p>
 
 **A high-performance, lightweight agentic coding assistant for VS Code.**
 
@@ -57,7 +57,7 @@ Arc aims to provide a top-of-the-line agentic experience with a minimal footprin
 Install the VSIX directly via the VS Code CLI:
 
 ```bash
-code --install-extension packages/arc/arc-0.0.2-alpha.5.vsix
+code --install-extension packages/arc/arc-0.0.2-alpha.6.vsix
 ```
 
 ### Development

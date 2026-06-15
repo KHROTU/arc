@@ -195,7 +195,7 @@ async function openFullscreen() {
     retainContextWhenHidden: true,
     localResourceRoots: [vscode.Uri.file(ctxRef.extensionPath)],
   });
-  panel.iconPath = vscode.Uri.file(ctxRef.asAbsolutePath("assets/arc-logo-mono.png"));
+  panel.iconPath = vscode.Uri.file(ctxRef.asAbsolutePath("assets/arc-logo-mono.svg"));
   panel.webview.html = getWebviewHtml(panel.webview, ctxRef.extensionUri, "fullscreen");
   const mapKey = `fullscreen-${Date.now()}`;
   const chatId = chatHistory.ensure(chatHistory.current()).id;

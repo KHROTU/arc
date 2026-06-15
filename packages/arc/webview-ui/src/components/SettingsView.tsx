@@ -528,7 +528,7 @@ function AboutSection({ logoUri }: { logoUri: string }) {
       <div className="arc-about">
         <img className="arc-about-logo" src={logoUri} alt="Arc" />
         <h1 className="arc-about-name">Arc</h1>
-        <p className="arc-about-version">v0.0.2-alpha.5</p>
+        <p className="arc-about-version">v0.0.2-alpha.6</p>
         <p className="arc-about-alpha" style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12, color: "var(--vscode-descriptionForeground)", marginTop: 8 }}>
           <Info size={16} style={{ flexShrink: 0, marginTop: 1 }} />
           <span>This extension is in <strong>alpha testing</strong>. Features, APIs, and configuration formats may change without notice.</span>

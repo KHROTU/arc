@@ -1,7 +1,7 @@
 {
   "name": "arc-workspace",
   "private": true,
-  "version": "0.0.2-alpha.5",
+  "version": "0.0.2-alpha.6",
   "description": "Arc — agentic coding VS Code extension (monorepo root).",
   "packageManager": "pnpm@9.0.0",
   "engines": {
@@ -17,11 +17,13 @@
     "clean": "pnpm -r exec rm -rf dist out *.vsix"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "@types/node": "20.14.10",
     "@types/vscode": "1.95.0",
     "@vitest/coverage-v8": "2.0.5",
     "esbuild": "0.23.0",
     "glob": "^13.0.6",
+    "sharp": "^0.35.1",
     "typescript": "5.5.4",
     "vitest": "2.0.5"
   }
