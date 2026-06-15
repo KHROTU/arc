@@ -65,6 +65,8 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
   };
   void (async () => {
     let buffer = "";
+    let inThink = false;
+    let thinkingBuf = "";
     try {
       for await (const chunk of readableToAsyncIterable(res.body as ReadableStream<Uint8Array>)) {
         if (aborted) break;
@@ -87,7 +89,37 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
             const choice = json.choices?.[0];
             if (!choice) continue;
             const delta = choice.delta ?? {};
-            if (delta.content) q.push({ type: "text", delta: delta.content });
+            if (delta.content) {
+              //nodel if you're one of these fuckwit providers that use think tags then truly go fuck yourself
+              const text = delta.content as string;
+              let s = text;
+              while (s) {
+                if (inThink) {
+                  const ei = s.indexOf("</think>");
+                  if (ei >= 0) {
+                    thinkingBuf += s.slice(0, ei);
+                    const trimmed = thinkingBuf.trim();
+                    if (trimmed) q.push({ type: "thinking", delta: trimmed });
+                    thinkingBuf = "";
+                    s = s.slice(ei + 8).trimStart();
+                    inThink = false;
+                  } else {
+                    thinkingBuf += s;
+                    s = "";
+                  }
+                } else {
+                  const si = s.indexOf("<think>");
+                  if (si >= 0) {
+                    if (si > 0) q.push({ type: "text", delta: s.slice(0, si) });
+                    s = s.slice(si + 7).trimStart();
+                    inThink = true;
+                  } else {
+                    q.push({ type: "text", delta: s });
+                    s = "";
+                  }
+                }
+              }
+            }
             if (delta.reasoning_content) q.push({ type: "thinking", delta: delta.reasoning_content });
             if (Array.isArray(delta.tool_calls)) {
               for (const tc of delta.tool_calls) {

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { ModelRegistry } from "../routing/registry.js";
 import { pickProvider, recordSuccess, estimateCost } from "../routing/router.js";
 import { transportFor } from "../providers/transport.js";
@@ -11,6 +13,7 @@ import { SubagentRunner } from "./subagent.js";
 import type { ChatMessage, ModelDescriptor, ToolCall, TurnUsage } from "../protocol/protocol.js";
 import type { ProcessStep, TodoItem } from "../protocol/process.js";
 const PSEUDO_TOOLS = new Set(["handoff", "subagent.spawn", "subagent.askParent", "clarification.askUser"]);
+const TOOL_OUTPUT_MAX_CHARS = 8000;
 export interface AgentEventSink {
   message(m: ChatMessage): void;
   assistantDelta?(id: string, text: string): void;
@@ -334,9 +337,10 @@ export class Agent {
         return;
       }
       const result = await mcp.call(parsed.server, parsed.tool, tc.args);
-      const out = { ok: result.ok, output: typeof result.output === "string" ? result.output : JSON.stringify(result.output, null, 2) };
-      this.appendToolOutput(tc.id, out.output, out.ok);
-      this.messages.push({ id: randomUUID(), role: "tool", content: out.output, toolCallId: tc.id, ts: Date.now() });
+      const raw = typeof result.output === "string" ? result.output : JSON.stringify(result.output, null, 2);
+      const output = await this.truncateToolOutput(raw, tc.name);
+      this.appendToolOutput(tc.id, output, result.ok);
+      this.messages.push({ id: randomUUID(), role: "tool", content: output, toolCallId: tc.id, ts: Date.now() });
       return;
     }
     const def = builtinTools[tc.name];
@@ -535,8 +539,9 @@ export class Agent {
     } catch (e) {
       result = { ok: false, output: `Tool error: ${(e as Error).message}` };
     }
+    const truncatedOutput = await this.truncateToolOutput(result.output, tc.name);
     const isEditOrWrite = tc.name === "file.edit" || tc.name === "file.write";
-    this.appendToolOutput(tc.id, isEditOrWrite ? "" : result.output, result.ok, result.ok ? undefined : prettyToolTitle(tc.name, tc.args, false), result.diffHunks, result.filePath, result.runAfter?.command, result.runAfter?.output);
+    this.appendToolOutput(tc.id, isEditOrWrite ? "" : truncatedOutput, result.ok, result.ok ? undefined : prettyToolTitle(tc.name, tc.args, false), result.diffHunks, result.filePath, result.runAfter?.command, result.runAfter?.output);
     if (result.todoState) {
       this.todoItems = result.todoState.items.map((it) => ({ ...it }));
       const stepId = `todo-${turnId}-${randomUUID().slice(0, 6)}`;
@@ -545,8 +550,8 @@ export class Agent {
       this.sink.todo(this.todoItems);
     }
     const toolContent = result.runAfter
-      ? `${result.output}\n[runAfter] ${result.runAfter.command}\n${result.runAfter.output}`
-      : result.output;
+      ? `${truncatedOutput}\n[runAfter] ${result.runAfter.command}\n${result.runAfter.output}`
+      : truncatedOutput;
     this.messages.push({ id: randomUUID(), role: "tool", content: toolContent, toolCallId: tc.id, ts: Date.now() });
     if (result.touchedFiles && result.touchedFiles.length && this.opts.toolContext.summaryForFiles) {
       const summary = await this.opts.toolContext.summaryForFiles(result.touchedFiles);
@@ -716,6 +721,17 @@ export class Agent {
         return;
       }
     }
+  }
+  private async truncateToolOutput(output: string, toolName: string): Promise<string> {
+    if (output.length <= TOOL_OUTPUT_MAX_CHARS) return output;
+    const dir = path.join(this.opts.workspaceRoot, ".arc", "tool_outputs");
+    await fs.mkdir(dir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const name = toolName.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const filePath = path.join(dir, `${name}_${ts}.txt`);
+    await fs.writeFile(filePath, output, "utf-8");
+    const truncated = output.slice(0, TOOL_OUTPUT_MAX_CHARS);
+    return `${truncated}\n\n...(output truncated from ${output.length} to ${TOOL_OUTPUT_MAX_CHARS} chars, full output saved to ${filePath})`;
   }
   private emitLiveAssistant(id: string, thinking: string, startTs: number) {
     if (!thinking) return;

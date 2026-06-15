@@ -2,7 +2,7 @@
   "name": "arc",
   "displayName": "Arc",
   "description": "Agentic coding extension with tiered model routing, subagents, handoff, and Kilo-style checkpoints.",
-  "version": "0.0.2-alpha.4",
+  "version": "0.0.2-alpha.5",
   "publisher": "arc",
   "license": "Apache-2.0",
   "engines": {
@@ -154,6 +154,12 @@
           "type": "string",
           "default": "http://127.0.0.1:11434",
           "description": "Ollama base URL for the semantic embedding backend."
+        },
+        "arc.titleGeneration.method": {
+          "type": "string",
+          "enum": ["first-words", "ollama"],
+          "default": "first-words",
+          "description": "Method for generating chat titles. 'first-words' uses the first 40 chars of the first message. 'ollama' uses the titlegemma model via Ollama."
         }
       }
     },

@@ -90,10 +90,10 @@ function ModelsTab({ client, providers, models, onSwitchTab }: { client: RpcClie
   const [adding, setAdding] = useState(false);
   const [label, setLabel] = useState("");
   const [tier, setTier] = useState<ModelTier>("default");
-  const [ctx, setCtx] = useState(128_000);
-  const [maxOut, setMaxOut] = useState(8_192);
-  const [costIn, setCostIn] = useState(0);
-  const [costOut, setCostOut] = useState(0);
+  const [ctx, setCtx] = useState(0);
+  const [maxOut, setMaxOut] = useState(0);
+  const [costIn, setCostIn] = useState<number | undefined>(undefined);
+  const [costOut, setCostOut] = useState<number | undefined>(undefined);
   const add = () => {
     if (!label.trim()) return;
     const id = label.toLowerCase().replace(/[^a-z0-9]+/g, "-") + "-" + Date.now().toString(36);
@@ -105,8 +105,8 @@ function ModelsTab({ client, providers, models, onSwitchTab }: { client: RpcClie
         tier,
         contextWindow: ctx,
         maxOutputTokens: maxOut,
-        costPer1mIn: costIn,
-        costPer1mOut: costOut,
+        costPer1mIn: costIn ?? 0,
+        costPer1mOut: costOut ?? 0,
         providers: [],
       },
     });
@@ -149,8 +149,8 @@ function ModelsTab({ client, providers, models, onSwitchTab }: { client: RpcClie
           </div>
           <div className="arc-form-row">
             <input className="arc-input" type="number" placeholder="max output tokens" value={maxOut || ""} onChange={(e) => setMaxOut(Number(e.target.value))} />
-            <input className="arc-input" type="number" step="0.0001" placeholder="$/1M input" value={costIn || ""} onChange={(e) => setCostIn(Number(e.target.value))} />
-            <input className="arc-input" type="number" step="0.0001" placeholder="$/1M output" value={costOut || ""} onChange={(e) => setCostOut(Number(e.target.value))} />
+            <input className="arc-input" type="number" step="0.0001" placeholder="$/1M input" value={costIn ?? ""} onChange={(e) => setCostIn(e.target.value === "" ? undefined : Number(e.target.value))} />
+            <input className="arc-input" type="number" step="0.0001" placeholder="$/1M output" value={costOut ?? ""} onChange={(e) => setCostOut(e.target.value === "" ? undefined : Number(e.target.value))} />
           </div>
           <div className="arc-form-actions">
             <button className="arc-btn" onClick={add}><Check size={14} /> Save</button>
@@ -352,12 +352,14 @@ function BehaviorTab({ client }: { client: RpcClient }) {
   const [allowlist, setAllowlist] = useState("ls,dir,cat,type,cp,copy,mv,move,rm,del,mkdir,rmdir,grep,rg,find,findstr,sed,awk,diff,git,gh,pnpm,npm,yarn,npx,node,python,python3,pip,pip3,go,cargo,rustc,dotnet,java,javac,make,gcc,g++,curl,wget,tar,gzip,gunzip,zip,unzip,ssh,scp,docker,kubectl,tsc,eslint,prettier,jest,vitest,esbuild,vite,pwsh,powershell,Get-ChildItem,Get-Content,Set-Content,New-Item,Remove-Item,Copy-Item,Move-Item,Test-Path,Select-String,Invoke-WebRequest,echo,cd,tasklist,taskkill,netstat,ping,ipconfig,whoami,winget,choco");
   const [compactionStrategy, setCompactionStrategy] = useState<"model-aware" | "fixed">("model-aware");
   const [safetyMargin, setSafetyMargin] = useState(0.15);
+  const [titleGenMethod, setTitleGenMethod] = useState<"first-words" | "ollama">("first-words");
   useEffect(() => {
     void client.request("arc.notifications.enabled").then((v) => setNotifEnabled(v !== false));
     void client.request("arc.shell.approval").then((v) => setShellApproval((v as typeof shellApproval) ?? "allowlist"));
     void client.request("arc.shell.allowlist").then((v) => setAllowlist(Array.isArray(v) ? (v as string[]).join(",") : "ls,dir,cat,type,cp,copy,mv,move,rm,del,mkdir,rmdir,grep,rg,find,findstr,sed,awk,diff,git,gh,pnpm,npm,yarn,npx,node,python,python3,pip,pip3,go,cargo,rustc,dotnet,java,javac,make,gcc,g++,curl,wget,tar,gzip,gunzip,zip,unzip,ssh,scp,docker,kubectl,tsc,eslint,prettier,jest,vitest,esbuild,vite,pwsh,powershell,Get-ChildItem,Get-Content,Set-Content,New-Item,Remove-Item,Copy-Item,Move-Item,Test-Path,Select-String,Invoke-WebRequest,echo,cd,tasklist,taskkill,netstat,ping,ipconfig,whoami,winget,choco"));
     void client.request("arc.compaction.strategy").then((v) => setCompactionStrategy((v as typeof compactionStrategy) ?? "model-aware"));
     void client.request("arc.compaction.safetyMargin").then((v) => setSafetyMargin(typeof v === "number" ? v : 0.15));
+    void client.request("arc.titleGeneration.method").then((v) => setTitleGenMethod(v === "ollama" ? "ollama" : "first-words"));
   }, [client]);
   const PROMPTS = [
     { name: "Global default", meta: "built into the extension", action: null as React.ReactNode },
@@ -401,6 +403,15 @@ function BehaviorTab({ client }: { client: RpcClient }) {
             <span className="arc-row-meta">window reserved for output</span>
             <span className="arc-spacer" />
             <input className="arc-input arc-input-sm" type="number" min={0} max={0.5} step={0.05} value={safetyMargin} onChange={(e) => setSafetyMargin(Number(e.target.value))} onBlur={() => client.send({ type: "config/set", key: "arc.compaction.safetyMargin", value: safetyMargin })} />
+          </div></li>
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Chat title generation</span>
+            <span className="arc-row-meta">how new chat titles are created</span>
+            <span className="arc-spacer" />
+            <select className="arc-input arc-input-sm" value={titleGenMethod} onChange={(e) => { const v = e.target.value as typeof titleGenMethod; setTitleGenMethod(v); client.send({ type: "config/set", key: "arc.titleGeneration.method", value: v }); }}>
+              <option value="first-words">first 40 chars</option>
+              <option value="ollama">titlegemma</option>
+            </select>
           </div></li>
         </ul>
       </Section>
@@ -517,7 +528,7 @@ function AboutSection({ logoUri }: { logoUri: string }) {
       <div className="arc-about">
         <img className="arc-about-logo" src={logoUri} alt="Arc" />
         <h1 className="arc-about-name">Arc</h1>
-        <p className="arc-about-version">v0.0.2-alpha.4</p>
+        <p className="arc-about-version">v0.0.2-alpha.5</p>
         <p className="arc-about-alpha" style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12, color: "var(--vscode-descriptionForeground)", marginTop: 8 }}>
           <Info size={16} style={{ flexShrink: 0, marginTop: 1 }} />
           <span>This extension is in <strong>alpha testing</strong>. Features, APIs, and configuration formats may change without notice.</span>

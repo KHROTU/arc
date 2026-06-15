@@ -104,7 +104,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const results = await ctx.grep(pattern, include);
       if (results.length === 0) return { ok: true, output: `No matches for /${pattern}/` };
       const out = results.map((r) => `${r.file}:${r.line}:${r.column}: ${r.text}`).join("\n");
-      return { ok: true, output: out.slice(0, 8000) };
+      return { ok: true, output: out };
     },
   },
   "file.glob": {
@@ -115,7 +115,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       if (!pattern) return { ok: false, output: "No pattern provided." };
       const files = await ctx.glob(pattern);
       if (files.length === 0) return { ok: true, output: `No files matching ${pattern}` };
-      return { ok: true, output: files.join("\n").slice(0, 8000) };
+      return { ok: true, output: files.join("\n") };
     },
   },
   "shell.run": {
@@ -147,7 +147,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
           const out = errMsg
             ? `${errMsg}${hint}\n${stdout}${stderr ? `\n[stderr]\n${stderr}` : ""}`
             : combined;
-          resolve({ ok, output: out.slice(-8000) });
+          resolve({ ok, output: out });
         };
         proc.stdout?.on("data", (d: Buffer) => {
           const s = d.toString();
@@ -220,7 +220,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const bg = bgProcesses.get(id);
       if (!bg) return { ok: false, output: `No background process with id '${id}'.` };
       const status = bg.exited ? `exited (code ${bg.exitCode ?? "unknown"})` : "running";
-      const out = (bg.stdout + (bg.stderr ? `\n[stderr]\n${bg.stderr}` : "")).slice(-8000);
+      const out = (bg.stdout + (bg.stderr ? `\n[stderr]\n${bg.stderr}` : ""));
       return { ok: true, output: `[${status}]\n${out}` };
     },
   },
@@ -280,7 +280,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
         const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
         if (!res.ok) return { ok: false, output: `HTTP ${res.status}: ${res.statusText}` };
         const text = await res.text();
-        return { ok: true, output: text.slice(0, 8000) };
+        return { ok: true, output: text };
       } catch (e: unknown) {
         return { ok: false, output: `Fetch failed: ${(e as Error).message}` };
       }

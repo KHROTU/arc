@@ -488,7 +488,8 @@ body {
 .arc-row-label { font-size: 13px; font-weight: 500; }
 .arc-row-meta { font-size: 12px; color: var(--vscode-descriptionForeground, #858585); }
 .arc-row-code { font-family: var(--vscode-editor-fontFamily, monospace); font-size: 11.5px; color: var(--vscode-descriptionForeground, #858585); background: var(--arc-code-bg); padding: 1px 6px; border-radius: 4px; }
-.arc-row-sub { margin-top: 6px; font-size: 12px; color: var(--vscode-descriptionForeground, #858585); }
+.arc-row-sub { margin-top: 6px; font-size: 12px; color: var(--vscode-descriptionForeground, #858585); display: flex; gap: 8px; }
+.arc-row-sub > .arc-input { flex: 1; min-width: 0; }
 .arc-binds { list-style: none; margin: 10px 0 0; padding: 0 0 0 18px; border-left: 1px solid var(--arc-line-faint); display: flex; flex-direction: column; gap: 7px; }
 .arc-bind { display: flex; align-items: center; gap: 10px; }
 .arc-bind-name { font-size: 12.5px; min-width: 110px; }

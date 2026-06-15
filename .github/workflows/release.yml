@@ -1,0 +1,30 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find VSIX
+        id: vsix
+        run: |
+          VSIX=$(ls packages/arc/*.vsix 2>/dev/null | head -1)
+          echo "path=$VSIX" >> $GITHUB_OUTPUT
+          echo "name=$(basename "$VSIX")" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.event.head_commit.message }}
+          tag_name: ${{ github.event.head_commit.message }}
+          files: ${{ steps.vsix.outputs.path }}
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

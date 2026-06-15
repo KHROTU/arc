@@ -741,10 +741,22 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             if (nonSystem.length === 0) {
               const chat = chatHistory.list().find((c) => c.id === session.id);
               if (chat && (chat.title.startsWith("Welcome") || chat.title.startsWith("New chat"))) {
-                chatHistory.rename(session.id, msg.text.slice(0, 40).trim());
-                persist?.();
-                void persistAsync?.();
-                broadcastChatListAll();
+                const method = vscode.workspace.getConfiguration().get<string>("arc.titleGeneration.method", "first-words");
+                if (method === "ollama") {
+                  generateTitleViaOllama(msg.text).then((title) => {
+                    if (title) {
+                      chatHistory.rename(session.id, title);
+                      persist?.();
+                      void persistAsync?.();
+                      broadcastChatListAll();
+                    }
+                  });
+                } else {
+                  chatHistory.rename(session.id, msg.text.slice(0, 40).trim());
+                  persist?.();
+                  void persistAsync?.();
+                  broadcastChatListAll();
+                }
               }
             }
           }
@@ -1010,6 +1022,33 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
+}
+async function generateTitleViaOllama(firstMessage: string): Promise<string | null> {
+  try {
+    const base = (vscode.workspace.getConfiguration().get<string>("arc.search.ollamaUrl", "http://127.0.0.1:11434")).replace(/\/$/, "");
+    const prompt = `<start_of_turn>user
+    You are a precise title generator. Given the first message of a conversation, generate a short, descriptive title. Rules: 3 to 8 words, no emojis, no special characters, no quotes, no markdown, use Title Case. Output ONLY the title text.
+    
+    Generate a title for a conversation that starts with:
+    
+    ${firstMessage}<end_of_turn>
+    <start_of_turn>model
+    `;
+    const res = await fetch(`${base}/api/generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "KHROTU/titlegemma",
+        prompt,
+        stream: false,
+      }),
+    });
+    if (!res.ok) return null;
+    const j = await res.json() as { response?: string };
+    return j.response?.trim() || null;
+  } catch {
+    return null;
+  }
 }
 async function hydrateMcp(mcp: McpAggregator, root: string) {
   const fs = await import("node:fs/promises");
