@@ -4,8 +4,8 @@ import * as path from "node:path";
 import { createHash } from "node:crypto";
 import {
   ModelRegistry, Agent, CheckpointStore, LspBridge, McpAggregator,
-  makeVSCodeNotifier, setNotifier, loadWorkspacePrompts, mergePrecedence, render,
-  pickLogo, ChatHistory, createBrowser,
+  makeVSCodeNotifier, setNotifier,   loadWorkspacePrompts, loadGlobalPrompts, mergePrecedence, render, injectRelevantRules,
+  pickLogo, ChatHistory, createBrowser, getArcDir, getWorkspaceArcDir,
   type ChatSnapshot, type ChatMessage, type BrowserAdapter,
   type HostMsg, type WebviewMsg, type ModelDescriptor, type ProviderConfig, type ProcessStep,
   Indexer, HashEmbeddingBackend, OllamaEmbeddingBackend, DEFAULT_EMBEDDING_MODELS,
@@ -236,11 +236,12 @@ function newTask() {
 async function openPrompt() {
   if (!ctxRef) return;
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-  const target = vscode.Uri.file(`${root}/.arc/prompt.md`);
+  const wsArcDir = getWorkspaceArcDir(root);
+  const target = vscode.Uri.file(path.join(wsArcDir, "prompt.md"));
   try {
     await vscode.workspace.fs.stat(target);
   } catch {
-try { await vscode.workspace.fs.createDirectory(vscode.Uri.file(`${root}/.arc`)); } catch {  }
+    try { await vscode.workspace.fs.createDirectory(vscode.Uri.file(wsArcDir)); } catch {  }
     await vscode.workspace.fs.writeFile(
       target,
       new TextEncoder().encode("# Arc workspace prompt\n\nOverride Arc's system prompt for this workspace.\n"),
@@ -261,7 +262,10 @@ function classifyError(message: string): "timeout" | "rate_limit" | "auth" | "pr
 }
 const buildSystemPrompt = async (): Promise<string> => {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-  const parts = await loadWorkspacePrompts(root);
+  const globalParts = await loadGlobalPrompts();
+  const wsParts = await loadWorkspacePrompts(root);
+  const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath;
+  const parts = injectRelevantRules([...globalParts, ...wsParts], activeFile);
   const basePrompt = `You are Arc, an agentic coding assistant. Be concise. Be precise.
 Working dir: ${root} | OS: ${process.platform} | Date: ${new Date().toISOString().slice(0, 10)}
 
@@ -297,14 +301,15 @@ Working dir: ${root} | OS: ${process.platform} | Date: ${new Date().toISOString(
 - Commit or push only when the user asks. If on the default branch, branch first.
 
 ## Tools
-file.read, file.edit, file.write, file.grep, file.glob, shell.run, shell.backgroundRun, shell.check, shell.write, webfetch, lsp.problems, lsp.problemsFor, todo.write, browser.*, mcp.call, subagent.spawn, handoff, clarification.askUser
+file.read, file.edit, file.write, file.grep, file.glob, shell.run, shell.backgroundRun, shell.check, shell.write, webfetch, lsp.problems, lsp.problemsFor, todo.write, browser.*, mcp.call, checkpoint.revert, checkpoint.list, subagent.spawn, handoff, clarification.askUser
 
 ## Workflow
-1. Understand the task. Use file.grep and file.glob to locate relevant code. Read files with file.read (use offset/limit for large files). Set a todo plan for non-trivial work.
-2. Make minimal, targeted edits. Keep exactly one todo item in_progress at a time; mark done only after verification. After file.edit/write, fix any diagnostics in the same turn.
-3. Delegate grunt work to subagents — they are cheap. For independent parallel investigations, launch multiple subagents in one turn.
-4. If a task exceeds your capability, call handoff with a clear reason.
-5. Do not create markdown files for planning, notes, or tracking — use todo.write instead.
+1. Understand the task. Use file.grep and file.glob to locate relevant code. Read files with file.read (use offset/limit for large files).
+2. **Plan-first for complex work:** When the task spans multiple files, involves architectural decisions, or has ambiguous scope, pause and use \`clarification.askUser\` to ask: "Plan first? I can outline a todo list for your review before making changes." If the user approves, produce a full todo list via \`todo.write\` and wait for sign-off (the user will say "proceed" or similar) before executing. Update the plan dynamically as you discover new information — add, remove, or reorder items as needed. Mark the current item \`in_progress\`, and mark items \`done\` after verifying them.
+3. **For straightforward tasks:** proceed directly. Keep exactly one todo item in_progress at a time. After file.edit/write, fix any diagnostics in the same turn.
+4. Delegate grunt work to subagents — they are cheap. For independent parallel investigations, launch multiple subagents in one turn.
+5. If a task exceeds your capability, call handoff with a clear reason.
+6. Do not create markdown files for planning, notes, or tracking — use todo.write instead.
 
 ## Output
 - Report outcomes faithfully: if something fails, state what happened with the output. If something succeeds, state it plainly without hedging. If a step was skipped, say so.
@@ -411,19 +416,21 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       void persistAsync?.();
       broadcast(session, { type: "session/done" });
     },
+    guidance: (text) => broadcast(session, { type: "session/guidance", text }),
     error: (message) => broadcast(session, { type: "error", message, ...(classifyError(message) ? { code: classifyError(message) } : {}) }),
     compaction: (before, after, reason) => broadcast(session, { type: "session/compaction", before, after, reason }),
   };
   session.agent = new Agent(registry, store, sink, {
     systemPrompt,
     enabledTools: new Set([
-      "file.read", "file.edit", "file.write", "file.grep", "file.glob", "shell.run", "shell.backgroundRun", "shell.check", "shell.write", "webfetch",
+      "file.read", "file.edit", "file.write", "file.grep", "file.glob", "shell.run", "shell.backgroundRun", "shell.check", "shell.write", "shell.customRun", "shell.editCustomRun", "shell.runCustomRun", "webfetch",
       "lsp.problems", "lsp.problemsFor",
       "todo.write",
       "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close",
       "mcp.call", "mcp.create", "mcp.remove", "mcp.toggle",
       "mcp.resources/list", "mcp.resources/read", "mcp.prompts/list", "mcp.prompts/get",
       "subagent.spawn", "handoff", "clarification.askUser",
+      "checkpoint.revert", "checkpoint.list",
       "file.semanticSearch",
     ]),
     workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(),
@@ -765,6 +772,12 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             if (agent) await agent.send(msg.text, msg.attachments);
           }
           break;
+        case "chat/guidance":
+          {
+            const agent = await awaitAgent(session);
+            if (agent) await agent.guidance(msg.text);
+          }
+          break;
         case "chat/stop":
           {
             const agent = await awaitAgent(session);
@@ -1006,6 +1019,9 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
   const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "dist", "styles.css"));
   const monoLogo = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "assets", "arc-logo-mono.svg"));
   const prideLogo = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "assets", "arc-logo-pride.svg"));
+  const monoLogoText = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "assets", "arc-logo-mono-text.svg"));
+  const prideLogoText = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "assets", "arc-logo-pride-text.svg"));
+  const extVersion = ctxRef?.extension?.packageJSON?.version ?? "0.0.0";
   const isPride = new Date().getUTCMonth() === 5;
   const favicon = isPride ? prideLogo : monoLogo;
   const nonce = String(Math.random()).slice(2);
@@ -1018,7 +1034,7 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
   <link rel="stylesheet" href="${styleUri}" />
 </head>
 <body>
-  <div id="root" data-mode="${mode}" data-mono="${monoLogo}" data-pride="${prideLogo}" data-pride-active="${isPride}"></div>
+  <div id="root" data-mode="${mode}" data-mono="${monoLogo}" data-pride="${prideLogo}" data-mono-text="${monoLogoText}" data-pride-text="${prideLogoText}" data-pride-active="${isPride}" data-version="${extVersion}"></div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
@@ -1026,34 +1042,38 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
 async function generateTitleViaOllama(firstMessage: string): Promise<string | null> {
   try {
     const base = (vscode.workspace.getConfiguration().get<string>("arc.search.ollamaUrl", "http://127.0.0.1:11434")).replace(/\/$/, "");
-    const prompt = `<start_of_turn>user
-    You are a precise title generator. Given the first message of a conversation, generate a short, descriptive title. Rules: 3 to 8 words, no emojis, no special characters, no quotes, no markdown, use Title Case. Output ONLY the title text.
-    
-    Generate a title for a conversation that starts with:
-    
-    ${firstMessage}<end_of_turn>
-    <start_of_turn>model
-    `;
-    const res = await fetch(`${base}/api/generate`, {
+    const res = await fetch(`${base}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: "KHROTU/titlegemma",
-        prompt,
+        model: "gemma3:1b",
+        messages: [{
+          role: "user",
+          content: `Output ONLY a short title (3-8 words, Title Case). No bullets, no options, no explanation — just the title.\n\n${firstMessage}`,
+        }],
         stream: false,
+        options: { temperature: 0 },
       }),
     });
     if (!res.ok) return null;
-    const j = await res.json() as { response?: string };
-    return j.response?.trim() || null;
+    const j = await res.json() as { message?: { content?: string } };
+    const raw = j.message?.content?.trim() || "";
+    if (!raw) return null;
+    const boldMatch = raw.match(/\*\s+\*?\*?([^*\n]+)\*?\*?/);
+    if (boldMatch) return boldMatch[1].replace(/\*+$/, "").trim() || null;
+    const lineMatch = raw.match(/^([^\n*]+)/m);
+    if (lineMatch && !/^here are/i.test(lineMatch[1])) {
+      return lineMatch[1].trim() || null;
+    }
+    return null;
   } catch {
     return null;
   }
 }
-async function hydrateMcp(mcp: McpAggregator, root: string) {
+async function hydrateMcp(mcp: McpAggregator, _root: string) {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
-  const file = path.join(root, ".arc/mcp.json");
+  const file = path.join(getArcDir(), "mcp.json");
   try {
     const raw = await fs.readFile(file, "utf-8");
     const j = JSON.parse(raw) as { mcpServers?: Record<string, { transport: import("@arc/host").McpTransport; enabled?: boolean }> };
@@ -1066,10 +1086,10 @@ async function hydrateMcp(mcp: McpAggregator, root: string) {
     }
 } catch {  }
 }
-async function persistMcpConfig(mcp: McpAggregator, root: string) {
+async function persistMcpConfig(mcp: McpAggregator, _root: string) {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
-  const file = path.join(root, ".arc/mcp.json");
+  const file = path.join(getArcDir(), "mcp.json");
   const servers = mcp.listServers();
   const out = { mcpServers: Object.fromEntries(servers.map((s) => [s.name, { enabled: s.enabled, transport: s.transport }])) };
   await fs.mkdir(path.dirname(file), { recursive: true });

@@ -32,7 +32,7 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (req.provider.apiKey) headers.authorization = `Bearer ${req.provider.apiKey}`;
   if (req.provider.kind === "openrouter") {
-    headers["http-referer"] = "https://arc.dev";
+    headers["http-referer"] = "https://github.com/KHROTU/arc";
     headers["x-openrouter-title"] = "Arc";
   } else {
     headers["x-title"] = "Arc";

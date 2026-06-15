@@ -1,9 +1,9 @@
 {
   "name": "arc",
   "displayName": "Arc",
-  "description": "Agentic coding extension with tiered model routing, subagents, handoff, and Kilo-style checkpoints.",
-  "version": "0.0.2-alpha.6",
-  "publisher": "arc",
+  "description": "Agentic coding extension with tiered model routing, subagents, handoff, and per-file change snapshots.",
+  "version": "0.0.3",
+  "publisher": "khrotu",
   "license": "Apache-2.0",
   "engines": {
     "vscode": "^1.95.0",

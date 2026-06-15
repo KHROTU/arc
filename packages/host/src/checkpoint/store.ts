@@ -48,8 +48,19 @@ export class CheckpointStore {
   async listTurns(root: string): Promise<string[]> {
     const dir = this.turnsDir(root);
     try {
-      const entries = await fs.readdir(dir);
-      return entries.filter((e) => e.endsWith(".json")).map((e) => e.replace(/\.json$/, "")).sort();
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+      const turns = entries
+        .filter((e) => e.isFile() && e.name.endsWith(".json"))
+        .map((e) => ({ id: e.name.replace(/\.json$/, ""), mtimeMs: 0 }));
+      const stats = await Promise.allSettled(
+        turns.map((t) => fs.stat(path.join(dir, `${t.id}.json`))),
+      );
+      for (let i = 0; i < turns.length; i++) {
+        const s = stats[i];
+        if (s.status === "fulfilled") turns[i].mtimeMs = s.value.mtimeMs;
+      }
+      turns.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      return turns.map((t) => t.id);
     } catch {
       return [];
     }
@@ -92,8 +103,8 @@ export class CheckpointStore {
     }
     const all = await this.listTurns(root);
     const idx = all.indexOf(turnId);
-    for (const later of all.slice(idx + 1)) {
-      await fs.unlink(this.metaPath(root, later)).catch(() => undefined);
+    for (const newer of all.slice(0, idx)) {
+      await fs.unlink(this.metaPath(root, newer)).catch(() => undefined);
     }
     return { restored, conflicts };
   }

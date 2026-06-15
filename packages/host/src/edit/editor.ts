@@ -42,7 +42,7 @@ export class FileEditor {
         ok: true,
         after: replace,
         matches: 1,
-        strategy: "append",
+        strategy: "write",
         diff: [{ value: "", count: 0, added: false, removed: false }, { value: replace, count: 0, added: true, removed: false }],
         file,
       };

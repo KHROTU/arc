@@ -4,8 +4,9 @@ import type { RpcClient, HostEvent } from "../rpc";
 import type { ModelDescriptor, ModelTier, ProviderConfig, ProviderKind } from "@arc/host/protocol";
 import { PROVIDERS } from "@arc/host/catalog";
 import { useArcLogo } from "../hooks/useArcLogo";
-type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderConfig[]; monoLogo: string; prideLogo: string };
-const TIERS: ModelTier[] = ["free", "light", "default", "heavy"];
+type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderConfig[]; monoLogo: string; prideLogo: string; monoLogoText: string; prideLogoText: string; version: string };
+const TIERS: ModelTier[] = ["heavy", "default", "light", "free"];
+const TIER_ORDER: Record<ModelTier, number> = { heavy: 0, default: 1, light: 2, free: 3 };
 type Tab = "models" | "providers" | "mcp" | "behavior" | "search";
 const TABS: { value: Tab; label: string; icon: React.ReactNode }[] = [
   { value: "models", label: "Models", icon: <Cpu size={15} /> },
@@ -14,9 +15,10 @@ const TABS: { value: Tab; label: string; icon: React.ReactNode }[] = [
   { value: "behavior", label: "Behavior", icon: <SlidersHorizontal size={15} /> },
   { value: "search", label: "Search", icon: <Search size={15} /> },
 ];
-export default function SettingsModal({ client, onClose, models, providers, monoLogo, prideLogo }: Props) {
+export default function SettingsModal({ client, onClose, models, providers, monoLogo, prideLogo, monoLogoText, prideLogoText, version }: Props) {
   const [tab, setTab] = useState<Tab>("models");
   const logoUri = useArcLogo(monoLogo, prideLogo, false);
+  const logoTextUri = useArcLogo(monoLogoText, prideLogoText, false);
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const navRef = useRef<HTMLElement>(null);
   const [indicator, setIndicator] = useState({ left: 0, width: 0 });
@@ -62,7 +64,7 @@ export default function SettingsModal({ client, onClose, models, providers, mono
             {tab === "mcp" && <McpTab client={client} />}
             {tab === "behavior" && <BehaviorTab client={client} />}
             {tab === "search" && <SearchTab client={client} />}
-            <AboutSection logoUri={logoUri} />
+            <AboutSection logoTextUri={logoTextUri} version={version} />
           </div>
         </main>
       </div>
@@ -135,7 +137,7 @@ function ModelsTab({ client, providers, models, onSwitchTab }: { client: RpcClie
   return (
     <Section
       title="Models"
-      description="Each model has a tier and one or more providers. Set the remote slug per provider (e.g. deepseek-chat)."
+      description="Each model has a tier and one or more providers. Set the remote slug per provider."
       action={!adding && <button className="arc-btn" onClick={() => setAdding(true)}><Plus size={14} /> Add model</button>}
     >
       {adding && (
@@ -160,7 +162,7 @@ function ModelsTab({ client, providers, models, onSwitchTab }: { client: RpcClie
       )}
       {models.length === 0 && !adding && <p className="arc-empty">No models yet.</p>}
       <ul className="arc-rows">
-        {models.map((m) => {
+        {[...models].sort((a, b) => (TIER_ORDER[a.tier] ?? 99) - (TIER_ORDER[b.tier] ?? 99)).map((m) => {
           const available = providers.filter((p) => !m.providers.some((mp) => mp.id === p.id));
           return (
             <li key={m.id} className="arc-row">
@@ -236,7 +238,7 @@ function ProvidersTab({ client, providers, models }: { client: RpcClient; provid
   return (
     <Section
       title="Providers"
-      description="API keys are stored in VS Code SecretStorage — never in plain text."
+      description="API keys are stored in SecretStorage, and we can't afford servers to steal your keys."
       action={!adding && <button className="arc-btn" onClick={() => setAdding(true)}><Plus size={14} /> Add provider</button>}
     >
       {adding && (
@@ -305,7 +307,7 @@ function McpTab({ client }: { client: RpcClient }) {
   return (
     <Section
       title="MCP servers"
-      description="Model Context Protocol servers expose tools to the agent. Persisted to .arc/mcp.json."
+      description="Model Context Protocol servers expose tools to the agent. Persisted to ~/.arc/mcp.json."
       action={!adding && <button className="arc-btn" onClick={() => setAdding(true)}><Plus size={14} /> Add server</button>}
     >
       {adding && (
@@ -363,9 +365,9 @@ function BehaviorTab({ client }: { client: RpcClient }) {
   }, [client]);
   const PROMPTS = [
     { name: "Global default", meta: "built into the extension", action: null as React.ReactNode },
-    { name: ".arc/prompt.md", meta: "workspace prompt", action: <button className="arc-btn-ghost" onClick={() => client.send({ type: "ui/openPrompt" })}>Open</button> },
-    { name: "AGENTS.md · CLAUDE.md · .arc/instructions.md", meta: "auto-loaded rules files", action: null },
-    { name: ".arc/prompts/*.md", meta: "per-mode prompt overrides", action: null },
+    { name: "~/.arc/workspaces/*/prompt.md", meta: "workspace prompt", action: <button className="arc-btn-ghost" onClick={() => client.send({ type: "ui/openPrompt" })}>Open</button> },
+    { name: "AGENTS.md / CLAUDE.md · ~/.arc/workspaces/*/instructions.md", meta: "auto-loaded rules files", action: null },
+    { name: "~/.arc/workspaces/*/prompts/*.md", meta: "per-mode prompt overrides", action: null },
   ];
   return (
     <>
@@ -410,7 +412,7 @@ function BehaviorTab({ client }: { client: RpcClient }) {
             <span className="arc-spacer" />
             <select className="arc-input arc-input-sm" value={titleGenMethod} onChange={(e) => { const v = e.target.value as typeof titleGenMethod; setTitleGenMethod(v); client.send({ type: "config/set", key: "arc.titleGeneration.method", value: v }); }}>
               <option value="first-words">first 40 chars</option>
-              <option value="ollama">titlegemma</option>
+              <option value="ollama">gemma3:1b</option>
             </select>
           </div></li>
         </ul>
@@ -469,7 +471,7 @@ function SearchTab({ client }: { client: RpcClient }) {
   return (
     <Section
       title="Semantic search"
-      description="Indexes the workspace with a local embedding model so the agent can run natural-language queries against the codebase."
+      description="Indexes the workspace with an embedding model for natural-language queries."
     >
       <ul className="arc-rows">
         <li className="arc-row"><div className="arc-row-main">
@@ -493,9 +495,9 @@ function SearchTab({ client }: { client: RpcClient }) {
               <span className="arc-row-meta">{modelLabel}</span>
               <span className="arc-spacer" />
               <select className="arc-input arc-input-sm" value={modelTier} onChange={(e) => { const v = e.target.value as "low" | "mid" | "high"; setModelTier(v); client.send({ type: "config/set", key: "arc.search.modelTier", value: v }); }}>
-                <option value="low">Low (nomic-embed-text:v1.5)</option>
-                <option value="mid">Mid (qwen3-embedding:0.6b)</option>
-                <option value="high">High (qwen3-embedding:8b)</option>
+                <option value="low">nomic-embed-text:v1.5</option>
+                <option value="mid">qwen3-embedding:0.6b</option>
+                <option value="high">qwen3-embedding:8b</option>
               </select>
             </div></li>
             <li className="arc-row"><div className="arc-row-main">
@@ -522,17 +524,18 @@ function SearchTab({ client }: { client: RpcClient }) {
     </Section>
   );
 }
-function AboutSection({ logoUri }: { logoUri: string }) {
+function AboutSection({ logoTextUri, version }: { logoTextUri: string; version: string }) {
   return (
     <div className="arc-settings-about" style={{ marginTop: 40, padding: "20px 0", borderTop: "1px solid var(--vscode-panel-border)" }}>
-      <div className="arc-about">
-        <img className="arc-about-logo" src={logoUri} alt="Arc" />
-        <h1 className="arc-about-name">Arc</h1>
-        <p className="arc-about-version">v0.0.2-alpha.6</p>
-        <p className="arc-about-alpha" style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12, color: "var(--vscode-descriptionForeground)", marginTop: 8 }}>
-          <Info size={16} style={{ flexShrink: 0, marginTop: 1 }} />
-          <span>This extension is in <strong>alpha testing</strong>. Features, APIs, and configuration formats may change without notice.</span>
-        </p>
+      <div className="arc-about" style={{ display: "flex", flexDirection: "row", gap: "3%", alignItems: "flex-start", padding: 0 }}>
+        <img className="arc-about-logo-text" src={logoTextUri} alt="Arc" style={{ width: "50%", height: "auto", flexShrink: 0 }} />
+        <div style={{ display: "flex", flexDirection: "column", gap: "clamp(2px, 0.5vw, 8px)", width: "47%" }}>
+          <p className="arc-about-version" style={{ margin: 0, fontSize: "clamp(11px, 1.4vw, 16px)", fontWeight: 600 }}>v{version}</p>
+          <p className="arc-about-alpha" style={{ display: "flex", gap: "clamp(4px, 0.8vw, 10px)", alignItems: "flex-start", fontSize: "clamp(10px, 1.1vw, 13px)", color: "var(--vscode-descriptionForeground)", margin: 0 }}>
+            <Info size={16} style={{ flexShrink: 0, marginTop: 1, width: "clamp(12px, 1.6vw, 18px)", height: "clamp(12px, 1.6vw, 18px)" }} />
+            <span>This extension is in <strong>alpha testing</strong>. Features, APIs, and configuration formats may change without notice.</span>
+          </p>
+        </div>
       </div>
     </div>
   );

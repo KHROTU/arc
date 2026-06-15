@@ -1,6 +1,6 @@
 import type { HostMsg, WebviewMsg } from "@arc/host/protocol";
 export type HostEvent = HostMsg;
-export type WebviewRequest = WebviewMsg;
+type WebviewRequest = WebviewMsg;
 export type Listener = (e: HostEvent) => void;
 export interface RpcClient {
   send(msg: WebviewRequest): void;

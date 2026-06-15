@@ -30,11 +30,13 @@ web/          Static HTML page for browser tools
   index.html       Page for browser.navigate / browser.readDom / browser.click / browser.screenshot
   script.js        JS wired to the HTML (browser.evaluate)
   handoff-designs.html  Handoff banner design concept gallery
-scripts/      Shell commands
-  demo.ps1    PowerShell script to run (shell.run)
-  slow.ps1    Long-running script for timeout parameter testing
-  interactive.ps1  Interactive script waiting on stdin (shell.backgroundRun, shell.check, shell.write)
-  build.ps1   Simulated build script for runAfter parameter testing
+ scripts/      Shell commands
+   demo.ps1    PowerShell script to run (shell.run)
+   slow.ps1    Long-running script for timeout parameter testing
+   interactive.ps1  Interactive script waiting on stdin (shell.backgroundRun, shell.check, shell.write)
+   build.ps1   Simulated build script for runAfter parameter testing
+   lint.ps1    Simulated lint check for customRun chaining
+   check.ps1   Simulated test run for customRun chaining
 data/         Text and structured data
   sample.json  Nested JSON to read and traverse
   todo.txt     Plain text to read and edit (file.read, file.edit, file.write)
@@ -73,6 +75,11 @@ data/         Text and structured data
 | shell.backgroundRun | Run `slow.ps1` in background, poll with shell.check |
 | shell.check | Poll a background process for output and exit status |
 | shell.write | Send input to `interactive.ps1` via stdin after backgroundRun |
+| shell.customRun | Create a named pipeline: `pwsh scripts/lint.ps1`, `pwsh scripts/build.ps1`, `pwsh scripts/check.ps1` |Persists to `~/.arc/skills/`. Verify the JSON file appears. |
+| shell.customRun (overwrite) | Create the same name again — expect "already exists" error. Create again with `overwrite:true` — succeeds. |
+| shell.editCustomRun | Edit the previously-created run by id: add a command, rename it |
+| shell.editCustomRun (error) | Edit a non-existent id — expect "no custom run found" error |
+| checkpoint.revert | After a file.edit that touches `src/utils.ts`, revert to the checkpoint for that turn. Verify the file goes back to its pre-edit state. |
 
 ## New Parameter Coverage
 
@@ -86,6 +93,16 @@ data/         Text and structured data
 | `batch` (array) | subagent.spawn | Spawn multiple subagents in one turn, collect all results |
 | `rules.blockedCommands` | subagent.spawn | Block specific shell commands in subagent; approval routes to parent |
 | `rules.requireApproval` | subagent.spawn | Require parent approval for all subagent shell commands |
+
+## Tier 1: Checkpoint & Custom Run Features
+
+| Feature | How to test |
+|---------|-------------|
+| checkpoint.revert | Ask: "Edit src/utils.ts to add a comment at the top. Then use checkpoint.revert to undo that edit." Verify the file returns to original state. |
+| shell.customRun (create) | Ask: "Create a custom run called 'full-check' with these commands: `pwsh scripts/lint.ps1`, `pwsh scripts/build.ps1`, `pwsh scripts/check.ps1`" — verify `~/.arc/skills/full_check.json` is created. |
+| shell.customRun (overwrite) | Ask: "Try to create 'full-check' again without overwrite — then create it with overwrite:true" |
+| shell.editCustomRun (edit) | Ask: "Edit the custom run 'full_check' — add `pwsh scripts/demo.ps1` as a final command, and rename it to 'pipeline'" |
+| shell.editCustomRun (error) | Ask: "Edit a custom run with id 'nonexistent' — expect the error message about no run found" |
 
 ## Tier 2: Subagent Features
 

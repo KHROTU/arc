@@ -78,6 +78,29 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
       input: str("The input to send (e.g. y/n confirmation, arrow keys)."),
     }, ["id", "input"]),
   },
+  "shell.customRun": {
+    description: "Define a named series of shell commands and persist them as a skill. Use for repeatable workflows like build-test-lint cycles.",
+    parameters: obj({
+      name: str("A short, descriptive name for this custom run (e.g. 'full-check')."),
+      commands: { type: "array", items: { type: "string" }, description: "Ordered list of shell commands to run." },
+      overwrite: bool("Set true to replace an existing run with the same name."),
+    }, ["name", "commands"]),
+  },
+  "shell.editCustomRun": {
+    description: "Update a previously-defined custom run by its id.",
+    parameters: obj({
+      id: str("The custom run id (returned when it was created)."),
+      commands: { type: "array", items: { type: "string" }, description: "New ordered list of shell commands." },
+      name: str("Optional new name for the run."),
+    }, ["id"]),
+  },
+  "shell.runCustomRun": {
+    description: "Execute a previously-defined custom run by its id. Runs each command sequentially and reports per-command results.",
+    parameters: obj({
+      id: str("The custom run id to execute."),
+      cwd: str("Optional working directory (defaults to workspace root)."),
+    }, ["id"]),
+  },
   "lsp.problems": {
     description: "Get ALL current LSP problems across the workspace.",
     parameters: obj({}),
@@ -208,6 +231,17 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
       name: str("Prompt template name."),
       args: { type: "object", description: "Optional template arguments.", additionalProperties: true },
     }, ["server", "name"]),
+  },
+  "checkpoint.revert": {
+    description: "Revert files modified during a turn. Args: { index } (1=most recent) or { turnId } (exact UUID). Use checkpoint.list first to find available turns.",
+    parameters: obj({
+      index: num("1-based index of the checkpoint to revert to (1 is most recent). Use this OR turnId — not both."),
+      turnId: str("Exact turn UUID from checkpoint.list. Use this OR index — not both."),
+    }),
+  },
+  "checkpoint.list": {
+    description: "List all available checkpoint snapshots for the current workspace. Returns turn IDs, timestamps, and affected files — most recent first.",
+    parameters: obj({}),
   },
   "subagent.spawn": {
     description: "Spawn one or more subagents on a (typically cheaper) tier to do delegated grunt work. Use 'batch' to launch parallel subagents.",

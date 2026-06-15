@@ -41,10 +41,11 @@ describe("applyEdit", () => {
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/not found/);
   });
-  it("appends when search is empty", () => {
+  it("writes (replaces) when search is empty", () => {
     const r = applyEdit({ before: "abc", search: "", replace: "def" });
     expect(r.ok).toBe(true);
-    expect(r.after).toBe("abcdef");
+    expect(r.after).toBe("def");
+    expect(r.strategy).toBe("write");
   });
   it("applies a SEARCH/REPLACE block passed as the search argument", () => {
     const block = `src/foo.ts

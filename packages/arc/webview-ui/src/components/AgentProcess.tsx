@@ -2,17 +2,17 @@ import { useState, useEffect, memo, useCallback } from "react";
 import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
 import {
   ChevronRight, Bot, ArrowRight, Check, Circle, CircleDot,
-  HelpCircle, CornerDownLeft, Sparkles, AlertTriangle, Terminal, ExternalLink,
+  HelpCircle, CornerDownLeft, Sparkles, AlertTriangle, Terminal, ExternalLink, StopCircle,
 } from "lucide-react";
-export type StepType =
+type StepType =
   | "tool_group" | "tool" | "subagent" | "handoff"
   | "todo_list" | "clarification" | "thought" | "result" | "error";
-export interface TodoItem {
+interface TodoItem {
   id: string;
   text: string;
   state: "pending" | "in_progress" | "done" | "skipped";
 }
-export interface DiffHunk {
+interface DiffHunk {
   added: boolean;
   removed: boolean;
   value: string;
@@ -38,6 +38,7 @@ export interface ProcessStep {
   todos?: TodoItem[];
   options?: string[];
   children?: ProcessStep[];
+  interrupted?: boolean;
 }
 const SPRING = { type: "spring", stiffness: 450, damping: 30 } as const;
 const SPRING_BOUNCE = { type: "spring", stiffness: 420, damping: 24 } as const;
@@ -118,7 +119,8 @@ const DiffView = memo(({ hunks, filePath, onOpenFile }: { hunks: DiffHunk[]; fil
   );
 });
 DiffView.displayName = "DiffView";
-function StatusDot({ type }: { type: StepType }) {
+function StatusDot({ type, interrupted }: { type: StepType; interrupted?: boolean }) {
+  if (interrupted) return <StopCircle className="arc-proc-dot-icon is-err" size={12} strokeWidth={2.25} />;
   if (type === "result") return <Check className="arc-proc-dot-icon is-ok" size={13} strokeWidth={2.5} />;
   if (type === "error") return <AlertTriangle className="arc-proc-dot-icon is-err" size={12} strokeWidth={2.25} />;
   if (type === "handoff") return <ArrowRight className="arc-proc-dot-icon is-accent" size={12} strokeWidth={2.25} />;
@@ -236,7 +238,7 @@ const ThoughtNode = memo(({ step }: { step: ProcessStep }) => {
         disabled={!hasContent}
         aria-expanded={hasContent ? showBody : undefined}
       >
-        <span className="arc-proc-row-mark"><StatusDot type="thought" /></span>
+        <span className="arc-proc-row-mark"><StatusDot type="thought" interrupted={step.interrupted} /></span>
         <span className="arc-proc-title arc-proc-title-thought">
           {step.pending ? <>Thinking<span className="arc-working-dots" /></> : `Thought for ${secs} seconds`}
         </span>
@@ -279,8 +281,8 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile }: { step: Proc
         disabled={!hasDetails}
         aria-expanded={hasDetails ? isActive : undefined}
       >
-        <span className="arc-proc-row-mark"><StatusDot type={step.type} /></span>
-        <span className="arc-proc-title">{step.title}</span>
+        <span className="arc-proc-row-mark"><StatusDot type={step.type} interrupted={step.interrupted} /></span>
+        <span className="arc-proc-title">{step.title}{step.interrupted ? <span className="arc-proc-interrupted">(stopped)</span> : null}</span>
         {hasDetails && (
           <motion.span className="arc-proc-chevron" animate={{ rotate: isActive ? 90 : 0 }} transition={SPRING}>
             <ChevronRight size={13} />

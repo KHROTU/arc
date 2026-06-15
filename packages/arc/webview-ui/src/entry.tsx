@@ -20,8 +20,11 @@ if (!root) {
     const mode = (root.getAttribute("data-mode") as "sidebar" | "fullscreen") || "sidebar";
     const mono = root.getAttribute("data-mono") || "";
     const pride = root.getAttribute("data-pride") || "";
+    const monoText = root.getAttribute("data-mono-text") || "";
+    const prideText = root.getAttribute("data-pride-text") || "";
+    const version = root.getAttribute("data-version") || "0.0.0";
     const isPride = root.getAttribute("data-pride-active") === "true";
-    createRoot(root).render(<App mode={mode} monoLogo={mono} prideLogo={pride} prideActive={isPride} />);
+    createRoot(root).render(<App mode={mode} monoLogo={mono} prideLogo={pride} monoLogoText={monoText} prideLogoText={prideText} prideActive={isPride} version={version} />);
   } catch (err) {
     root.innerHTML = `<pre style="color:#f88;padding:20px;white-space:pre-wrap;font:12px monospace">${(err as Error)?.stack ?? String(err)}</pre>`;
   }

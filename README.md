@@ -43,11 +43,11 @@ Arc aims to provide a top-of-the-line agentic experience with a minimal footprin
 
 | Extension | VSIX Size (as of June 15th, 2026) |
 | :--- | :--- |
-| **Arc** | **0.69 MB** |
+| **Arc** | **0.22 MB** |
 | Cline | 10.18 MB |
 | BLACKBOXAI Agent | 20.15 MB |
 | Roo Code | 30.11 MB |
-| Kilo Code | 76.71 MB |
+| Kilo Code | 79.92 MB |
 | Continue | 110.49 MB |
 
 ## Getting Started
@@ -57,7 +57,7 @@ Arc aims to provide a top-of-the-line agentic experience with a minimal footprin
 Install the VSIX directly via the VS Code CLI:
 
 ```bash
-code --install-extension packages/arc/arc-0.0.2-alpha.6.vsix
+code --install-extension packages/arc/arc-0.0.3.vsix
 ```
 
 ### Development

@@ -1,8 +1,15 @@
 import { exec, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { FileEditor } from "../edit/editor.js";
+import { getSkillsDir } from "../arc-dir.js";
+import { runPreWriteHooks, runPostEditHooks } from "../hooks/hooks.js";
 import type { DiffHunk } from "../protocol/process.js";
 const pexec = promisify(exec);
+const IS_WIN = process.platform === "win32";
+const SHELL = IS_WIN ? "pwsh.exe" : true;
+const EXEC_SHELL: string | undefined = IS_WIN ? "pwsh.exe" : undefined;
 type BrowserAdapter = import("../browser/browser.js").BrowserAdapter;
 type BrowserSource = BrowserAdapter | (() => Promise<BrowserAdapter>);
 async function resolveBrowser(src: BrowserSource | undefined): Promise<BrowserAdapter | undefined> {
@@ -12,16 +19,78 @@ async function resolveBrowser(src: BrowserSource | undefined): Promise<BrowserAd
 interface BgProcess { proc: ChildProcess; stdout: string; stderr: string; exited: boolean; exitCode: number | undefined; }
 const bgProcesses = new Map<string, BgProcess>();
 let bgIds = 0;
+const activeProcesses = new Set<ChildProcess>();
+export function killActiveProcesses(): { count: number; pids: number[] } {
+  const pids: number[] = [];
+  let count = 0;
+  for (const proc of activeProcesses) {
+    if (proc.pid && !proc.killed) {
+      pids.push(proc.pid);
+      try { process.kill(proc.pid, "SIGINT"); } catch {}
+      try { proc.kill("SIGINT"); } catch {}
+      count++;
+    }
+  }
+  activeProcesses.clear();
+  return { count, pids };
+}
 async function runAfterCmd(cmd: string | undefined, cwd: string): Promise<{ command: string; output: string } | undefined> {
   if (!cmd) return undefined;
   try {
-    const { stdout, stderr } = await pexec(cmd, { cwd, maxBuffer: 4 * 1024 * 1024, windowsHide: true });
+    const { stdout, stderr } = await pexec(cmd, { cwd, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
     const output = (stdout + (stderr ? `\n[stderr]\n${stderr}` : "")).slice(0, 2000) || "(no output)";
     return { command: cmd, output };
   } catch (e: unknown) {
     const err = e as { message?: string };
     return { command: cmd, output: `[runAfter failed] ${err.message ?? e}` };
   }
+}
+async function runSingleCommand(
+  cmd: string,
+  cwd: string,
+  ctx: ToolContext,
+  onChunk?: (stream: "stdout" | "stderr", text: string) => void,
+): Promise<{ ok: boolean; output: string }> {
+  const baseCmd = cmd.trim().split(/\s+/)[0] || "";
+  const blocked = ctx.shell.policy === "off"
+    ? true
+    : ctx.shell.policy === "allowlist" && !ctx.shell.allowlist.includes(baseCmd);
+  if (blocked) {
+    if (!ctx.requestApproval) return { ok: false, output: `Shell command '${baseCmd}' not in allowlist and no approval handler set.` };
+    const ok = await ctx.requestApproval(`Run custom run command?\n\n${cmd}`);
+    if (!ok) return { ok: false, output: "Denied by user." };
+  }
+  return new Promise((resolve) => {
+    const proc = spawn(cmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    activeProcesses.add(proc);
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finalize = (ok: boolean, errMsg?: string) => {
+      if (settled) return;
+      settled = true;
+      activeProcesses.delete(proc);
+      const out = errMsg
+        ? `${errMsg}\n${stdout}${stderr ? `\n[stderr]\n${stderr}` : ""}`
+        : stdout + (stderr ? `\n[stderr]\n${stderr}` : "");
+      resolve({ ok, output: out });
+    };
+    proc.stdout?.on("data", (d: Buffer) => {
+      const s = d.toString();
+      stdout += s;
+      onChunk?.("stdout", s);
+    });
+    proc.stderr?.on("data", (d: Buffer) => {
+      const s = d.toString();
+      stderr += s;
+      onChunk?.("stderr", s);
+    });
+    proc.on("error", (err) => finalize(false, err.message));
+    proc.on("exit", (code) => {
+      if (code === 0) finalize(true);
+      else finalize(false, `Process exited with code ${code}`);
+    });
+  });
 }
 export interface ToolContext {
   root: string;
@@ -64,14 +133,20 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     description: "Apply an edit. PREFER passing a SEARCH/REPLACE block in `search`:\n<<<<<<< SEARCH\nexact text\n=======\nreplacement\n>>>>>>> REPLACE\nFallback args: { path, search, replace, replaceAll?, runAfter? }",
     fn: async (args, ctx) => {
       const ed = new FileEditor(ctx.root);
-      const r = await ed.apply(String(args.path), String(args.search), String(args.replace), { replaceAll: !!args.replaceAll });
+      const filePath = String(args.path);
+      const replace = String(args.replace);
+      await runPreWriteHooks(filePath, replace);
+      const r = await ed.apply(filePath, String(args.search), replace, { replaceAll: !!args.replaceAll });
       const ra = await runAfterCmd(args.runAfter ? String(args.runAfter) : undefined, ctx.workspacePath);
+      if (r.ok) {
+        runPostEditHooks(filePath, ctx.root).catch(() => {});
+      }
       return {
         ok: r.ok,
-        output: r.ok ? `Edited ${args.path} (${r.strategy}, ${r.matches} match${r.matches === 1 ? "" : "es"})` : `Error: ${r.error}`,
-        touchedFiles: r.ok ? [String(args.path)] : [],
+        output: r.ok ? `Edited ${filePath} (${r.strategy}, ${r.matches} match${r.matches === 1 ? "" : "es"})` : `Error: ${r.error}`,
+        touchedFiles: r.ok ? [filePath] : [],
         diffHunks: r.diff.map((c) => ({ added: c.added ?? false, removed: c.removed ?? false, value: c.value })),
-        filePath: String(args.path),
+        filePath: filePath,
         runAfter: ra,
       };
     },
@@ -80,16 +155,18 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     description: "Write a new file (or overwrite). Args: { path, content, runAfter? }",
     fn: async (args, ctx) => {
       const ed = new FileEditor(ctx.root);
-      const path = String(args.path);
+      const filePath = String(args.path);
       const content = String(args.content);
-      const r = await ed.apply(path, "", content);
+      await runPreWriteHooks(filePath, content);
+      const r = await ed.apply(filePath, "", content);
       const ra = await runAfterCmd(args.runAfter ? String(args.runAfter) : undefined, ctx.workspacePath);
+      runPostEditHooks(filePath, ctx.root).catch(() => {});
       return {
         ok: true,
-        output: `Wrote ${path}`,
-        touchedFiles: [path],
+        output: `Wrote ${filePath}`,
+        touchedFiles: [filePath],
         diffHunks: r.diff.map((c) => ({ added: c.added ?? false, removed: c.removed ?? false, value: c.value })),
-        filePath: path,
+        filePath: filePath,
         runAfter: ra,
       };
     },
@@ -135,13 +212,15 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const cwd = (args.cwd ? String(args.cwd) : ctx.root) || ctx.root;
       const onChunk = ctx.onChunk;
       return new Promise<ToolResult>((resolve) => {
-        const proc = spawn(cmd, { cwd, shell: true, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+        const proc = spawn(cmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+        activeProcesses.add(proc);
         let stdout = "";
         let stderr = "";
         let settled = false;
         const finalize = (ok: boolean, errMsg?: string, killed = false) => {
           if (settled) return;
           settled = true;
+          activeProcesses.delete(proc);
           const combined = (stdout + (stderr ? `\n[stderr]\n${stderr}` : ""));
           const hint = killed ? ` (killed after ${timeoutSec}s timeout)` : "";
           const out = errMsg
@@ -190,7 +269,8 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       }
       const cwd = (args.cwd ? String(args.cwd) : ctx.root) || ctx.root;
       try {
-        const proc = spawn(cmd, { cwd, shell: true, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+        const proc = spawn(cmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+        activeProcesses.add(proc);
         const bg: BgProcess = { proc, stdout: "", stderr: "", exited: false, exitCode: undefined };
         const id = String(bgIds++);
         bgProcesses.set(id, bg);
@@ -205,8 +285,8 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
           bg.stderr += s;
           onChunk?.("stderr", s);
         });
-        proc.on("exit", (code) => { bg.exited = true; bg.exitCode = code ?? undefined; });
-        proc.on("error", (err) => { bg.exited = true; bg.stderr += `\n[spawn error] ${err.message}`; });
+        proc.on("exit", (code) => { bg.exited = true; bg.exitCode = code ?? undefined; activeProcesses.delete(proc); });
+        proc.on("error", (err) => { bg.exited = true; bg.stderr += `\n[spawn error] ${err.message}`; activeProcesses.delete(proc); });
         return { ok: true, output: `Background process started (id: ${id}). Use shell.check to poll output.` };
       } catch (e: unknown) {
         return { ok: false, output: `Failed to start background process: ${(e as Error).message}` };
@@ -238,6 +318,87 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       } catch (e: unknown) {
         return { ok: false, output: `Failed to write to process ${id}: ${(e as Error).message}` };
       }
+    },
+  },
+  "shell.customRun": {
+    description: "Define a named series of shell commands and persist them as a skill. Args: { name, commands, overwrite? }",
+    fn: async (args) => {
+      const name = String(args.name ?? "").trim();
+      if (!name) return { ok: false, output: "customRun requires a name." };
+      const commands = Array.isArray(args.commands) ? (args.commands as string[]).map(String) : [];
+      if (commands.length === 0) return { ok: false, output: "customRun requires at least one command." };
+      const safeId = name.replace(/[^a-zA-Z0-9_.-]/g, "_");
+      const dir = getSkillsDir();
+      await fs.mkdir(dir, { recursive: true });
+      const filePath = path.join(dir, `${safeId}.json`);
+      let existing: { createdAt: number } | undefined;
+      try {
+        const raw = await fs.readFile(filePath, "utf-8");
+        existing = JSON.parse(raw);
+      } catch {}
+      if (existing && !args.overwrite) return { ok: false, output: `Skill '${name}' already exists. Use overwrite:true to replace it, or use shell.editCustomRun to update it.` };
+      const skill = { id: safeId, name, commands, createdAt: existing?.createdAt ?? Date.now(), updatedAt: Date.now() };
+      await fs.writeFile(filePath, JSON.stringify(skill, null, 2), "utf-8");
+      const cmdList = commands.map((c, i) => `  ${i + 1}. ${c}`).join("\n");
+      return { ok: true, output: `Created custom run '${name}' (id: ${safeId}) with ${commands.length} command(s):\n${cmdList}` };
+    },
+  },
+  "shell.editCustomRun": {
+    description: "Update a previously-defined custom run by ID. Args: { id, commands?, name? }",
+    fn: async (args) => {
+      const id = String(args.id ?? "").trim();
+      if (!id) return { ok: false, output: "editCustomRun requires an id." };
+      const dir = getSkillsDir();
+      const filePath = path.join(dir, `${id}.json`);
+      let skill: { id: string; name: string; commands: string[]; createdAt: number; updatedAt: number };
+      try {
+        const raw = await fs.readFile(filePath, "utf-8");
+        skill = JSON.parse(raw);
+      } catch {
+        return { ok: false, output: `No custom run found with id '${id}'.` };
+      }
+      if (args.name !== undefined) skill.name = String(args.name).trim() || skill.name;
+      if (args.commands !== undefined) {
+        const cmds = Array.isArray(args.commands) ? (args.commands as string[]).map(String) : [];
+        if (cmds.length === 0) return { ok: false, output: "commands must be a non-empty array." };
+        skill.commands = cmds;
+      }
+      skill.updatedAt = Date.now();
+      await fs.writeFile(filePath, JSON.stringify(skill, null, 2), "utf-8");
+      const cmdList = skill.commands.map((c, i) => `  ${i + 1}. ${c}`).join("\n");
+      return { ok: true, output: `Updated custom run '${skill.name}' (id: ${id}) with ${skill.commands.length} command(s):\n${cmdList}` };
+    },
+  },
+  "shell.runCustomRun": {
+    description: "Execute a previously-defined custom run by id or name. Executes each command sequentially in the workspace. Args: { id, cwd? }",
+    fn: async (args, ctx) => {
+      const id = String(args.id ?? "").trim();
+      if (!id) return { ok: false, output: "runCustomRun requires an id." };
+      const dir = getSkillsDir();
+      const filePath = path.join(dir, `${id}.json`);
+      let skill: { name: string; commands: string[] };
+      try {
+        const raw = await fs.readFile(filePath, "utf-8");
+        skill = JSON.parse(raw);
+      } catch {
+        return { ok: false, output: `No custom run found with id '${id}'.` };
+      }
+      if (!skill.commands || skill.commands.length === 0) {
+        return { ok: false, output: `Custom run '${skill.name}' has no commands.` };
+      }
+      const cwd = (args.cwd ? String(args.cwd) : ctx.workspacePath) || ctx.root;
+      const onChunk = ctx.onChunk;
+      const results: string[] = [];
+      let allOk = true;
+      for (let i = 0; i < skill.commands.length; i++) {
+        const cmd = skill.commands[i];
+        const label = `[${i + 1}/${skill.commands.length}] ${cmd}`;
+        const result = await runSingleCommand(cmd, cwd, ctx, onChunk);
+        const entry = result.ok ? `${label}\n${result.output}` : `${label}\nFAILED: ${result.output}`;
+        results.push(entry);
+        if (!result.ok) allOk = false;
+      }
+      return { ok: allOk, output: `Ran custom run '${skill.name}':\n\n${results.join("\n\n")}` };
     },
   },
   "lsp.problems": {

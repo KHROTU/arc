@@ -1,18 +1,21 @@
 import { useState, useRef, useEffect, useCallback, useLayoutEffect } from "react";
 import { ArrowUp, Paperclip, Square, X } from "lucide-react";
-export type Attachment = { uri: string; preview?: string };
+type Attachment = { uri: string; preview?: string };
 type Props = {
   onSend: (text: string, attachments?: Attachment[]) => void;
   onStop?: () => void;
+  onGuidance?: (text: string) => void;
   streaming?: boolean;
   disabled?: boolean;
   pendingAttachment?: string | null;
   onAttach?: () => void;
   placeholder?: string;
   autoFocus?: boolean;
+  queuedText?: string | null;
+  onCancelQueue?: () => void;
 };
 export default function Composer({
-  onSend, onStop, streaming, disabled, pendingAttachment, onAttach, placeholder, autoFocus = true,
+  onSend, onStop, onGuidance, streaming, disabled, pendingAttachment, onAttach, placeholder, autoFocus = true, queuedText, onCancelQueue,
 }: Props) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -34,7 +37,7 @@ export default function Composer({
   }, [pendingAttachment]);
   const submit = useCallback(() => {
     const t = text.trim();
-    if (!t || disabled || streaming) return;
+    if (!t || disabled) return;
     onSend(t, attachments.length ? attachments : undefined);
     setText("");
     setAttachments([]);
@@ -43,6 +46,19 @@ export default function Composer({
     if (onAttach) return onAttach();
     (window as unknown as { __ARC_ATTACH?: () => void }).__ARC_ATTACH?.();
   };
+  if (queuedText) {
+    return (
+      <div className="arc-composer is-queued">
+        <div className="arc-composer-queued">
+          <span className="arc-composer-queued-label">Queued message:</span>
+          <span className="arc-composer-queued-text">{queuedText}</span>
+          <button className="arc-composer-send is-stop" onClick={onCancelQueue} title="Cancel queued message">
+            <X size={12} strokeWidth={2.5} />
+          </button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className={`arc-composer ${disabled ? "is-disabled" : ""} ${streaming ? "is-busy" : ""}`}>
       {attachments.length > 0 && (
@@ -63,7 +79,13 @@ export default function Composer({
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+          if (e.key === "Enter" && e.ctrlKey && onGuidance) {
+            e.preventDefault();
+            const t = text.trim();
+            if (t) { onGuidance(t); setText(""); }
+          } else if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault(); submit();
+          }
         }}
         rows={1}
         disabled={disabled}
@@ -73,7 +95,7 @@ export default function Composer({
         <button className="arc-composer-tool" title="Attach editor selection" onClick={attach} disabled={disabled}>
           <Paperclip size={14} />
         </button>
-        <span className="arc-composer-hint">⏎ send · ⇧⏎ newline</span>
+        <span className="arc-composer-hint">⏎ send · ⇧⏎ newline · ⌃⏎ guide</span>
         <span className="arc-spacer" />
         {streaming ? (
           <button className="arc-composer-send is-stop" onClick={onStop} title="Stop">

@@ -1,11 +1,12 @@
 import esbuild from "esbuild";
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { existsSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const watch = process.argv.includes("--watch");
+const isProd = !watch && process.env.NODE_ENV !== "development";
 
 await mkdir(resolve(__dirname, "dist"), { recursive: true });
 
@@ -17,11 +18,11 @@ const host = {
   target: "node18",
   outfile: resolve(__dirname, "dist/extension.js"),
   external: ["vscode", "playwright", "playwright-core", "playwright-firefox"],
-  sourcemap: true,
+  sourcemap: !isProd,
+  minify: isProd,
+  keepNames: true,
+  treeShaking: true,
   logLevel: "info",
-  alias: {
-    "playwright": "playwright",
-  },
   plugins: [
     {
       name: "skip-playwright",
@@ -41,8 +42,11 @@ const webview = {
   outfile: resolve(__dirname, "dist/webview.js"),
   jsx: "automatic",
   loader: { ".svg": "text", ".png": "dataurl" },
-  define: { "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV || "production") },
-  sourcemap: true,
+  define: { "process.env.NODE_ENV": JSON.stringify(isProd ? "production" : "development") },
+  sourcemap: !isProd,
+  minify: isProd,
+  keepNames: true,
+  treeShaking: true,
   logLevel: "info",
   plugins: [
     {
@@ -52,7 +56,13 @@ const webview = {
           if (r.errors.length) return;
           const cssSrc = resolve(__dirname, "webview-ui/src/styles.css");
           if (existsSync(cssSrc)) {
-            await copyFile(cssSrc, resolve(__dirname, "dist/styles.css"));
+            const raw = await readFile(cssSrc, "utf-8");
+            if (isProd) {
+              const minified = await esbuild.transform(raw, { loader: "css", minify: true });
+              await writeFile(resolve(__dirname, "dist/styles.css"), minified.code);
+            } else {
+              await writeFile(resolve(__dirname, "dist/styles.css"), raw);
+            }
           }
         });
       },
@@ -68,7 +78,15 @@ if (watch) {
   const fs = await import("node:fs");
   fs.watch(resolve(__dirname, "webview-ui/src/styles.css"), async () => {
     const cssSrc = resolve(__dirname, "webview-ui/src/styles.css");
-    if (existsSync(cssSrc)) await copyFile(cssSrc, resolve(__dirname, "dist/styles.css"));
+    if (existsSync(cssSrc)) {
+      const raw = await readFile(cssSrc, "utf-8");
+      if (isProd) {
+        const minified = await esbuild.transform(raw, { loader: "css", minify: true });
+        await writeFile(resolve(__dirname, "dist/styles.css"), minified.code);
+      } else {
+        await writeFile(resolve(__dirname, "dist/styles.css"), raw);
+      }
+    }
   });
   console.log("[arc] watching...");
 } else {

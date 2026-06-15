@@ -39,4 +39,5 @@ export interface ProcessStep {
   todos?: TodoItem[];
   options?: string[];
   children?: ProcessStep[];
+  interrupted?: boolean;
 }

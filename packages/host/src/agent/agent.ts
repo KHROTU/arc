@@ -1,18 +1,19 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { getWorkspaceArcDir } from "../arc-dir.js";
 import { ModelRegistry } from "../routing/registry.js";
 import { pickProvider, recordSuccess, estimateCost } from "../routing/router.js";
 import { transportFor } from "../providers/transport.js";
 import { CheckpointStore } from "../checkpoint/store.js";
 import { compactAsync, decideCompaction, CompactionTracker } from "../compaction/compaction.js";
 import { defaultPolicy, nextModelForHandoff, type HandoffRecord } from "../routing/handoff.js";
-import { tools as builtinTools, type ToolContext } from "./tools.js";
+import { tools as builtinTools, type ToolContext, killActiveProcesses } from "./tools.js";
 import { buildToolSpecs, isMcpToolSpec, parseMcpToolSpec } from "./tool-specs.js";
 import { SubagentRunner } from "./subagent.js";
 import type { ChatMessage, ModelDescriptor, ToolCall, TurnUsage } from "../protocol/protocol.js";
 import type { ProcessStep, TodoItem } from "../protocol/process.js";
-const PSEUDO_TOOLS = new Set(["handoff", "subagent.spawn", "subagent.askParent", "clarification.askUser"]);
+const PSEUDO_TOOLS = new Set(["handoff", "subagent.spawn", "subagent.askParent", "clarification.askUser", "checkpoint.revert", "checkpoint.list"]);
 const TOOL_OUTPUT_MAX_CHARS = 8000;
 export interface AgentEventSink {
   message(m: ChatMessage): void;
@@ -27,6 +28,7 @@ export interface AgentEventSink {
   done(): void;
   error(message: string): void;
   compaction(before: number, after: number, reason: string): void;
+  guidance(text: string): void;
 }
 export interface AgentOptions {
   systemPrompt: string;
@@ -78,6 +80,16 @@ export class Agent {
       const lines = attachments.map((a) => `- ${a.preview ?? a.uri}`);
       content = `${text}\n\nAttached context:\n${lines.join("\n")}`;
     }
+    if (shouldPlanFirst(content)) {
+      const planMsg: ChatMessage = {
+        id: randomUUID(),
+        role: "system",
+        content: "The user's request appears complex (spans multiple files/features). Before making ANY changes, you MUST:\n1. Create a detailed todo list via `todo.write` breaking the work into sequential, verifiable steps.\n2. Ask the user for sign-off via `clarification.askUser` with the question \"Review the plan above. Ready to proceed?\" and options [\"Proceed\", \"Revise plan\"].\n3. Only start executing after the user selects \"Proceed\".\nDo NOT call file.edit, file.write, or shell.run until the user approves the plan.",
+        ts: Date.now(),
+      };
+      this.messages.push(planMsg);
+      this.sink.message(planMsg);
+    }
     const userMsg: ChatMessage = { id: randomUUID(), role: "user", content, ts: Date.now() };
     this.messages.push(userMsg);
     this.sink.message(userMsg);
@@ -89,9 +101,18 @@ export class Agent {
   }
   async stop() {
     this.abortController?.abort();
+    const killed = killActiveProcesses();
     for (const [id, p] of this.pendingClarifications) {
       p.resolve("");
       this.pendingClarifications.delete(id);
+    }
+    for (let i = this.steps.length - 1; i >= 0; i--) {
+      if (this.steps[i].pending && (this.steps[i].type === "tool")) {
+        this.steps[i] = { ...this.steps[i], pending: false, interrupted: true };
+      }
+    }
+    if (killed.count > 0) {
+      this.sink.steps(this.steps);
     }
   }
   async retract(turnId: string): Promise<{ restored: string[]; conflicts: string[] }> {
@@ -107,6 +128,33 @@ export class Agent {
       this.sink.todo(this.todoItems);
     }
     return r;
+  }
+  async guidance(text: string) {
+    if (!this.active) return;
+    this.abortController?.abort();
+    const killed = killActiveProcesses();
+    for (let i = this.steps.length - 1; i >= 0; i--) {
+      if (this.steps[i].pending && (this.steps[i].type === "tool")) {
+        this.steps[i] = { ...this.steps[i], pending: false, interrupted: true };
+      }
+    }
+    if (killed.count > 0) {
+      this.sink.steps(this.steps);
+    }
+    const stepId = `guidance-${randomUUID().slice(0, 6)}`;
+    this.steps.push({
+      id: stepId,
+      type: "tool",
+      title: `User guidance: ${text.slice(0, 80)}`,
+      content: text,
+      ts: Date.now(),
+    });
+    this.sink.steps(this.steps);
+    const contextMsg = `The user has added this context while observing your work:\n\n${text}\n\nContinue with this guidance in mind. Do NOT re-acknowledge or repeat the guidance — just incorporate it into your ongoing work.`;
+    this.messages.push({ id: randomUUID(), role: "user", content: contextMsg, ts: Date.now() });
+    this.sink.guidance(text);
+    this.active = false;
+    await this.runTurn();
   }
   answerClarification(id: string, answer: string): boolean {
     const p = this.pendingClarifications.get(id);
@@ -276,8 +324,10 @@ export class Agent {
         this.sink.done();
       }
     } catch (e) {
-      this.sink.turnEnd(turnId, false, (e as Error).message);
-      this.sink.error((e as Error).message);
+      if (!this.abortController?.signal.aborted) {
+        this.sink.turnEnd(turnId, false, (e as Error).message);
+        this.sink.error((e as Error).message);
+      }
     } finally {
       this.active = false;
     }
@@ -518,6 +568,53 @@ export class Agent {
       });
       return;
     }
+    if (tc.name === "checkpoint.revert") {
+      const targetId = tc.args.turnId ? String(tc.args.turnId) : "";
+      const rawIdx = tc.args.index !== undefined ? Number(tc.args.index) : undefined;
+      let resolvedId: string | undefined = targetId || undefined;
+      if (!resolvedId && rawIdx !== undefined) {
+        const turns = await this.store.listTurns(this.opts.workspaceRoot);
+        const idx = rawIdx - 1;
+        if (idx >= 0 && idx < turns.length) resolvedId = turns[idx];
+      }
+      if (!resolvedId) {
+        this.appendToolOutput(tc.id, "checkpoint.revert requires a valid index (1=most recent) or turnId. Use checkpoint.list to see available turns.", false);
+        this.messages.push({ id: randomUUID(), role: "tool", content: "checkpoint.revert requires a valid index or turnId.", toolCallId: tc.id, ts: Date.now() });
+        return;
+      }
+      const snap = await this.store.load(this.opts.workspaceRoot, resolvedId);
+      if (!snap) {
+        this.appendToolOutput(tc.id, `No checkpoint snapshot found for '${resolvedId}'.`, false);
+        this.messages.push({ id: randomUUID(), role: "tool", content: `No checkpoint snapshot found for '${resolvedId}'.`, toolCallId: tc.id, ts: Date.now() });
+        return;
+      }
+      const { restored, conflicts } = await this.retract(resolvedId);
+      const conflictNote = conflicts.length ? ` (note: ${conflicts.length} file(s) had uncommitted changes since snapshot: ${conflicts.map((f) => `\`${f}\``).join(", ")})` : "";
+      const output = `Reverted to checkpoint ${resolvedId}. Restored ${restored.length} file(s).${conflictNote}`;
+      this.appendToolOutput(tc.id, output, true);
+      this.messages.push({ id: randomUUID(), role: "tool", content: output, toolCallId: tc.id, ts: Date.now() });
+      return;
+    }
+    if (tc.name === "checkpoint.list") {
+      const turns = await this.store.listTurns(this.opts.workspaceRoot);
+      if (turns.length === 0) {
+        this.appendToolOutput(tc.id, "No checkpoints available.", true);
+        this.messages.push({ id: randomUUID(), role: "tool", content: "No checkpoints available.", toolCallId: tc.id, ts: Date.now() });
+        return;
+      }
+      const lines: string[] = [];
+      for (let i = 0; i < turns.length; i++) {
+        const snap = await this.store.load(this.opts.workspaceRoot, turns[i]);
+        if (snap) {
+          const files = Object.keys(snap.files).join(", ") || "(none)";
+          lines.push(`${i + 1}. turnId=${turns[i]}  ts=${new Date(snap.ts).toISOString()}  files=${files}`);
+        }
+      }
+      const output = lines.join("\n");
+      this.appendToolOutput(tc.id, output, true);
+      this.messages.push({ id: randomUUID(), role: "tool", content: output, toolCallId: tc.id, ts: Date.now() });
+      return;
+    }
     if (!def) return;
     const target = (tc.args.path as string) ?? (tc.args.file as string);
     if (target && this.opts.enabledTools.has(tc.name)) {
@@ -724,7 +821,7 @@ export class Agent {
   }
   private async truncateToolOutput(output: string, toolName: string): Promise<string> {
     if (output.length <= TOOL_OUTPUT_MAX_CHARS) return output;
-    const dir = path.join(this.opts.workspaceRoot, ".arc", "tool_outputs");
+    const dir = path.join(getWorkspaceArcDir(this.opts.workspaceRoot), "tool_outputs");
     await fs.mkdir(dir, { recursive: true });
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const name = toolName.replace(/[^a-zA-Z0-9_.-]/g, "_");
@@ -785,6 +882,9 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
       case "shell.backgroundRun": return `Background command failed: ${clip(String(args.command ?? ""))}`;
       case "shell.check": return `Failed to check process ${args.id ?? ""}`;
       case "shell.write": return `Failed to write to process ${args.id ?? ""}`;
+      case "shell.customRun": return `Failed to create custom run ${String(args.name ?? "")}`;
+      case "shell.editCustomRun": return `Failed to edit custom run ${String(args.id ?? "")}`;
+      case "shell.runCustomRun": return `Custom run ${String(args.id ?? "").slice(0, 12)} failed`;
       case "lsp.problems": return "Failed to check problems";
       case "lsp.problemsFor": return `Failed to check ${path}`;
       case "todo.write": return "Failed to update plan";
@@ -805,6 +905,8 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
       case "mcp.prompts/get": return `Failed to get MCP prompt ${args.name ?? ""}`;
       case "subagent.spawn": return `Subagent ${args.name ?? ""} failed`;
       case "handoff": return `Handoff failed`;
+      case "checkpoint.revert": return `Failed to revert to ${String(args.turnId ?? args.index ?? "")}`;
+      case "checkpoint.list": return "Failed to list checkpoints";
       case "file.semanticSearch": return `Semantic search failed: ${clip(String(args.query ?? ""))}`;
       case "webfetch": return `Failed to fetch ${clip(String(args.url ?? ""))}`;
       default: return `Failed: ${name}`;
@@ -820,6 +922,9 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
     case "shell.backgroundRun": return `Started ${clip(String(args.command ?? ""))}`;
     case "shell.check": return `Checked process ${args.id ?? ""}`;
     case "shell.write": return `Wrote to process ${args.id ?? ""}`;
+    case "shell.customRun": return `Created custom run ${clip(String(args.name ?? ""), 40)}`;
+    case "shell.editCustomRun": return `Edited custom run ${String(args.id ?? "").slice(0, 12)}`;
+    case "shell.runCustomRun": return `Ran custom run ${String(args.id ?? "").slice(0, 12)}`;
     case "lsp.problems": return "Checked workspace problems";
     case "lsp.problemsFor": return `Checked problems in ${path}`;
     case "todo.write": return "Updated plan";
@@ -839,6 +944,8 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
     case "mcp.prompts/list": return `Listed MCP prompts on ${args.server ?? ""}`;
     case "mcp.prompts/get": return `Fetched MCP prompt ${args.name ?? ""}`;
     case "subagent.spawn": return `Spawned subagent ${args.name ?? ""}`;
+    case "checkpoint.revert": return `Reverted to turn ${String(args.turnId ?? args.index ?? "").slice(0, 12)}`;
+    case "checkpoint.list": return "Listed checkpoints";
     case "subagent.askParent": return `Asked parent: ${clip(String(args.question ?? ""), 80)}`;
     case "handoff": return `Handed off (${args.direction ?? "escalate"})`;
     case "clarification.askUser": return `Asked: ${clip(String(args.question ?? ""), 80)}`;
@@ -855,6 +962,26 @@ function summarizeInProcess(msgs: ChatMessage[]): string {
     else if (m.role === "user") lines.push(`- [user]: ${m.content.slice(0, 120)}`);
   }
   return lines.join("\n");
+}
+function shouldPlanFirst(text: string): boolean {
+  if (text.length < 120) return false;
+  const lower = text.toLowerCase();
+  let score = 0;
+  const featureWords = ["feature", "refactor", "component", "page", "screen", "module", "build a", "create a", "implement", "migrate"];
+  for (const w of featureWords) {
+    if (lower.includes(w)) { score += 2; break; }
+  }
+  const scopeWords = ["across", "multiple", "several", "all", "entire", "every"];
+  for (const w of scopeWords) {
+    if (lower.includes(w)) score++;
+  }
+  const fileMentions = text.match(/\.(tsx?|jsx?|css|html|json|md)/g);
+  if (fileMentions && fileMentions.length >= 2) score += 2;
+  const pathMentions = text.match(/src\//g);
+  if (pathMentions && pathMentions.length >= 2) score += 2;
+  const bulletCount = (text.match(/^[*-]\s/gm) || []).length;
+  if (bulletCount >= 3) score += 2;
+  return score >= 3;
 }
 function renderForSummary(msgs: ChatMessage[]): string {
   const out: string[] = [];

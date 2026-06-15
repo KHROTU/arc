@@ -9,7 +9,7 @@ export interface ApplyEditResult {
   ok: boolean;
   after: string;
   matches: number;
-  strategy: "exact" | "trim" | "blank-collapse" | "fuzzy" | "regex" | "append";
+  strategy: "exact" | "trim" | "blank-collapse" | "fuzzy" | "regex" | "append" | "write";
   diff: Change[];
   error?: string;
 }
@@ -83,13 +83,12 @@ export function applyEdit(input: ApplyEditInput): ApplyEditResult {
     return applyEdit({ before, search: diff.search, replace: diff.replace, replaceAll });
   }
   if (!search) {
-    const after = before + replace;
     return {
       ok: true,
-      after,
+      after: replace,
       matches: 1,
-      strategy: "append",
-      diff: diffLines(before, after),
+      strategy: "write",
+      diff: diffLines(before, replace),
     };
   }
   if (before.includes(search)) {

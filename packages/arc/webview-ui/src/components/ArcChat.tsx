@@ -4,8 +4,9 @@ import { Settings2, Plus, Trash2, Pencil, Maximize2, X, FoldVertical, HelpCircle
 import { motion, AnimatePresence } from "framer-motion";
 import ArcProcessUI, { type ProcessStep } from "./AgentProcess";
 import Composer from "./Composer";
+import ModelPicker from "./ModelPicker";
 import SettingsModal from "./SettingsView";
-import type { ModelDescriptor, ModelTier, TurnUsage, ChatMessage, ProviderConfig } from "@arc/host/protocol";
+import type { ModelDescriptor, TurnUsage, ChatMessage, ProviderConfig } from "@arc/host/protocol";
 import { useArcLogo, swapOnError } from "../hooks/useArcLogo";
 import { renderMarkdown } from "../util/markdown";
 import type { RpcClient } from "../rpc";
@@ -14,10 +15,12 @@ type Props = {
   client: RpcClient;
   monoLogo: string;
   prideLogo: string;
+  monoLogoText: string;
+  prideLogoText: string;
   prideActive: boolean;
   variant: "sidebar" | "fullscreen";
+  version: string;
 };
-const TIER_LABEL: Record<ModelTier, string> = { free: "free", light: "light", default: "default", heavy: "heavy" };
 const WAVE_BAR = { transform: "scaleY(0.28)" };
 function WaveSpinner() {
   return (
@@ -45,7 +48,7 @@ function RippleSpinner() {
     </svg>
   );
 }
-export default function ArcChat({ client, monoLogo, prideLogo, prideActive, variant }: Props) {
+export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, prideLogoText, prideActive, variant, version }: Props) {
   const logoUri = useArcLogo(monoLogo, prideLogo, prideActive);
   const [chats, setChats] = useState<ChatMeta[]>([]);
   const [activeId, setActiveId] = useState<string>("");
@@ -69,6 +72,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
   const [showSettings, setShowSettings] = useState(false);
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [approval, setApproval] = useState<{ id: string; description: string; kind: string } | null>(null);
+  const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const pendingTextRef = useRef<{ id: string; text: string } | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -149,6 +153,8 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
           setStreaming({ id: "pending", text: "" }); setShowOnboarding(false); setLastTurnError(null); break;
         case "session/turnEnd": cancelStreamFlush(); setStreaming(null); break;
         case "session/clarification": setClarification({ id: e.id, question: e.question, options: e.options }); break;
+        case "session/guidance":
+          break;
         case "session/handoff":
           setHandoff({ from: e.fromModel, to: e.toModel, reason: e.reason });
           setTimeout(() => setHandoff(null), 2400);
@@ -191,6 +197,10 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
     if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
   }, [steps, streaming, clarification, messages]);
   const send = (text: string, attachments?: { uri: string; preview?: string }[]) => {
+    if (streaming) {
+      setQueuedMessage(text);
+      return;
+    }
     setShowOnboarding(false);
     setHasEverSent(true);
     setLastTurnError(null);
@@ -200,6 +210,15 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
     client.send({ type: "chat/send", text, attachments });
   };
   const stop = () => client.send({ type: "chat/stop" });
+  const guide = (text: string) => client.send({ type: "chat/guidance", text });
+  const cancelQueue = () => setQueuedMessage(null);
+  useEffect(() => {
+    if (!streaming && queuedMessage) {
+      const text = queuedMessage;
+      setQueuedMessage(null);
+      send(text);
+    }
+  }, [streaming]);
   const newChat = () => { setShowOnboarding(true); client.send({ type: "chat/new" }); };
   const switchChat = (id: string) => client.send({ type: "chat/switch", chatId: id });
   const renameChat = (id: string, title: string) => client.send({ type: "chat/rename", chatId: id, title });
@@ -311,13 +330,12 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
             {sidebarCollapsed ? <PanelLeft size={14} /> : <PanelLeftClose size={14} />}
           </button>
         )}
-        <div className="arc-model">
-          <select className="arc-modelpicker" value={currentModel} onChange={(e) => selectModel(e.target.value)}>
-            {models.length === 0 && <option value="">no models — open settings</option>}
-            {models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-          </select>
-          {cur && <span className={`arc-tier arc-tier-${cur.tier}`}>{TIER_LABEL[cur.tier]}</span>}
-        </div>
+        <ModelPicker
+          models={models}
+          currentModelId={currentModel}
+          onSelect={selectModel}
+          variant={variant}
+        />
         <span className="arc-topbar-spacer" />
         <ContextMeter pct={pct} />
         <span className="arc-topbar-cost" title="This chat's spend">${chatCost.toFixed(3)}</span>
@@ -474,8 +492,11 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
               key={activeId}
               onSend={send}
               onStop={stop}
+              onGuidance={guide}
               streaming={!!streaming}
               pendingAttachment={pendingAttachment}
+              queuedText={queuedMessage}
+              onCancelQueue={cancelQueue}
             />
           </footer>
         </main>
@@ -488,6 +509,9 @@ export default function ArcChat({ client, monoLogo, prideLogo, prideActive, vari
           providers={providers}
           monoLogo={monoLogo}
           prideLogo={prideLogo}
+          monoLogoText={monoLogoText}
+          prideLogoText={prideLogoText}
+          version={version}
         />
       )}
     </div>

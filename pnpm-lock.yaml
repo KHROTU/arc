@@ -26,6 +26,9 @@ importers:
       glob:
         specifier: ^13.0.6
         version: 13.0.6
+      playwright:
+        specifier: 1.55.1
+        version: 1.55.1
       sharp:
         specifier: ^0.35.1
         version: 0.35.1
@@ -3376,15 +3379,13 @@ snapshots:
 
   picocolors@1.1.1: {}
 
-  playwright-core@1.55.1:
-    optional: true
+  playwright-core@1.55.1: {}
 
   playwright@1.55.1:
     dependencies:
       playwright-core: 1.55.1
     optionalDependencies:
       fsevents: 2.3.2
-    optional: true
 
   postcss@8.5.15:
     dependencies:
