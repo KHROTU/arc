@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { Agent } from "../src/agent/agent";
 import { ModelRegistry } from "../src/routing/registry";
 import { CheckpointStore } from "../src/checkpoint/store";
+import { ModeRegistry } from "../src/modes/index";
 import type { AgentEventSink } from "../src/agent/agent";
 import type { ProcessStep, TodoItem } from "../src/protocol/process";
 import type { ChatMessage } from "../src/protocol/protocol";
@@ -41,6 +42,8 @@ describe("Agent post-edit feedback loop", () => {
       systemPrompt: "you are arc",
       enabledTools: new Set(["file.read", "file.edit", "todo.write"]),
       workspaceRoot: tmp,
+      mode: "code",
+      modeRegistry: new ModeRegistry(),
       isMain: true,
       toolContext: {
       },

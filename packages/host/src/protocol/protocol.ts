@@ -53,6 +53,7 @@ export interface ChatMessage {
   toolCalls?: ToolCall[];
   ts: number;
   meta?: { modelId: string; providerId: string; tier: ModelTier };
+  images?: { type: string; image_url: { url: string } }[];
 }
 export interface ToolCall {
   id: string;
@@ -75,7 +76,7 @@ export interface TurnRecord {
   retracted?: boolean;
 }
 export type HostMsg =
-  | { type: "session/init"; sessionId: string; chatId?: string; models: ModelDescriptor[]; currentModelId: string }
+  | { type: "session/init"; sessionId: string; chatId?: string; models: ModelDescriptor[]; currentModelId: string; modes?: { slug: string; description: string }[]; currentMode?: string }
   | { type: "session/message"; message: ChatMessage; sessionId?: string }
   | { type: "session/assistantText"; id: string; text: string; sessionId?: string }
   | { type: "session/steps"; steps: ProcessStep[]; sessionId?: string }
@@ -95,13 +96,15 @@ export type HostMsg =
   | { type: "provider/list"; providers: ProviderConfig[] }
   | { type: "config/get"; value: unknown; inReplyTo: string }
   | { type: "mcp/list"; servers: { name: string; enabled: boolean; transport: "stdio" | "http"; toolCount: number }[] }
+  | { type: "chat/searchResults"; results: { id: string; title: string; matches: string[] }[] }
   | { type: "ui/showSettings" }
   | { type: "approval/request"; id: string; description: string; kind: "shell" | "destructive" }
+  | { type: "autoApproveState"; active: boolean }
   | { type: "search/indexProgress"; filesScanned: number; filesIndexed: number; chunksEmbedded: number; errors: number }
   | { type: "session/guidance"; text: string }
   | { type: "error"; message: string; code?: "timeout" | "rate_limit" | "auth" | "provider" | "malformed" | "network" | "aborted"; inReplyTo?: string };
 export type WebviewMsg =
-  | { type: "chat/send"; text: string; attachments?: { uri: string; preview?: string }[] }
+  | { type: "chat/send"; text: string; attachments?: { uri: string; preview?: string }[]; images?: string[] }
   | { type: "chat/guidance"; text: string }
   | { type: "chat/stop" }
   | { type: "chat/retract"; turnId: string }
@@ -137,4 +140,9 @@ export type WebviewMsg =
   | { type: "ui/showSettings" }
   | { type: "approval/response"; id: string; allowed: boolean }
   | { type: "search/reindex" }
-  | { type: "model/bindUpdate"; modelId: string; providerId: string; remoteModel?: string };
+  | { type: "model/bindUpdate"; modelId: string; providerId: string; remoteModel?: string }
+  | { type: "mode/select"; mode: string }
+  | { type: "autoApprove/toggle" }
+  | { type: "approval/response"; id: string; allowed: boolean; rememberCommand?: string; rememberPrefix?: string }
+  | { type: "chat/search"; query: string }
+  | { type: "chat/resume"; id: string };

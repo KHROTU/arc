@@ -2,7 +2,7 @@
   "name": "arc",
   "displayName": "Arc",
   "description": "Agentic coding extension with tiered model routing, subagents, handoff, and per-file change snapshots.",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "publisher": "khrotu",
   "license": "Apache-2.0",
   "engines": {
@@ -160,6 +160,18 @@
           "enum": ["first-words", "ollama"],
           "default": "first-words",
           "description": "Method for generating chat titles. 'first-words' uses the first 40 chars of the first message. 'ollama' uses the titlegemma model via Ollama."
+        },
+        "arc.model.multimodalIds": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "List of model IDs that support multimodal (vision) input."
+        },
+        "arc.image.describeModel": {
+          "type": "string",
+          "enum": ["none", "minicpm-v:1b", "ministral-3:8b-cloud", "gemma4:31b-cloud"],
+          "default": "none",
+          "description": "Model to describe attached images when the active model isn't multimodal. Uses local Ollama or Ollama Cloud."
         }
       }
     },

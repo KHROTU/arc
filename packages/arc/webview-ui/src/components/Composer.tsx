@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useLayoutEffect } from "react
 import { ArrowUp, Paperclip, Square, X } from "lucide-react";
 type Attachment = { uri: string; preview?: string };
 type Props = {
-  onSend: (text: string, attachments?: Attachment[]) => void;
+  onSend: (text: string, attachments?: Attachment[], images?: string[]) => void;
   onStop?: () => void;
   onGuidance?: (text: string) => void;
   streaming?: boolean;
@@ -19,6 +19,8 @@ export default function Composer({
 }: Props) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [images, setImages] = useState<string[]>([]);
+  const [enlarged, setEnlarged] = useState<string | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => { if (autoFocus) ref.current?.focus(); }, [autoFocus]);
   useLayoutEffect(() => {
@@ -38,9 +40,10 @@ export default function Composer({
   const submit = useCallback(() => {
     const t = text.trim();
     if (!t || disabled) return;
-    onSend(t, attachments.length ? attachments : undefined);
+    onSend(t, attachments.length ? attachments : undefined, images.length ? images : undefined);
     setText("");
     setAttachments([]);
+    setImages([]);
   }, [text, disabled, streaming, attachments, onSend]);
   const attach = () => {
     if (onAttach) return onAttach();
@@ -74,10 +77,37 @@ export default function Composer({
           ))}
         </div>
       )}
+      {images.length > 0 && (
+        <div className="arc-composer-images">
+          {images.map((dataUrl, i) => (
+            <span key={i} className="arc-image-chip">
+              <img src={dataUrl} alt={`Pasted ${i + 1}`} onClick={() => setEnlarged(dataUrl)} />
+              <button
+                className="arc-image-chip-x"
+                onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
+              ><X size={14} /></button>
+            </span>
+          ))}
+        </div>
+      )}
       <textarea
         ref={ref}
         value={text}
         onChange={(e) => setText(e.target.value)}
+        onPaste={(e) => {
+          const items = e.clipboardData?.items;
+          if (!items) return;
+          for (let i = 0; i < items.length; i++) {
+            if (items[i].type.startsWith("image/")) {
+              const blob = items[i].getAsFile();
+              if (!blob) continue;
+              const reader = new FileReader();
+              reader.onload = () => setImages((prev) => [...prev, reader.result as string]);
+              reader.readAsDataURL(blob);
+              e.preventDefault();
+            }
+          }
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter" && e.ctrlKey && onGuidance) {
             e.preventDefault();
@@ -107,6 +137,11 @@ export default function Composer({
           </button>
         )}
       </div>
+      {enlarged && (
+        <div className="arc-image-overlay" onClick={() => setEnlarged(null)}>
+          <img src={enlarged} alt="Enlarged" />
+        </div>
+      )}
     </div>
   );
 }

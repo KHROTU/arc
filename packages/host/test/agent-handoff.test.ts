@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { Agent, type AgentEventSink } from "../src/agent/agent";
 import { ModelRegistry } from "../src/routing/registry";
 import { CheckpointStore } from "../src/checkpoint/store";
+import { ModeRegistry } from "../src/modes/index";
 import type { ChatMessage } from "../src/protocol/protocol";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -65,10 +66,11 @@ describe("Agent handoff conversation integrity", () => {
     }) as unknown as typeof fetch;
     try {
       const agent = new Agent(registry, store, sink, {
-        sessionID: "s1",
         isMain: true,
         systemPrompt: "You are a test assistant.",
         enabledTools: new Set(["handoff"]),
+        mode: "code",
+        modeRegistry: new ModeRegistry(),
         toolContext: {},
       });
       await agent.send("please hand off");

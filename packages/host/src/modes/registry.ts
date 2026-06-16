@@ -1,0 +1,163 @@
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { getArcDir, getWorkspaceArcDir } from "../arc-dir.js";
+import { DEFAULT_MODES } from "./defaults.js";
+import type { Mode, ModeSource } from "./types.js";
+export type { Mode, ModeSource } from "./types.js";
+export class ModeRegistry {
+  private modes = new Map<string, Mode>();
+  private sourceMap = new Map<string, ModeSource>();
+  private workspaceRoot: string;
+  constructor(workspaceRoot?: string) {
+    this.workspaceRoot = workspaceRoot ?? "";
+    for (const m of DEFAULT_MODES) {
+      this.modes.set(m.slug, { ...m });
+      this.sourceMap.set(m.slug, "builtin");
+    }
+  }
+  async load(): Promise<void> {
+    if (this.workspaceRoot) {
+      await this.loadFromDir(
+        path.join(getWorkspaceArcDir(this.workspaceRoot), "modes"),
+        "workspace",
+      );
+    }
+    await this.loadFromDir(path.join(getArcDir(), "modes"), "global");
+  }
+  private async loadFromDir(dir: string, source: ModeSource): Promise<void> {
+    let entries: string[];
+    try {
+      entries = await fs.readdir(dir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith(".toml")) continue;
+      const slug = entry.replace(/\.toml$/, "");
+      const filePath = path.join(dir, entry);
+      try {
+        const raw = await fs.readFile(filePath, "utf-8");
+        const parsed = parseSimpleToml(raw);
+        if (!parsed.slug && !slug) continue;
+        const resolvedSlug = (parsed.slug as string) || slug;
+        const base = DEFAULT_MODES.find((m) => m.slug === resolvedSlug);
+        const mode = this.buildOverride(base, parsed, resolvedSlug, source);
+        if (mode) {
+          this.modes.set(resolvedSlug, mode);
+          this.sourceMap.set(resolvedSlug, source);
+        }
+      } catch {
+      }
+    }
+  }
+  private buildOverride(
+    base: Mode | undefined,
+    parsed: Record<string, unknown>,
+    slug: string,
+    _source: ModeSource,
+  ): Mode | undefined {
+    const roleDefinition = (parsed.roleDefinition as string) ?? base?.roleDefinition;
+    const description = (parsed.description as string) ?? base?.description ?? "";
+    const whenToUse = (parsed.whenToUse as string) ?? base?.whenToUse ?? "";
+    const allowedTools = Array.isArray(parsed.allowedTools)
+      ? (parsed.allowedTools as string[])
+      : base?.allowedTools ?? [];
+    const writeGlob = (parsed.writeGlob as string) ?? base?.writeGlob;
+    if (!roleDefinition && allowedTools.length === 0) return undefined;
+    if (!roleDefinition && base) {
+      return { ...base, writeGlob: writeGlob ?? base.writeGlob, description, whenToUse };
+    }
+    return {
+      slug,
+      roleDefinition: roleDefinition ?? "",
+      allowedTools,
+      writeGlob,
+      description,
+      whenToUse,
+    };
+  }
+  get(slug: string): Mode | undefined {
+    return this.modes.get(slug);
+  }
+  list(): Mode[] {
+    return [...this.modes.values()];
+  }
+  sourceOf(slug: string): ModeSource | undefined {
+    return this.sourceMap.get(slug);
+  }
+  defaultSlug(): string {
+    return "code";
+  }
+  resolveDefault(userRequestedSlug?: string): string {
+    if (userRequestedSlug && this.modes.has(userRequestedSlug)) {
+      return userRequestedSlug;
+    }
+    return this.defaultSlug();
+  }
+}
+function parseSimpleToml(raw: string): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  const lines = raw.split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eqIdx = trimmed.indexOf("=");
+    if (eqIdx === -1) continue;
+    const key = trimmed.slice(0, eqIdx).trim();
+    const valueRaw = trimmed.slice(eqIdx + 1).trim();
+    const value = parseTomlValue(valueRaw);
+    if (value !== undefined) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+function parseTomlValue(raw: string): unknown {
+  if (raw.startsWith('"') && raw.endsWith('"')) {
+    return raw.slice(1, -1).replace(/\\"/g, '"').replace(/\\n/g, "\n").replace(/\\\\/g, "\\");
+  }
+  if (raw.startsWith("'") && raw.endsWith("'")) {
+    return raw.slice(1, -1);
+  }
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  if (/^-?\d+(\.\d+)?$/.test(raw)) return Number(raw);
+  if (raw.startsWith("[") && raw.endsWith("]")) {
+    const inner = raw.slice(1, -1).trim();
+    if (!inner) return [];
+    const items: string[] = [];
+    let depth = 0;
+    let start = 0;
+    let inString = false;
+    let stringChar = "";
+    for (let i = 0; i < inner.length; i++) {
+      const ch = inner[i];
+      if (inString) {
+        if (ch === stringChar) inString = false;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        inString = true;
+        stringChar = ch;
+        continue;
+      }
+      if (ch === "[" || ch === "{") { depth++; continue; }
+      if (ch === "]" || ch === "}") { depth--; continue; }
+      if (ch === "," && depth === 0) {
+        const item = inner.slice(start, i).trim();
+        if (item) items.push(stripQuotes(item));
+        start = i + 1;
+      }
+    }
+    const last = inner.slice(start).trim();
+    if (last) items.push(stripQuotes(last));
+    return items;
+  }
+  return raw;
+}
+function stripQuotes(s: string): string {
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    return s.slice(1, -1);
+  }
+  return s;
+}

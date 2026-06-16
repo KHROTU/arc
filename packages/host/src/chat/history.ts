@@ -89,4 +89,25 @@ export class ChatHistory {
   setSteps(id: string, s: unknown[]): void {
     this.steps[id] = s;
   }
+  search(query: string): { chat: ChatMeta; matches: { index: number; text: string }[] }[] {
+    const lower = query.toLowerCase();
+    const results: { chat: ChatMeta; matches: { index: number; text: string }[] }[] = [];
+    for (const chat of this.chats) {
+      const titleMatch = chat.title.toLowerCase().includes(lower);
+      const msgs = this.messages[chat.id] ?? [];
+      const matches: { index: number; text: string }[] = [];
+      for (let i = 0; i < msgs.length; i++) {
+        const m = msgs[i] as { role?: string; content?: string; toolCallId?: string };
+        if (m.role === "tool") continue;
+        if (m.role === "assistant" && (m as any).toolCalls?.length) continue;
+        if (m.content && m.content.toLowerCase().includes(lower)) {
+          matches.push({ index: i, text: m.content.slice(0, 200) });
+        }
+      }
+      if (titleMatch || matches.length > 0) {
+        results.push({ chat, matches: titleMatch && matches.length === 0 ? [{ index: -1, text: chat.title }] : matches });
+      }
+    }
+    return results;
+  }
 }

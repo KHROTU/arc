@@ -86,7 +86,51 @@ function Section({ title, description, action, children }: { title: string; desc
   );
 }
 function TierDot({ tier }: { tier: ModelTier }) {
-  return <span className={`arc-tier-dot arc-tier-dot-${tier}`} title={tier} />;
+  return <span className={`arc-tier-dot arc-tier-${tier}`} />;
+}
+function ImageProcessingSection({ client }: { client: RpcClient }) {
+  const [describer, setDescriber] = useState<string>("none");
+  useEffect(() => {
+    void client.request("arc.image.describeModel").then((v) => setDescriber(typeof v === "string" ? v : "none"));
+  }, [client]);
+  const models = [
+    { value: "none", label: "none" },
+    { value: "minicpm-v:1b", label: "minicpm-v:1b" },
+    { value: "ministral-3:8b-cloud", label: "ministral-3:8b-cloud" },
+    { value: "gemma4:31b-cloud", label: "gemma4:31b-cloud" },
+  ];
+  return (
+    <ul className="arc-rows">
+      <li className="arc-row"><div className="arc-row-main">
+        <span className="arc-row-label">Describe images with</span>
+        <span className="arc-row-meta">model used to describe images for non-VL models</span>
+        <span className="arc-spacer" />
+        <select className="arc-input arc-input-sm" value={describer} onChange={(e) => { const v = e.target.value; setDescriber(v); client.send({ type: "config/set", key: "arc.image.describeModel", value: v }); }}>
+          {models.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+        </select>
+      </div></li>
+    </ul>
+  );
+}
+function ModelMultimodalCheckbox({ modelId, client }: { modelId: string; client: RpcClient }) {
+  const [checked, setChecked] = useState(false);
+  useEffect(() => {
+    void client.request("arc.model.multimodalIds").then((v) => {
+      const ids = Array.isArray(v) ? v as string[] : [];
+      setChecked(ids.includes(modelId));
+    });
+  }, [client, modelId]);
+  return (
+    <input
+      type="checkbox"
+      checked={checked}
+      onChange={(e) => {
+        const v = e.currentTarget.checked;
+        setChecked(v);
+        client.send({ type: "config/set", key: "arc.model.multimodal.toggle", value: { modelId, enabled: v } });
+      }}
+    />
+  );
 }
 function ModelsTab({ client, providers, models, onSwitchTab }: { client: RpcClient; providers: ProviderConfig[]; models: ModelDescriptor[]; onSwitchTab: (t: Tab) => void }) {
   const [adding, setAdding] = useState(false);
@@ -176,6 +220,10 @@ function ModelsTab({ client, providers, models, onSwitchTab }: { client: RpcClie
                 <button className="arc-iconbtn" onClick={() => client.send({ type: "model/remove", modelId: m.id })} title="Remove model"><Trash2 size={14} /></button>
               </div>
               <div className="arc-row-sub" key={`edit-${m.id}-${m.contextWindow}-${m.maxOutputTokens ?? 0}-${m.costPer1mIn}-${m.costPer1mOut}`}>
+                <label className="arc-check" style={{ marginRight: 8 }}>
+                  <ModelMultimodalCheckbox modelId={m.id} client={client} />
+                  <span style={{ fontSize: 12 }}>multimodal</span>
+                </label>
                 <input className="arc-input arc-input-sm" type="number" placeholder="context window" defaultValue={m.contextWindow || ""} onBlur={(e) => { const v = Number(e.target.value); if (v && v !== m.contextWindow) { client.send({ type: "model/remove", modelId: m.id }); client.send({ type: "model/add", model: { ...m, contextWindow: v } }); } }} onKeyDown={(e) => e.stopPropagation()} />
                 <input className="arc-input arc-input-sm" type="number" placeholder="max output tokens" defaultValue={m.maxOutputTokens ?? ""} onBlur={(e) => { const v = Number(e.target.value) || undefined; if (v !== (m.maxOutputTokens ?? undefined)) { client.send({ type: "model/remove", modelId: m.id }); client.send({ type: "model/add", model: { ...m, maxOutputTokens: v } }); } }} onKeyDown={(e) => e.stopPropagation()} />
                 <input className="arc-input arc-input-sm" type="number" step="0.0001" placeholder="$/1M in" defaultValue={m.costPer1mIn ?? ""} onBlur={(e) => { const v = Number(e.target.value); if (v !== m.costPer1mIn) { client.send({ type: "model/remove", modelId: m.id }); client.send({ type: "model/add", model: { ...m, costPer1mIn: v } }); } }} onKeyDown={(e) => e.stopPropagation()} />
@@ -416,6 +464,9 @@ function BehaviorTab({ client }: { client: RpcClient }) {
             </select>
           </div></li>
         </ul>
+      </Section>
+      <Section title="Image Processing" description="How attached images are handled when the active model is not multimodal.">
+        <ImageProcessingSection client={client} />
       </Section>
       <Section title="System prompts" description="Higher-precedence content overrides lower. Variables {{workspace}}, {{os}}, {{date}} are supported.">
         <ul className="arc-rows">

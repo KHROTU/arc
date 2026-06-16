@@ -291,6 +291,84 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
       options: { type: "array", items: { type: "string" }, description: "2-4 answer choices." },
     }, ["question"]),
   },
+  "mode.switch": {
+    description: "Switch the active agent mode at runtime. Use to transition between plan, code, ask, and debug modes as the task evolves.",
+    parameters: obj({
+      slug: str("The mode slug to switch to (plan, code, ask, debug, or a user-defined mode)."),
+    }, ["slug"]),
+  },
+  "skill.read": {
+    description: "Read a skill's full instructions by name. Skills provide specialized workflows, tool integrations, and domain expertise.",
+    parameters: obj({
+      name: str("The skill name to read (as listed in the Available Skills section of the system prompt)."),
+    }, ["name"]),
+  },
+  "skill.use": {
+    description: "Load a skill's full instructions and enumerate its available scripts, references, and assets. Use this over skill.read when you need to know what bundled resources (scripts, references, assets) the skill provides.",
+    parameters: obj({
+      name: str("The skill name to load."),
+    }, ["name"]),
+  },
+  "memory.list": {
+    description: "List stored memories from MEMORY.md.",
+    parameters: obj({ limit: num("Max entries to return (default 20).") }),
+  },
+  "memory.edit": {
+    description: "Edit a memory by its index from memory.list.",
+    parameters: obj({
+      index: num("Memory index to edit."),
+      content: str("New content for the memory."),
+    }, ["index", "content"]),
+  },
+  "memory.delete": {
+    description: "Delete a memory by its index from memory.list.",
+    parameters: obj({
+      index: num("Memory index to delete."),
+    }, ["index"]),
+  },
+  "memory.add": {
+    description: "Persist a durable fact, preference, or gotcha to MEMORY.md.",
+    parameters: obj({
+      category: str("Category: preferences, architecture, or gotchas."),
+      content: str("The memory content to store."),
+    }, ["category", "content"]),
+  },
+  "rule.list": {
+    description: "List all available rules with their glob patterns and descriptions.",
+    parameters: obj({}, []),
+  },
+  "rule.read": {
+    description: "Read a rule's full body by name.",
+    parameters: obj({ name: str("Rule name to read.") }, ["name"]),
+  },
+  "rule.create": {
+    description: "Create a new .arc/rules/<name>.md rule file.",
+    parameters: obj({
+      name: str("Rule name (filename without .md)."),
+      glob: str("File glob pattern to match (e.g. *.ts)."),
+      description: str("What this rule governs."),
+      body: str("Markdown body with the rule instructions."),
+    }, ["name", "glob", "description", "body"]),
+  },
+  "browser.hover": {
+    description: "Hover over an element matching a CSS selector.",
+    parameters: obj({ selector: str("CSS selector of the element to hover.") }, ["selector"]),
+  },
+  "browser.scroll": {
+    description: "Scroll the page by pixel offset or to an element matching a CSS selector.",
+    parameters: obj({
+      pixels: num("Pixel offset to scroll (positive = down, negative = up). Defaults to 300."),
+      selector: str("Optional CSS selector to scroll into view."),
+    }),
+  },
+  "browser.waitFor": {
+    description: "Wait for a selector to appear, a URL to match, or a load state before proceeding.",
+    parameters: obj({
+      selector: str("CSS selector to wait for."),
+      url: str("URL pattern to wait for."),
+      state: str("Load state: networkidle, load, or domcontentloaded. Defaults to networkidle."),
+    }),
+  },
 };
 export function buildToolSpecs(
   enabled: Iterable<string>,

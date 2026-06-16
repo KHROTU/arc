@@ -188,5 +188,15 @@ function toOpenAIMessage(m: import("../protocol/protocol.js").ChatMessage) {
   if (m.role === "assistant" && m.thinking) {
     return { role: "assistant", reasoning_content: m.thinking, content: m.content };
   }
+  const images = (m as any).images as { type: string; image_url: { url: string } }[] | undefined;
+  if (m.role === "user" && images?.length) {
+    return {
+      role: "user",
+      content: [
+        { type: "text", text: m.content },
+        ...images.map((img) => ({ type: "image_url", image_url: img.image_url })),
+      ],
+    };
+  }
   return { role: m.role, content: m.content };
 }

@@ -5,6 +5,8 @@ import * as path from "node:path";
 import { FileEditor } from "../edit/editor.js";
 import { getSkillsDir } from "../arc-dir.js";
 import { runPreWriteHooks, runPostEditHooks } from "../hooks/hooks.js";
+import { getSandboxArgs } from "../sandbox/sandbox.js";
+import type { SandboxProfile } from "../sandbox/sandbox.js";
 import type { DiffHunk } from "../protocol/process.js";
 const pexec = promisify(exec);
 const IS_WIN = process.platform === "win32";
@@ -48,20 +50,13 @@ async function runAfterCmd(cmd: string | undefined, cwd: string): Promise<{ comm
 async function runSingleCommand(
   cmd: string,
   cwd: string,
-  ctx: ToolContext,
+  _ctx: ToolContext,
   onChunk?: (stream: "stdout" | "stderr", text: string) => void,
 ): Promise<{ ok: boolean; output: string }> {
-  const baseCmd = cmd.trim().split(/\s+/)[0] || "";
-  const blocked = ctx.shell.policy === "off"
-    ? true
-    : ctx.shell.policy === "allowlist" && !ctx.shell.allowlist.includes(baseCmd);
-  if (blocked) {
-    if (!ctx.requestApproval) return { ok: false, output: `Shell command '${baseCmd}' not in allowlist and no approval handler set.` };
-    const ok = await ctx.requestApproval(`Run custom run command?\n\n${cmd}`);
-    if (!ok) return { ok: false, output: "Denied by user." };
-  }
+  const sandboxArgs = _ctx.sandboxProfile ? getSandboxArgs(_ctx.sandboxProfile, _ctx.workspacePath) : [];
+  const fullCmd = sandboxArgs.length ? sandboxArgs.concat([cmd]).join(" ") : cmd;
   return new Promise((resolve) => {
-    const proc = spawn(cmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    const proc = spawn(fullCmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
     activeProcesses.add(proc);
     let stdout = "";
     let stderr = "";
@@ -92,10 +87,18 @@ async function runSingleCommand(
     });
   });
 }
+import type { ApprovalsConfig, SessionApprovals } from "../approvals/index.js";
+import type { SkillRegistry } from "../skills/index.js";
+import type { RuleRegistry } from "../rules/index.js";
 export interface ToolContext {
   root: string;
-  shell: { policy: "always" | "allowlist" | "off"; allowlist: string[] };
+  approvalsConfig: ApprovalsConfig;
+  sessionApprovals: SessionApprovals;
   requestApproval?: (description: string) => Promise<boolean>;
+  addSessionCommand?: (command: string) => void;
+  skillRegistry?: SkillRegistry;
+  ruleRegistry?: RuleRegistry;
+  sandboxProfile?: SandboxProfile;
   problems?: () => Promise<import("../lsp/bridge.js").DiagnosticLite[]>;
   problemsFor?: (file: string) => Promise<import("../lsp/bridge.js").DiagnosticLite[]>;
   summaryForFiles?: (files: string[]) => Promise<{ hasErrors: boolean; hasWarnings: boolean; text: string }>;
@@ -118,6 +121,14 @@ export interface ToolResult {
   runAfter?: { command: string; output: string };
 }
 export type ToolFn = (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
+export function checkWriteGlob(filePath: string, glob: string): { allowed: boolean } {
+  try {
+    const re = new RegExp(glob, "i");
+    return { allowed: re.test(filePath) };
+  } catch {
+    return { allowed: true };
+  }
+}
 export const tools: Record<string, { description: string; fn: ToolFn }> = {
   "file.read": {
     description: "Read a file from the workspace. Args: { path, offset?, limit? }",
@@ -135,7 +146,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const ed = new FileEditor(ctx.root);
       const filePath = String(args.path);
       const replace = String(args.replace);
-      await runPreWriteHooks(filePath, replace);
+      await runPreWriteHooks(filePath, replace, ctx.root);
       const r = await ed.apply(filePath, String(args.search), replace, { replaceAll: !!args.replaceAll });
       const ra = await runAfterCmd(args.runAfter ? String(args.runAfter) : undefined, ctx.workspacePath);
       if (r.ok) {
@@ -157,7 +168,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const ed = new FileEditor(ctx.root);
       const filePath = String(args.path);
       const content = String(args.content);
-      await runPreWriteHooks(filePath, content);
+      await runPreWriteHooks(filePath, content, ctx.root);
       const r = await ed.apply(filePath, "", content);
       const ra = await runAfterCmd(args.runAfter ? String(args.runAfter) : undefined, ctx.workspacePath);
       runPostEditHooks(filePath, ctx.root).catch(() => {});
@@ -196,23 +207,16 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     },
   },
   "shell.run": {
-    description: "Run a shell command. Args: { command, cwd?, timeout? }",
+    description: "Run a shell command in the workspace (subject to approval).",
     fn: async (args, ctx) => {
       const cmd = String(args.command);
-      const baseCmd = cmd.trim().split(/\s+/)[0] || "";
-      const blocked = ctx.shell.policy === "off"
-        ? true
-        : ctx.shell.policy === "allowlist" && !ctx.shell.allowlist.includes(baseCmd);
-      if (blocked) {
-        if (!ctx.requestApproval) return { ok: false, output: `Shell command '${baseCmd}' not in allowlist and no approval handler set.` };
-        const ok = await ctx.requestApproval(`Run shell command?\n\n${cmd}`);
-        if (!ok) return { ok: false, output: "Denied by user." };
-      }
+      const sandboxArgs = ctx.sandboxProfile ? getSandboxArgs(ctx.sandboxProfile, ctx.workspacePath) : [];
+      const fullCmd = sandboxArgs.length ? sandboxArgs.concat([cmd]).join(" ") : cmd;
       const timeoutSec = args.timeout ? Number(args.timeout) : -1;
       const cwd = (args.cwd ? String(args.cwd) : ctx.root) || ctx.root;
       const onChunk = ctx.onChunk;
       return new Promise<ToolResult>((resolve) => {
-        const proc = spawn(cmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+        const proc = spawn(fullCmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
         activeProcesses.add(proc);
         let stdout = "";
         let stderr = "";
@@ -255,18 +259,9 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     },
   },
   "shell.backgroundRun": {
-    description: "Launch a background shell process. Args: { command, cwd? }",
+    description: "Launch a long-running shell process in the background.",
     fn: async (args, ctx) => {
       const cmd = String(args.command);
-      const baseCmd = cmd.trim().split(/\s+/)[0] || "";
-      const blocked = ctx.shell.policy === "off"
-        ? true
-        : ctx.shell.policy === "allowlist" && !ctx.shell.allowlist.includes(baseCmd);
-      if (blocked) {
-        if (!ctx.requestApproval) return { ok: false, output: `Shell command '${baseCmd}' not in allowlist and no approval handler set.` };
-        const ok = await ctx.requestApproval(`Run background shell command?\n\n${cmd}`);
-        if (!ok) return { ok: false, output: "Denied by user." };
-      }
       const cwd = (args.cwd ? String(args.cwd) : ctx.root) || ctx.root;
       try {
         const proc = spawn(cmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
@@ -559,6 +554,104 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       if (!ctx.mcp) return { ok: false, output: "MCP not available." };
       const r = await ctx.mcp.getPrompt(String(a.server), String(a.name), (a.args as Record<string, unknown>) ?? undefined);
       return { ok: r.ok, output: typeof r.output === "string" ? r.output : JSON.stringify(r.output, null, 2) };
+    },
+  },
+  "skill.read": {
+    description: "Read a skill's full SKILL.md body by name. Args: { name }",
+    fn: async (args, ctx) => {
+      if (!ctx.skillRegistry) return { ok: false, output: "Skill registry not available." };
+      const name = String(args.name ?? "");
+      if (!name) return { ok: false, output: "Skill name required." };
+      const meta = ctx.skillRegistry.get(name);
+      if (!meta) return { ok: false, output: `Skill '${name}' not found. Available: ${ctx.skillRegistry.list().map((s) => s.name).join(", ")}` };
+      const body = await ctx.skillRegistry.readBody(name);
+      return { ok: true, output: body ?? "(empty skill)" };
+    },
+  },
+  "memory.list": {
+    description: "List stored memories. Args: { limit? }",
+    fn: async (args, ctx) => {
+      const { loadMemory } = await import("../memory/store.js");
+      const entries = await loadMemory(ctx.root);
+      const limit = args.limit ? Number(args.limit) : 20;
+      const slice = entries.slice(-limit);
+      if (!slice.length) return { ok: true, output: "No memories stored." };
+      return { ok: true, output: slice.map((e, i) => `${entries.length - slice.length + i}. [${e.category}] ${e.content} (${e.createdAt})`).join("\n") };
+    },
+  },
+  "memory.edit": {
+    description: "Edit a memory by index. Args: { index, content }",
+    fn: async (args, ctx) => {
+      const { editMemory } = await import("../memory/store.js");
+      const idx = Number(args.index ?? -1);
+      const content = String(args.content ?? "");
+      const ok = await editMemory(ctx.root, idx, content);
+      return ok ? { ok: true, output: `Memory ${idx} updated.` } : { ok: false, output: `Invalid index ${idx}.` };
+    },
+  },
+  "memory.delete": {
+    description: "Delete a memory by index. Args: { index }",
+    fn: async (args, ctx) => {
+      const { deleteMemory } = await import("../memory/store.js");
+      const idx = Number(args.index ?? -1);
+      const ok = await deleteMemory(ctx.root, idx);
+      return ok ? { ok: true, output: `Memory ${idx} deleted.` } : { ok: false, output: `Invalid index ${idx}.` };
+    },
+  },
+  "rule.list": {
+    description: "List available rules. Args: {}",
+    fn: async (_args, ctx) => {
+      if (!ctx.ruleRegistry) return { ok: false, output: "Rule registry not available." };
+      const rules = ctx.ruleRegistry.list();
+      if (!rules.length) return { ok: true, output: "No rules configured." };
+      return { ok: true, output: rules.map((r) => `- **${r.name}** (${r.scope}): ${r.description} [glob: ${r.glob ?? "*"}]`).join("\n") };
+    },
+  },
+  "rule.read": {
+    description: "Read a rule's full body by name. Args: { name }",
+    fn: async (args, ctx) => {
+      if (!ctx.ruleRegistry) return { ok: false, output: "Rule registry not available." };
+      const rule = ctx.ruleRegistry.get(String(args.name ?? ""));
+      if (!rule) return { ok: false, output: `Rule not found. Available: ${ctx.ruleRegistry.list().map((r) => r.name).join(", ")}` };
+      return { ok: true, output: `# ${rule.name}\n\n**Glob:** ${rule.glob ?? "*"}\n**Scope:** ${rule.scope}\n\n${rule.body}` };
+    },
+  },
+  "rule.create": {
+    description: "Create a new rule. Args: { name, glob, description, body }",
+    fn: async (args, ctx) => {
+      if (!ctx.ruleRegistry) return { ok: false, output: "Rule registry not available." };
+      const name = String(args.name ?? "").trim();
+      if (!name) return { ok: false, output: "Rule name required." };
+      await ctx.ruleRegistry.create(name, String(args.glob ?? "*"), String(args.description ?? ""), String(args.body ?? ""));
+      return { ok: true, output: `Rule '${name}' created.` };
+    },
+  },
+  "browser.hover": {
+    description: "Hover over an element matching a CSS selector.",
+    fn: async (args, ctx) => {
+      const b = await resolveBrowser(ctx.browser);
+      if (!b) return { ok: false, output: "Browser not available." };
+      return b.hover(String(args.selector ?? ""));
+    },
+  },
+  "browser.scroll": {
+    description: "Scroll the page by pixel offset or to a selector.",
+    fn: async (args, ctx) => {
+      const b = await resolveBrowser(ctx.browser);
+      if (!b) return { ok: false, output: "Browser not available." };
+      return b.scroll(args.pixels ? Number(args.pixels) : undefined, args.selector ? String(args.selector) : undefined);
+    },
+  },
+  "browser.waitFor": {
+    description: "Wait for a selector, URL change, or network idle.",
+    fn: async (args, ctx) => {
+      const b = await resolveBrowser(ctx.browser);
+      if (!b) return { ok: false, output: "Browser not available." };
+      return b.waitFor(
+        args.selector ? String(args.selector) : undefined,
+        args.url ? String(args.url) : undefined,
+        args.state ? String(args.state) as "networkidle" | "load" | "domcontentloaded" : undefined,
+      );
     },
   },
 };

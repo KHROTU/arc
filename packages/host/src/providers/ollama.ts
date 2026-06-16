@@ -10,7 +10,7 @@ export const ollamaTransport: Transport = {
       stream: true,
       messages: req.messages.map((m) => {
         if (m.role === "tool") {
-          return { role: "tool", tool_call_id: m.toolCallId, content: m.content };
+          return { role: "tool", tool_name: toApiToolName(toolNameForId(req.messages, m.toolCallId)), content: m.content };
         }
         if (m.role === "assistant" && m.toolCalls?.length) {
           const msg: Record<string, unknown> = { role: "assistant" };
@@ -24,6 +24,10 @@ export const ollamaTransport: Transport = {
         const msg: Record<string, unknown> = { role: m.role };
         if (m.role === "assistant" && m.thinking) msg.thinking = m.thinking;
         msg.content = m.content;
+        const images = (m as any).images as { image_url: { url: string } }[] | undefined;
+        if (m.role === "user" && images?.length) {
+          msg.images = images.map((img) => img.image_url.url.replace(/^data:image\/\w+;base64,/, ""));
+        }
         return msg;
       }),
     };
@@ -60,7 +64,7 @@ export const ollamaTransport: Transport = {
                 : tc.function.arguments ?? {};
               q.push({
                 type: "tool_call",
-                id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                id: String(tc.id ?? `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`),
                 name: fromApiToolName(tc.function.name),
                 args: args ?? {},
               });
@@ -113,4 +117,15 @@ function safeParseArgs(s: string | undefined): Record<string, unknown> | undefin
   } catch {
     return undefined;
   }
+}
+function toolNameForId(messages: readonly import("../protocol/protocol.js").ChatMessage[], callId: string | undefined): string {
+  if (!callId) return "unknown";
+  for (const m of messages) {
+    if (m.role === "assistant" && m.toolCalls) {
+      for (const tc of m.toolCalls) {
+        if (tc.id === callId) return tc.name;
+      }
+    }
+  }
+  return "unknown";
 }

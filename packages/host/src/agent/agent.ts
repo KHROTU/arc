@@ -8,12 +8,15 @@ import { transportFor } from "../providers/transport.js";
 import { CheckpointStore } from "../checkpoint/store.js";
 import { compactAsync, decideCompaction, CompactionTracker } from "../compaction/compaction.js";
 import { defaultPolicy, nextModelForHandoff, type HandoffRecord } from "../routing/handoff.js";
-import { tools as builtinTools, type ToolContext, killActiveProcesses } from "./tools.js";
+import { tools as builtinTools, type ToolContext, killActiveProcesses, checkWriteGlob } from "./tools.js";
 import { buildToolSpecs, isMcpToolSpec, parseMcpToolSpec } from "./tool-specs.js";
 import { SubagentRunner } from "./subagent.js";
+import { runHooks } from "../hooks/hooks.js";
+import type { ModeRegistry } from "../modes/index.js";
+import { type ApprovalsConfig, type SessionApprovals, DEFAULT_APPROVALS, initSession, resolveApproval } from "../approvals/index.js";
 import type { ChatMessage, ModelDescriptor, ToolCall, TurnUsage } from "../protocol/protocol.js";
 import type { ProcessStep, TodoItem } from "../protocol/process.js";
-const PSEUDO_TOOLS = new Set(["handoff", "subagent.spawn", "subagent.askParent", "clarification.askUser", "checkpoint.revert", "checkpoint.list"]);
+const PSEUDO_TOOLS = new Set(["handoff", "subagent.spawn", "subagent.askParent", "clarification.askUser", "checkpoint.revert", "checkpoint.list", "mode.switch", "skill.use", "memory.add"]);
 const TOOL_OUTPUT_MAX_CHARS = 8000;
 export interface AgentEventSink {
   message(m: ChatMessage): void;
@@ -34,9 +37,13 @@ export interface AgentOptions {
   systemPrompt: string;
   enabledTools: Set<string>;
   workspaceRoot: string;
+  mode: string;
+  modeRegistry: ModeRegistry;
+  userRequestedMode?: string;
+  approvalsConfig?: ApprovalsConfig;
   askUser?: (question: string, options: string[]) => Promise<string>;
   approveShell?: (description: string) => Promise<boolean>;
-  toolContext: Omit<ToolContext, "shell" | "requestApproval" | "root" | "workspacePath">;
+  toolContext: Omit<ToolContext, "shell" | "requestApproval" | "root" | "workspacePath" | "approvalsConfig" | "sessionApprovals" | "addSessionCommand" | "onChunk" | "skillRegistry">;
   isMain: boolean;
   ownerTier?: import("../protocol/protocol.js").ModelTier;
   parent?: Agent;
@@ -54,45 +61,149 @@ export class Agent {
   private active = false;
   private subagentRunner: SubagentRunner;
   private pendingClarifications = new Map<string, { resolve: (answer: string) => void; question: string; options: string[] }>();
+  private currentMode: string;
+  private userRequestedMode: string | undefined;
+  private sessionApprovals: SessionApprovals;
+  private sessionStarted = false;
+  private turnCount = 0;
+  private lastTodoUpdate = 0;
+  private pendingChain: { toolName: string; args: Record<string, unknown>; resultText: string; displayTitle: string } | null = null;
   constructor(
     private registry: ModelRegistry,
     private store: CheckpointStore,
     private sink: AgentEventSink,
     private opts: AgentOptions,
   ) {
-    this.subagentRunner = new SubagentRunner(registry, store);
-    if (opts.systemPrompt) {
-      this.messages.push({ id: randomUUID(), role: "system", content: opts.systemPrompt, ts: Date.now() });
+    this.subagentRunner = new SubagentRunner(registry, store, opts.modeRegistry);
+    this.currentMode = opts.modeRegistry.resolveDefault(opts.mode);
+    this.userRequestedMode = opts.userRequestedMode;
+    this.sessionApprovals = initSession();
+    const modeDef = opts.modeRegistry.get(this.currentMode);
+    const modeRole = modeDef?.roleDefinition ?? "";
+    const fullPrompt = modeRole ? `${modeRole}\n\n---\n\n${opts.systemPrompt}` : opts.systemPrompt;
+    if (fullPrompt) {
+      this.messages.push({ id: randomUUID(), role: "system", content: fullPrompt, ts: Date.now() });
     }
     if (opts.initialMessages?.length) {
       this.messages.push(...opts.initialMessages);
     }
   }
+  getCurrentMode(): string { return this.currentMode; }
+  getModeRegistry(): ModeRegistry { return this.opts.modeRegistry; }
   getMessages() { return this.messages.slice(); }
   getSteps() { return this.steps.slice(); }
   getTodo() { return this.todoItems.slice(); }
   getUsage() { return this.usageByModel; }
   getHandoffs() { return this.handoffs.slice(); }
-  async send(text: string, attachments?: { uri: string; preview?: string }[]): Promise<void> {
+  snapshot(): { messages: ChatMessage[]; steps: ProcessStep[]; mode: string; todoItems: TodoItem[] } {
+    return { messages: this.messages.slice(), steps: this.steps.slice(), mode: this.currentMode, todoItems: this.todoItems.slice() };
+  }
+  async restore(snapshot: { messages: ChatMessage[]; steps?: ProcessStep[]; mode?: string; todoItems?: TodoItem[] }): Promise<void> {
+    this.messages = snapshot.messages;
+    this.steps = snapshot.steps ?? [];
+    this.currentMode = snapshot.mode ?? "code";
+    this.todoItems = snapshot.todoItems ?? [];
+    this.sessionStarted = true;
+  }
+  toggleAutoApprove(): boolean {
+    this.sessionApprovals.autoApproveAll = !this.sessionApprovals.autoApproveAll;
+    return this.sessionApprovals.autoApproveAll;
+  }
+  isAutoApproveEnabled(): boolean { return this.sessionApprovals.autoApproveAll; }
+  addSessionCommand(command: string) { this.sessionApprovals.sessionCommandAllowlist.push(command); }
+  addCommandPrefix(prefix: string) { this.sessionApprovals.commandPrefixMemory.push({ prefix, createdAt: new Date().toISOString() }); }
+  getSessionApprovals(): SessionApprovals { return this.sessionApprovals; }
+  switchMode(slug: string): string {
+    const modeDef = this.opts.modeRegistry.get(slug);
+    if (!modeDef) return `Unknown mode '${slug}'`;
+    this.currentMode = slug;
+    this.userRequestedMode = slug;
+    const output = `Switched to '${slug}' mode.\n\n${modeDef.roleDefinition}`;
+    this.messages.push({ id: randomUUID(), role: "system", content: output, ts: Date.now() });
+    return output;
+  }
+  addContextMessage(content: string): void {
+    this.messages.push({ id: randomUUID(), role: "system", content, ts: Date.now() });
+  }
+  setPendingToolChain(toolName: string, args: Record<string, unknown>, resultText: string, displayTitle: string): void {
+    this.pendingChain = { toolName, args, resultText, displayTitle };
+  }
+  private flushPendingToolChain(): void {
+    if (!this.pendingChain) return;
+    const { toolName, args, resultText, displayTitle } = this.pendingChain;
+    this.pendingChain = null;
+    const callId = `describe-${Date.now()}`;
+    const assistantMsg: ChatMessage = {
+      id: randomUUID(), role: "assistant", content: "",
+      toolCalls: [{ id: callId, name: toolName, args }], ts: Date.now(),
+    };
+    const toolMsg: ChatMessage = {
+      id: randomUUID(), role: "tool", content: resultText, toolCallId: callId, ts: Date.now(),
+    };
+    this.messages.push(assistantMsg);
+    this.messages.push(toolMsg);
+    this.sink.message(assistantMsg);
+    this.sink.message(toolMsg);
+    this.openStep({ id: callId, type: "tool", title: displayTitle, toolName, content: resultText });
+  }
+  async send(text: string, attachments?: { uri: string; preview?: string }[], images?: string[]): Promise<void> {
     if (this.active) throw new Error("Agent is already running");
+    if (!this.sessionStarted) {
+      this.sessionStarted = true;
+      runHooks({
+        event: "session.start",
+        workspaceRoot: this.opts.workspaceRoot,
+        mode: this.currentMode,
+        userMessage: text,
+      }).then((decisions) => {
+        for (const d of decisions) {
+          if (d.contextMessage) {
+            this.messages.push({ id: randomUUID(), role: "system", content: `[Hooks] ${d.contextMessage}`, ts: Date.now() });
+          }
+        }
+      });
+    }
+    void runHooks({
+      event: "user.submit",
+      workspaceRoot: this.opts.workspaceRoot,
+      mode: this.currentMode,
+      userMessage: text,
+    });
+    this.turnCount++;
+    if (this.todoItems.length > 0 && this.turnCount - this.lastTodoUpdate > 5) {
+      const staleFor = this.turnCount - this.lastTodoUpdate;
+      this.messages.push({
+        id: randomUUID(),
+        role: "system",
+        content: `Your plan was last updated ${staleFor} turns ago. If the task has shifted, consider updating your plan via \`todo.write\`.`,
+        ts: Date.now(),
+      });
+    }
     let content = text;
     if (attachments && attachments.length) {
       const lines = attachments.map((a) => `- ${a.preview ?? a.uri}`);
       content = `${text}\n\nAttached context:\n${lines.join("\n")}`;
     }
-    if (shouldPlanFirst(content)) {
+    const modeDef = this.opts.modeRegistry.get(this.currentMode);
+    const isPlanMode = modeDef?.slug === "plan" || (modeDef?.allowedTools && !modeDef.allowedTools.includes("file.edit") && !modeDef.allowedTools.includes("file.write") && !modeDef.allowedTools.includes("shell.run"));
+    const userExplicitCodeOrDebug = this.userRequestedMode && (this.userRequestedMode === "code" || this.userRequestedMode === "debug");
+    if (isPlanMode && !userExplicitCodeOrDebug && content.length >= 80) {
       const planMsg: ChatMessage = {
         id: randomUUID(),
         role: "system",
-        content: "The user's request appears complex (spans multiple files/features). Before making ANY changes, you MUST:\n1. Create a detailed todo list via `todo.write` breaking the work into sequential, verifiable steps.\n2. Ask the user for sign-off via `clarification.askUser` with the question \"Review the plan above. Ready to proceed?\" and options [\"Proceed\", \"Revise plan\"].\n3. Only start executing after the user selects \"Proceed\".\nDo NOT call file.edit, file.write, or shell.run until the user approves the plan.",
+        content: "The user's request appears to need planning. Before making ANY changes, you MUST:\n1. Create a detailed todo list via `todo.write` breaking the work into sequential, verifiable steps.\n2. Ask the user for sign-off via `clarification.askUser` with the question \"Review the plan above. Ready to proceed?\" and options [\"Proceed\", \"Revise plan\"].\n3. After approval, use `mode.switch` to switch to \"code\" mode to implement.\nDo NOT call file.edit, file.write, or shell.run until the user approves the plan.",
         ts: Date.now(),
       };
       this.messages.push(planMsg);
       this.sink.message(planMsg);
     }
     const userMsg: ChatMessage = { id: randomUUID(), role: "user", content, ts: Date.now() };
+    if (images?.length) {
+      (userMsg as unknown as Record<string, unknown>).images = images.map((dataUrl) => ({ type: "image_url", image_url: { url: dataUrl } }));
+    }
     this.messages.push(userMsg);
     this.sink.message(userMsg);
+    this.flushPendingToolChain();
     await this.runTurn();
   }
   async continue(): Promise<void> {
@@ -100,6 +211,11 @@ export class Agent {
     await this.runTurn();
   }
   async stop() {
+    void runHooks({
+      event: "stop",
+      workspaceRoot: this.opts.workspaceRoot,
+      mode: this.currentMode,
+    });
     this.abortController?.abort();
     const killed = killActiveProcesses();
     for (const [id, p] of this.pendingClarifications) {
@@ -170,7 +286,10 @@ export class Agent {
     this.abortController = new AbortController();
     try {
       const current = this.registry.getCurrent();
-      const toolSpecs = buildToolSpecs(this.opts.enabledTools ?? [], this.opts.toolContext.mcp?.listTools());
+      const modeDef = this.opts.modeRegistry.get(this.currentMode);
+      const modeAllowed = modeDef ? new Set(modeDef.allowedTools) : this.opts.enabledTools;
+      const effectiveTools = new Set([...this.opts.enabledTools].filter((t) => modeAllowed.has(t)));
+      const toolSpecs = buildToolSpecs(effectiveTools, this.opts.toolContext.mcp?.listTools());
       if (current) {
         const dec = decideCompaction(this.messages, current, this.tracker, undefined, this.lastPromptTokens, toolSpecs);
         if (dec.shouldCompact) {
@@ -427,6 +546,13 @@ export class Agent {
       return;
     }
     if (tc.name === "subagent.spawn") {
+      void runHooks({
+        event: "subagent.spawn",
+        tool: tc.name,
+        args: tc.args,
+        workspaceRoot: this.opts.workspaceRoot,
+        mode: this.currentMode,
+      });
       if (!this.opts.isMain) {
         this.appendToolOutput(tc.id, "Subagents cannot spawn further subagents.", false);
         return;
@@ -615,6 +741,70 @@ export class Agent {
       this.messages.push({ id: randomUUID(), role: "tool", content: output, toolCallId: tc.id, ts: Date.now() });
       return;
     }
+    if (tc.name === "mode.switch") {
+      const slug = String(tc.args.slug ?? "").trim();
+      if (!slug) {
+        this.appendToolOutput(tc.id, "mode.switch requires a `slug` argument. Use one of: " + this.opts.modeRegistry.list().map((m) => m.slug).join(", "), false);
+        this.messages.push({ id: randomUUID(), role: "tool", content: "mode.switch requires a slug.", toolCallId: tc.id, ts: Date.now() });
+        return;
+      }
+      const targetMode = this.opts.modeRegistry.get(slug);
+      if (!targetMode) {
+        const available = this.opts.modeRegistry.list().map((m) => m.slug).join(", ");
+        this.appendToolOutput(tc.id, `Unknown mode '${slug}'. Available modes: ${available}`, false);
+        this.messages.push({ id: randomUUID(), role: "tool", content: `Unknown mode '${slug}'. Available modes: ${available}.`, toolCallId: tc.id, ts: Date.now() });
+        return;
+      }
+      const oldMode = this.currentMode;
+      this.currentMode = slug;
+      this.userRequestedMode = slug;
+      const output = `Switched from '${oldMode}' to '${slug}' mode.\n\n## ${slug} mode\n\n${targetMode.roleDefinition}`;
+      this.appendToolOutput(tc.id, `Switched to ${slug} mode.`, true);
+      this.messages.push({ id: randomUUID(), role: "tool", content: output, toolCallId: tc.id, ts: Date.now() });
+      return;
+    }
+    if (tc.name === "skill.use") {
+      const name = String(tc.args.name ?? "").trim();
+      if (!name) {
+        this.appendToolOutput(tc.id, "skill.use requires a `name` argument.", false);
+        return;
+      }
+      const reg = (this.opts.toolContext as unknown as ToolContext).skillRegistry;
+      if (!reg) {
+        this.appendToolOutput(tc.id, "Skill registry not available.", false);
+        return;
+      }
+      const meta = reg.get(name);
+      if (!meta) {
+        const available = reg.list().map((s) => s.name).join(", ");
+        this.appendToolOutput(tc.id, `Skill '${name}' not found. Available: ${available}`, false);
+        this.messages.push({ id: randomUUID(), role: "tool", content: `Skill '${name}' not found.`, toolCallId: tc.id, ts: Date.now() });
+        return;
+      }
+      const body = await reg.readBody(name);
+      const resources: string[] = [];
+      if (meta.scripts.length) resources.push("## Scripts\n" + meta.scripts.map((s: string) => `- ${s}`).join("\n"));
+      if (meta.references.length) resources.push("## References\n" + meta.references.map((r: string) => `- ${r}`).join("\n"));
+      if (meta.assets.length) resources.push("## Assets\n" + meta.assets.map((a: string) => `- ${a}`).join("\n"));
+      const output = (body ?? "(empty skill)") + (resources.length ? "\n\n" + resources.join("\n\n") : "");
+      this.appendToolOutput(tc.id, `Loaded skill '${name}'.`, true);
+      this.messages.push({ id: randomUUID(), role: "tool", content: output, toolCallId: tc.id, ts: Date.now() });
+      return;
+    }
+    if (tc.name === "memory.add") {
+      const category = String(tc.args.category ?? "preferences");
+      const content = String(tc.args.content ?? "");
+      if (!content) {
+        this.appendToolOutput(tc.id, "memory.add requires a `content` argument.", false);
+        return;
+      }
+      const { addMemory } = await import("../memory/store.js");
+      const entry = await addMemory(this.opts.workspaceRoot, category, content);
+      const output = `Memory added under **${entry.category}** (index ${-1} — use memory.list to find the actual index).\n\n${entry.content}`;
+      this.appendToolOutput(tc.id, `Memory added: ${entry.content.slice(0, 80)}`, true);
+      this.messages.push({ id: randomUUID(), role: "tool", content: output, toolCallId: tc.id, ts: Date.now() });
+      return;
+    }
     if (!def) return;
     const target = (tc.args.path as string) ?? (tc.args.file as string);
     if (target && this.opts.enabledTools.has(tc.name)) {
@@ -622,12 +812,79 @@ export class Agent {
         await this.store.snapshot(turnId, this.opts.workspaceRoot, [target], this.todoItems);
 } catch {  }
     }
+    if (tc.name === "file.edit" || tc.name === "file.write") {
+      const writeFilePath = String(tc.args.path);
+      const modeDef = this.opts.modeRegistry.get(this.currentMode);
+      if (modeDef?.writeGlob) {
+        const check = checkWriteGlob(writeFilePath, modeDef.writeGlob);
+        if (!check.allowed) {
+          const msg = `Write blocked by mode '${this.currentMode}': path '${writeFilePath}' does not match writeGlob pattern '${modeDef.writeGlob}'. Switch to a different mode via mode.switch or narrow your edit scope.`;
+          this.appendToolOutput(tc.id, msg, false);
+          this.messages.push({ id: randomUUID(), role: "tool", content: msg, toolCallId: tc.id, ts: Date.now() });
+          return;
+        }
+      }
+    }
+    const approvalCategory = categoryForTool(tc.name);
+    if (approvalCategory) {
+      const extra = buildApprovalExtra(tc.name, tc.args, this.opts.workspaceRoot);
+      const level = resolveApproval(this.opts.approvalsConfig ?? DEFAULT_APPROVALS, this.sessionApprovals, approvalCategory, extra);
+      if (level === "ask") {
+        const approvalHandler = this.opts.approveShell ?? (this.opts.toolContext as any).requestApproval;
+        if (!approvalHandler) {
+          this.appendToolOutput(tc.id, `Tool '${tc.name}' requires approval and no approval handler is set.`, false);
+          this.messages.push({ id: randomUUID(), role: "tool", content: `Approval required but no handler available.`, toolCallId: tc.id, ts: Date.now() });
+          return;
+        }
+        const approved = await approvalHandler(`Run ${tc.name}?\n\n${prettyToolSummary(tc.name, tc.args)}`);
+        if (!approved) {
+          this.appendToolOutput(tc.id, `Tool '${tc.name}' denied by user.`, false);
+          this.messages.push({ id: randomUUID(), role: "tool", content: "Denied by user.", toolCallId: tc.id, ts: Date.now() });
+          return;
+        }
+      }
+    }
+    const hookTools = new Set(["shell.run", "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "webfetch", "mcp.call", "file.edit", "file.write", "file.read", "subagent.spawn", "handoff"]);
+    if (hookTools.has(tc.name)) {
+      const decisions = await runHooks({
+        event: "pre.tool",
+        tool: tc.name,
+        args: tc.args,
+        workspaceRoot: this.opts.workspaceRoot,
+        mode: this.currentMode,
+      });
+      for (const hookDecision of decisions) {
+        if (hookDecision.decision === "deny") {
+          const msg = hookDecision.message ?? `Tool '${tc.name}' blocked by pre.tool hook.`;
+          this.appendToolOutput(tc.id, msg, false);
+          this.messages.push({ id: randomUUID(), role: "tool", content: msg, toolCallId: tc.id, ts: Date.now() });
+          return;
+        }
+        if (hookDecision.decision === "ask") {
+          const approvalHandler = this.opts.approveShell ?? (this.opts.toolContext as any).requestApproval;
+          if (!approvalHandler) {
+            this.appendToolOutput(tc.id, `Hook requires approval for '${tc.name}' but no handler is set.`, false);
+            return;
+          }
+          const approved = await approvalHandler(hookDecision.message ?? `Hook requires approval for ${tc.name}`);
+          if (!approved) {
+            this.appendToolOutput(tc.id, `Tool '${tc.name}' denied by user via hook.`, false);
+            return;
+          }
+        }
+        if (hookDecision.modifiedArgs) {
+          tc.args = hookDecision.modifiedArgs;
+        }
+      }
+    }
     const ctx: ToolContext = {
       ...this.opts.toolContext,
       root: this.opts.workspaceRoot,
       workspacePath: this.opts.workspaceRoot,
-      shell: { policy: "allowlist", allowlist: [] },
+      approvalsConfig: this.opts.approvalsConfig ?? DEFAULT_APPROVALS,
+      sessionApprovals: this.sessionApprovals,
       requestApproval: this.opts.approveShell ?? (this.opts.toolContext as any).requestApproval,
+      addSessionCommand: (cmd: string) => { this.sessionApprovals.sessionCommandAllowlist.push(cmd); },
       onChunk: this.makeChunkHandler(tc),
     };
     let result;
@@ -641,6 +898,7 @@ export class Agent {
     this.appendToolOutput(tc.id, isEditOrWrite ? "" : truncatedOutput, result.ok, result.ok ? undefined : prettyToolTitle(tc.name, tc.args, false), result.diffHunks, result.filePath, result.runAfter?.command, result.runAfter?.output);
     if (result.todoState) {
       this.todoItems = result.todoState.items.map((it) => ({ ...it }));
+      this.lastTodoUpdate = this.turnCount;
       const stepId = `todo-${turnId}-${randomUUID().slice(0, 6)}`;
       this.steps.push({ id: stepId, type: "todo_list", title: "Plan", todos: this.todoItems, ts: Date.now() });
       this.sink.steps(this.steps);
@@ -650,6 +908,20 @@ export class Agent {
       ? `${truncatedOutput}\n[runAfter] ${result.runAfter.command}\n${result.runAfter.output}`
       : truncatedOutput;
     this.messages.push({ id: randomUUID(), role: "tool", content: toolContent, toolCallId: tc.id, ts: Date.now() });
+    runHooks({
+      event: "post.tool",
+      tool: tc.name,
+      args: tc.args,
+      workspaceRoot: this.opts.workspaceRoot,
+      mode: this.currentMode,
+      extra: { ok: result.ok },
+    }).then((decisions) => {
+      for (const d of decisions) {
+        if (d.contextMessage) {
+          this.messages.push({ id: randomUUID(), role: "system", content: `[Hooks] ${d.contextMessage}`, ts: Date.now() });
+        }
+      }
+    });
     if (result.touchedFiles && result.touchedFiles.length && this.opts.toolContext.summaryForFiles) {
       const summary = await this.opts.toolContext.summaryForFiles(result.touchedFiles);
       if (summary.text) {
@@ -895,6 +1167,9 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
       case "browser.evaluate": return "Failed to evaluate script";
       case "browser.readDom": return "Failed to read page DOM";
       case "browser.close": return "Failed to close browser";
+      case "browser.hover": return `Failed to hover ${clip(String(args.selector ?? ""))}`;
+      case "browser.scroll": return `Failed to scroll ${args.selector ? "to " + String(args.selector) : ""}`;
+      case "browser.waitFor": return `Wait failed for ${args.selector ?? args.url ?? args.state ?? "condition"}`;
       case "mcp.call": return `Failed MCP ${args.server ?? ""}/${args.tool ?? ""}`;
       case "mcp.create": return `Failed to register MCP server ${args.name ?? ""}`;
       case "mcp.remove": return `Failed to remove MCP server ${args.name ?? ""}`;
@@ -909,6 +1184,16 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
       case "checkpoint.list": return "Failed to list checkpoints";
       case "file.semanticSearch": return `Semantic search failed: ${clip(String(args.query ?? ""))}`;
       case "webfetch": return `Failed to fetch ${clip(String(args.url ?? ""))}`;
+      case "mode.switch": return `Failed to switch to ${String(args.slug ?? "")} mode`;
+      case "skill.read": return `Failed to read skill ${String(args.name ?? "")}`;
+      case "skill.use": return `Failed to load skill ${String(args.name ?? "")}`;
+      case "memory.add": return `Failed to add memory`;
+      case "memory.list": return `Failed to list memories`;
+      case "memory.edit": return `Failed to edit memory`;
+      case "memory.delete": return `Failed to delete memory`;
+      case "rule.list": return `Failed to list rules`;
+      case "rule.read": return `Failed to read rule ${String(args.name ?? "")}`;
+      case "rule.create": return `Failed to create rule ${String(args.name ?? "")}`;
       default: return `Failed: ${name}`;
     }
   }
@@ -935,6 +1220,9 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
     case "browser.evaluate": return "Evaluated script";
     case "browser.readDom": return "Read page DOM";
     case "browser.close": return "Closed browser";
+    case "browser.hover": return `Hovered ${clip(String(args.selector ?? ""))}`;
+    case "browser.scroll": return `Scrolled ${args.selector ? "to " + String(args.selector) : ""}`;
+    case "browser.waitFor": return `Waited for ${args.selector ?? args.url ?? args.state ?? "condition"}`;
     case "mcp.call": return `Called ${args.server ?? ""}/${args.tool ?? ""}`;
     case "mcp.create": return `Registered MCP server ${args.name ?? ""}`;
     case "mcp.remove": return `Removed MCP server ${args.name ?? ""}`;
@@ -951,6 +1239,63 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
     case "clarification.askUser": return `Asked: ${clip(String(args.question ?? ""), 80)}`;
     case "file.semanticSearch": return `Searched: ${clip(String(args.query ?? ""), 80)}`;
     case "webfetch": return `Fetched ${clip(String(args.url ?? ""))}`;
+    case "mode.switch": return `Switched to ${String(args.slug ?? "")} mode`;
+    case "skill.read": return `Read skill ${clip(String(args.name ?? ""), 40)}`;
+    case "skill.use": return `Loaded skill ${clip(String(args.name ?? ""), 40)}`;
+    case "memory.add": return `Memory added`;
+    case "memory.list": return `Listed memories`;
+    case "memory.edit": return `Edited memory`;
+    case "memory.delete": return `Deleted memory`;
+    case "rule.list": return `Listed rules`;
+    case "rule.read": return `Read rule ${clip(String(args.name ?? ""), 40)}`;
+    case "rule.create": return `Created rule ${clip(String(args.name ?? ""), 40)}`;
+    default: return name;
+  }
+}
+const READ_TOOLS = new Set(["file.read", "file.grep", "file.glob", "file.semanticSearch"]);
+const WRITE_TOOLS = new Set(["file.edit", "file.write"]);
+const SHELL_TOOLS = new Set(["shell.run", "shell.backgroundRun", "shell.check", "shell.write", "shell.customRun", "shell.editCustomRun", "shell.runCustomRun"]);
+const BROWSER_TOOLS = new Set(["browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor"]);
+const MCP_TOOLS = new Set(["mcp.call", "mcp.create", "mcp.remove", "mcp.toggle", "mcp.resources/list", "mcp.resources/read", "mcp.prompts/list", "mcp.prompts/get"]);
+function categoryForTool(name: string): string | undefined {
+  if (READ_TOOLS.has(name)) return "read";
+  if (WRITE_TOOLS.has(name)) return "write.local";
+  if (SHELL_TOOLS.has(name)) return "shell.other";
+  if (BROWSER_TOOLS.has(name)) return "browser";
+  if (name === "webfetch") return "webfetch";
+  if (MCP_TOOLS.has(name)) return "mcp";
+  return undefined;
+}
+function buildApprovalExtra(name: string, args: Record<string, unknown>, workspaceRoot: string): { filePath?: string; workspaceRoot?: string; command?: string; mcpServer?: string } | undefined {
+  if (WRITE_TOOLS.has(name)) return { filePath: String(args.path ?? ""), workspaceRoot };
+  if (SHELL_TOOLS.has(name)) return { command: String(args.command ?? ""), workspaceRoot };
+  if (MCP_TOOLS.has(name)) return { mcpServer: String(args.server ?? ""), workspaceRoot };
+  return undefined;
+}
+function prettyToolSummary(name: string, args: Record<string, unknown>): string {
+  const clip = (s: string, n = 80) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+  switch (name) {
+    case "file.read": return `Read ${clip(String(args.path ?? ""))}`;
+    case "file.edit": return `Edit ${clip(String(args.path ?? ""))}`;
+    case "file.write": return `Write ${clip(String(args.path ?? ""))}`;
+    case "file.grep": return `Search for /${clip(String(args.pattern ?? ""))}/`;
+    case "file.glob": return `Glob ${clip(String(args.pattern ?? ""))}`;
+    case "shell.run": return clip(String(args.command ?? ""));
+    case "shell.backgroundRun": return `[background] ${clip(String(args.command ?? ""))}`;
+    case "shell.check": return `Check process ${args.id ?? ""}`;
+    case "shell.write": return `Write to process ${args.id ?? ""}`;
+    case "browser.navigate": return `Navigate to ${clip(String(args.url ?? ""))}`;
+    case "browser.click": return `Click ${clip(String(args.selector ?? ""))}`;
+    case "browser.type": return `Type into ${clip(String(args.selector ?? ""))}`;
+    case "browser.screenshot": return "Take screenshot";
+    case "browser.evaluate": return `Evaluate: ${clip(String(args.script ?? ""), 60)}`;
+    case "browser.readDom": return "Read page DOM";
+    case "browser.close": return "Close browser";
+    case "webfetch": return `Fetch ${clip(String(args.url ?? ""))}`;
+    case "mcp.call": return `MCP ${args.server ?? ""}/${args.tool ?? ""}`;
+    case "mcp.create": return `Register MCP server ${args.name ?? ""}`;
+    case "mcp.remove": return `Remove MCP server ${args.name ?? ""}`;
+    case "mcp.toggle": return `Toggle MCP server ${args.name ?? ""}`;
     default: return name;
   }
 }
@@ -962,26 +1307,6 @@ function summarizeInProcess(msgs: ChatMessage[]): string {
     else if (m.role === "user") lines.push(`- [user]: ${m.content.slice(0, 120)}`);
   }
   return lines.join("\n");
-}
-function shouldPlanFirst(text: string): boolean {
-  if (text.length < 120) return false;
-  const lower = text.toLowerCase();
-  let score = 0;
-  const featureWords = ["feature", "refactor", "component", "page", "screen", "module", "build a", "create a", "implement", "migrate"];
-  for (const w of featureWords) {
-    if (lower.includes(w)) { score += 2; break; }
-  }
-  const scopeWords = ["across", "multiple", "several", "all", "entire", "every"];
-  for (const w of scopeWords) {
-    if (lower.includes(w)) score++;
-  }
-  const fileMentions = text.match(/\.(tsx?|jsx?|css|html|json|md)/g);
-  if (fileMentions && fileMentions.length >= 2) score += 2;
-  const pathMentions = text.match(/src\//g);
-  if (pathMentions && pathMentions.length >= 2) score += 2;
-  const bulletCount = (text.match(/^[*-]\s/gm) || []).length;
-  if (bulletCount >= 3) score += 2;
-  return score >= 3;
 }
 function renderForSummary(msgs: ChatMessage[]): string {
   const out: string[] = [];
