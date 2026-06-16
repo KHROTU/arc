@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { Agent, type AgentEventSink } from "../src/agent/agent";
 import { ModelRegistry } from "../src/routing/registry";
 import { CheckpointStore } from "../src/checkpoint/store";
-import type { ChatMessage, ToolResult } from "../src/protocol/protocol";
+import { ModeRegistry } from "../src/modes/index";
+import type { ChatMessage } from "../src/protocol/protocol";
 import type { ProcessStep } from "../src/protocol/process";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -81,12 +82,11 @@ describe("Agent tool calling", () => {
     }) as unknown as typeof fetch;
     try {
       const agent = new Agent(registry, store, sink, {
-        sessionID: "s1",
         isMain: true,
         systemPrompt: "You are a test assistant.",
         enabledTools: new Set(["todo.write"]),
-        toolFns: new Map<string, (args: Record<string, unknown>, ctx: any) => Promise<ToolResult>>([
-        ]),
+        mode: "code",
+        modeRegistry: new ModeRegistry(),
         toolContext: { problems: async () => [], problemsFor: async () => [], summaryForFiles: async () => ({ hasErrors: false, hasWarnings: false, text: "" }) },
       });
       await agent.send("demonstrate todo");

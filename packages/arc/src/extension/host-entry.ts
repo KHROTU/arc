@@ -5,7 +5,10 @@ import { createHash } from "node:crypto";
 import {
   ModelRegistry, Agent, CheckpointStore, LspBridge, McpAggregator,
   makeVSCodeNotifier, setNotifier,   loadWorkspacePrompts, loadGlobalPrompts, mergePrecedence, render, injectRelevantRules,
-  pickLogo, ChatHistory, createBrowser, getArcDir, getWorkspaceArcDir,
+  pickLogo, ChatHistory, createBrowser, getWorkspaceArcDir,
+  ModeRegistry, DEFAULT_APPROVALS, loadApprovalsMemory, saveApprovalPrefix,
+  SkillRegistry,
+  RuleRegistry,
   type ChatSnapshot, type ChatMessage, type BrowserAdapter,
   type HostMsg, type WebviewMsg, type ModelDescriptor, type ProviderConfig, type ProcessStep,
   Indexer, HashEmbeddingBackend, OllamaEmbeddingBackend, DEFAULT_EMBEDDING_MODELS,
@@ -18,6 +21,10 @@ let registry: ModelRegistry;
 let store: CheckpointStore;
 let lsp: LspBridge;
 let mcp: McpAggregator;
+let modeRegistry: ModeRegistry;
+let skillRegistry: SkillRegistry;
+let skillRegistryReady: Promise<void>;
+let ruleRegistry: RuleRegistry;
 let persist: () => void;
 let persistAsync: () => Promise<void>;
 let chatsFilePath: string;
@@ -50,6 +57,18 @@ export function activate(context: vscode.ExtensionContext) {
   ctxRef = context;
   log = vscode.window.createOutputChannel("Arc");
   context.subscriptions.push(log);
+  modeRegistry = new ModeRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
+  void modeRegistry.load().catch((err) => {
+    log.appendLine(`[arc] Mode registry load failed: ${(err as Error)?.stack ?? err}`);
+  });
+  skillRegistry = new SkillRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
+  skillRegistryReady = skillRegistry.load().catch((err) => {
+    log.appendLine(`[arc] Skill registry load failed: ${(err as Error)?.stack ?? err}`);
+  });
+  ruleRegistry = new RuleRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
+  void ruleRegistry.load().catch((err) => {
+    log.appendLine(`[arc] Rule registry load failed: ${(err as Error)?.stack ?? err}`);
+  });
   try {
     registerViewsAndCommands(context);
   } catch (err) {
@@ -180,10 +199,16 @@ async function initializeAsync(context: vscode.ExtensionContext) {
     log.appendLine(`[arc] MCP hydration failed: ${(err as Error)?.stack ?? err}`);
   });
   setNotifier(makeVSCodeNotifier());
+  const savedState = context.globalState.get<{ messages: unknown[]; steps: unknown[]; mode: string; todoItems: unknown[] }>("arc.agentState");
   const currentChat = chatHistory.ensure(chatHistory.current());
   sidebarSession.id = currentChat.id;
   chatSessions.set(currentChat.id, sidebarSession);
-  void ensureAgent(sidebarSession);
+  void ensureAgent(sidebarSession).then(async (agent) => {
+    if (agent && savedState?.messages?.length) {
+      agent.restore(savedState as any).catch(() => {});
+      context.globalState.update("arc.agentState", undefined);
+    }
+  });
   persist();
   void tryLoadIndex();
   initResolve?.();
@@ -301,7 +326,7 @@ Working dir: ${root} | OS: ${process.platform} | Date: ${new Date().toISOString(
 - Commit or push only when the user asks. If on the default branch, branch first.
 
 ## Tools
-file.read, file.edit, file.write, file.grep, file.glob, shell.run, shell.backgroundRun, shell.check, shell.write, webfetch, lsp.problems, lsp.problemsFor, todo.write, browser.*, mcp.call, checkpoint.revert, checkpoint.list, subagent.spawn, handoff, clarification.askUser
+file.read, file.edit, file.write, file.grep, file.glob, shell.run, shell.backgroundRun, shell.check, shell.write, webfetch, lsp.problems, lsp.problemsFor, todo.write, browser.*, mcp.call, checkpoint.revert, checkpoint.list, subagent.spawn, handoff, clarification.askUser, skill.read, skill.use, mode.switch, memory.add, memory.list, memory.edit, memory.delete, rule.list, rule.read, rule.create
 
 ## Workflow
 1. Understand the task. Use file.grep and file.glob to locate relevant code. Read files with file.read (use offset/limit for large files).
@@ -315,11 +340,13 @@ file.read, file.edit, file.write, file.grep, file.glob, shell.run, shell.backgro
 - Report outcomes faithfully: if something fails, state what happened with the output. If something succeeds, state it plainly without hedging. If a step was skipped, say so.
 - Reference code as \`file_path:line_number\` — it's clickable in the UI.`;
   const merged = mergePrecedence([{ scope: "global", body: basePrompt }, ...parts]);
+  if (skillRegistryReady) await skillRegistryReady;
+  const skillsSection = skillRegistry ? skillRegistry.titlesForSystemPrompt() : "";
   return render(merged, {
     workspace: root,
     os: process.platform,
     date: new Date().toISOString().slice(0, 10),
-  });
+  }) + skillsSection;
 };
 async function createAgent(session: Session): Promise<Agent | undefined> {
   if (!registry || !store || !lsp || !mcp || !ctxRef) return;
@@ -330,6 +357,8 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     summaryForFiles: (files: string[]) => lsp.summaryForFiles(files),
     mcp,
     browser: getBrowser,
+    skillRegistry,
+    ruleRegistry,
     grep: async (pattern: string, include?: string) => {
       const results: { file: string; line: number; column: number; text: string }[] = [];
       const MAX_FILES = 200;
@@ -426,14 +455,21 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       "file.read", "file.edit", "file.write", "file.grep", "file.glob", "shell.run", "shell.backgroundRun", "shell.check", "shell.write", "shell.customRun", "shell.editCustomRun", "shell.runCustomRun", "webfetch",
       "lsp.problems", "lsp.problemsFor",
       "todo.write",
-      "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close",
+      "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor",
       "mcp.call", "mcp.create", "mcp.remove", "mcp.toggle",
       "mcp.resources/list", "mcp.resources/read", "mcp.prompts/list", "mcp.prompts/get",
       "subagent.spawn", "handoff", "clarification.askUser",
       "checkpoint.revert", "checkpoint.list",
       "file.semanticSearch",
+      "mode.switch",
+      "skill.read", "skill.use",
+      "memory.list", "memory.edit", "memory.delete", "memory.add",
+      "rule.list", "rule.read", "rule.create",
     ]),
     workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(),
+    mode: "code",
+    modeRegistry,
+    approvalsConfig: DEFAULT_APPROVALS,
     isMain: true,
     toolContext,
     approveShell: async (description) => {
@@ -702,6 +738,8 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             chatId: chatHistory?.current(),
             models: registry?.list() ?? [],
             currentModelId: registry?.getCurrent()?.id ?? "",
+            modes: modeRegistry ? modeRegistry.list().map((m) => ({ slug: m.slug, description: m.description })) : [],
+            currentMode: session.agent?.getCurrentMode?.() ?? "code",
           });
           if (registry) webview.postMessage({ type: "model/list", models: registry.list(), currentModelId: registry.getCurrent()?.id ?? "" });
           if (registry) webview.postMessage({ type: "provider/list", providers: registry.listProviders() });
@@ -728,6 +766,16 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           webview.postMessage({ type: "session/steps", steps: session.steps });
           broadcastChatList(webview);
           pushContextStats(webview, session.id);
+          {
+            const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+            const agent = await ensureAgent(session);
+            if (agent) {
+              const prefixes = await loadApprovalsMemory(root);
+              for (const entry of prefixes) {
+                agent.addCommandPrefix(entry.prefix);
+              }
+            }
+          }
           break;
         }
         case "chat/send":
@@ -769,7 +817,14 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           }
           {
             const agent = await awaitAgent(session);
-            if (agent) await agent.send(msg.text, msg.attachments);
+            if (agent) {
+              const { text, images, descriptions } = await maybeDescribeImages(msg.text, msg.images);
+              if (descriptions?.length) {
+                const content = descriptions.map((d, i) => `Image ${i + 1}: ${d}`).join("\n\n");
+                agent.setPendingToolChain("describe_image", { count: descriptions.length }, content, `Described ${descriptions.length} image${descriptions.length > 1 ? "s" : ""}`);
+              }
+              await agent.send(text, msg.attachments, images);
+            }
           }
           break;
         case "chat/guidance":
@@ -831,6 +886,17 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           }
           break;
         }
+        case "mode/select": {
+          const agent = await ensureAgent(session);
+          if (agent && modeRegistry) {
+            agent.switchMode(msg.mode);
+            const modeDef = modeRegistry.get(msg.mode);
+            if (modeDef) {
+              broadcast(session, { type: "session/message", message: { id: `mode-${Date.now()}`, role: "system", content: `Switched to **${msg.mode}** mode — ${modeDef.description}`, ts: Date.now() }, sessionId: session.id });
+            }
+          }
+          break;
+        }
         case "provider/add": {
           if (registry) {
             registry.upsertProvider({ ...msg.provider, enabled: msg.provider.enabled ?? true });
@@ -870,7 +936,15 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           break;
         }
         case "config/set": {
-          await vscode.workspace.getConfiguration().update(msg.key, msg.value, vscode.ConfigurationTarget.Global);
+          if (msg.key === "arc.model.multimodal.toggle") {
+            const { modelId, enabled } = (msg.value as { modelId: string; enabled: boolean });
+            const ids: string[] = vscode.workspace.getConfiguration().get<string[]>("arc.model.multimodalIds") ?? [];
+            const set = new Set(ids);
+            if (enabled) set.add(modelId); else set.delete(modelId);
+            await vscode.workspace.getConfiguration().update("arc.model.multimodalIds", [...set], vscode.ConfigurationTarget.Global);
+          } else {
+            await vscode.workspace.getConfiguration().update(msg.key, msg.value, vscode.ConfigurationTarget.Global);
+          }
           break;
         }
         case "ui/attachSelection": {
@@ -1004,6 +1078,68 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           if (p) {
             pendingApprovals.delete(msg.id);
             p.resolve(msg.allowed);
+            if (msg.allowed && session.agent) {
+              if ("rememberCommand" in msg && msg.rememberCommand) {
+                session.agent.addSessionCommand(String(msg.rememberCommand));
+              }
+              if ("rememberPrefix" in msg && msg.rememberPrefix) {
+                const prefix = String(msg.rememberPrefix);
+                session.agent.addCommandPrefix(prefix);
+                const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+                saveApprovalPrefix(root, prefix).catch((err: unknown) => {
+                  log.appendLine(`[arc] Failed to save approval prefix: ${(err as Error)?.message ?? err}`);
+                });
+              }
+            }
+          }
+          break;
+        }
+        case "autoApprove/toggle": {
+          const agent = await ensureAgent(session);
+          if (agent) {
+            const active = agent.toggleAutoApprove();
+            broadcast(session, { type: "autoApproveState", active });
+          }
+          break;
+        }
+        case "chat/search": {
+          if (chatHistory) {
+            const results = chatHistory.search(msg.query);
+            webview.postMessage({
+              type: "chat/searchResults",
+              results: results.map((r) => ({
+                id: r.chat.id,
+                title: r.chat.title,
+                matches: r.matches.map((m) => m.text),
+              })),
+            });
+          }
+          break;
+        }
+        case "chat/resume": {
+          const targetId = (msg as any).id as string | undefined;
+          if (targetId && chatHistory) {
+            const chat = chatHistory.switch(targetId);
+            if (chat) {
+              persist();
+              const msgs = chatHistory.getMessages(targetId);
+              const steps = chatHistory.getSteps(targetId);
+              webview.postMessage({
+                type: "session/init",
+                sessionId: session.id,
+                chatId: targetId,
+                models: registry?.list() ?? [],
+                currentModelId: registry?.getCurrent()?.id ?? "",
+                modes: modeRegistry ? modeRegistry.list().map((m: any) => ({ slug: m.slug, description: m.description })) : [],
+                currentMode: session.agent?.getCurrentMode?.() ?? "code",
+              });
+              for (const m of (msgs ?? []) as ChatMessage[]) {
+                webview.postMessage({ type: "session/message", message: m, sessionId: session.id });
+              }
+              for (const s of (steps ?? []) as ProcessStep[]) {
+                webview.postMessage({ type: "session/step", step: s, sessionId: session.id });
+              }
+            }
           }
           break;
         }
@@ -1070,10 +1206,10 @@ async function generateTitleViaOllama(firstMessage: string): Promise<string | nu
     return null;
   }
 }
-async function hydrateMcp(mcp: McpAggregator, _root: string) {
+async function hydrateMcp(mcp: McpAggregator, root: string) {
   const fs = await import("node:fs/promises");
-  const path = await import("node:path");
-  const file = path.join(getArcDir(), "mcp.json");
+  const pth = await import("node:path");
+  const file = pth.join(getWorkspaceArcDir(root), "mcp.json");
   try {
     const raw = await fs.readFile(file, "utf-8");
     const j = JSON.parse(raw) as { mcpServers?: Record<string, { transport: import("@arc/host").McpTransport; enabled?: boolean }> };
@@ -1086,13 +1222,13 @@ async function hydrateMcp(mcp: McpAggregator, _root: string) {
     }
 } catch {  }
 }
-async function persistMcpConfig(mcp: McpAggregator, _root: string) {
+async function persistMcpConfig(mcp: McpAggregator, root: string) {
   const fs = await import("node:fs/promises");
-  const path = await import("node:path");
-  const file = path.join(getArcDir(), "mcp.json");
+  const pth = await import("node:path");
+  const file = pth.join(getWorkspaceArcDir(root), "mcp.json");
   const servers = mcp.listServers();
   const out = { mcpServers: Object.fromEntries(servers.map((s) => [s.name, { enabled: s.enabled, transport: s.transport }])) };
-  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.mkdir(pth.dirname(file), { recursive: true });
   await fs.writeFile(file, JSON.stringify(out, null, 2), "utf-8");
 }
 function getAllWebviews(): vscode.Webview[] {
@@ -1106,6 +1242,51 @@ function getAllWebviews(): vscode.Webview[] {
   return out;
 }
 export function deactivate() {
+  if (sidebarSession.agent && sidebarSession.agent.getMessages()?.length) {
+    void ctxRef?.globalState.update("arc.agentState", sidebarSession.agent.snapshot());
+  }
   void mcp?.dispose();
   void browser?.close();
+}
+async function maybeDescribeImages(text: string, images?: string[]): Promise<{ text: string; images: string[] | undefined; descriptions?: string[] }> {
+  if (!images?.length) return { text, images };
+  const currentModel = registry?.getCurrent();
+  if (!currentModel) return { text, images };
+  const multimodalIds = vscode.workspace.getConfiguration().get<string[]>("arc.model.multimodalIds") ?? [];
+  if (multimodalIds.includes(currentModel.id)) return { text, images };
+  const describer = vscode.workspace.getConfiguration().get<string>("arc.image.describeModel") ?? "none";
+  if (describer === "none") return { text, images: undefined };
+  const descriptions: string[] = [];
+  for (const dataUrl of images) {
+    try {
+      const match = dataUrl.match(/^data:(image\/\w+);base64,(.+)$/);
+      if (!match) continue;
+      const desc = await callOllamaDescribe(describer, match[2], text);
+      if (desc) descriptions.push(desc);
+    } catch {}
+  }
+  if (!descriptions.length) return { text, images: undefined };
+  return { text, images: undefined, descriptions };
+}
+async function callOllamaDescribe(model: string, base64data: string, _userPrompt: string): Promise<string | undefined> {
+  const url = (vscode.workspace.getConfiguration().get<string>("arc.image.ollamaUrl") ?? "http://127.0.0.1:11434").replace(/\/$/, "");
+  const res = await fetch(`${url}/api/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model,
+      stream: false,
+      messages: [
+        {
+          role: "user",
+          content: "Describe this image in 2-3 sentences. Focus on what would be relevant for a coding assistant to know: UI elements, code screenshots, error messages, diagrams, etc.",
+          images: [base64data],
+        },
+      ],
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) return undefined;
+  const json = await res.json() as { message?: { content?: string } };
+  return json.message?.content?.trim();
 }

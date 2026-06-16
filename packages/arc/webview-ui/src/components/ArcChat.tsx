@@ -1,10 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Settings2, Plus, Trash2, Pencil, Maximize2, X, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft } from "lucide-react";
+import { Settings2, Plus, Trash2, Pencil, Maximize2, X, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import ArcProcessUI, { type ProcessStep } from "./AgentProcess";
 import Composer from "./Composer";
 import ModelPicker from "./ModelPicker";
+import ModePicker from "./ModePicker";
+import ConversationSearch from "./ConversationSearch";
 import SettingsModal from "./SettingsView";
 import type { ModelDescriptor, TurnUsage, ChatMessage, ProviderConfig } from "@arc/host/protocol";
 import { useArcLogo, swapOnError } from "../hooks/useArcLogo";
@@ -64,15 +66,19 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [ctxStats, setCtxStats] = useState<{ usedPct: number; tokens: number; window: number; cost: number } | null>(null);
   const [models, setModels] = useState<ModelDescriptor[]>([]);
   const [currentModel, setCurrentModel] = useState<string>("");
+  const [modes, setModes] = useState<{ slug: string; description: string }[]>([]);
+  const [currentMode, setCurrentMode] = useState<string>("code");
   const [pendingAttachment, setPendingAttachment] = useState<string | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(true);
   const [hasEverSent, setHasEverSent] = useState(false);
   const [lastTurnError, setLastTurnError] = useState<{ message: string; code?: string } | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [approval, setApproval] = useState<{ id: string; description: string; kind: string } | null>(null);
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
+  const [autoApproveActive, setAutoApproveActive] = useState(false);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const pendingTextRef = useRef<{ id: string; text: string } | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -88,6 +94,8 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           if (e.chatId) setActiveId(e.chatId);
           setModels(e.models);
           setCurrentModel(e.currentModelId);
+          if (e.modes) setModes(e.modes);
+          if (e.currentMode) setCurrentMode(e.currentMode);
           break;
         case "chat/list": setChats(e.chats); break;
         case "chat/current":
@@ -165,6 +173,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         case "model/list": setModels(e.models); setCurrentModel(e.currentModelId); break;
         case "provider/list": setProviders(e.providers); break;
         case "ui/showSettings": setShowSettings(true); break;
+        case "autoApproveState": setAutoApproveActive(e.active); break;
         case "approval/request":
           setApproval({ id: e.id, description: e.description, kind: e.kind });
           break;
@@ -196,7 +205,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     const el = transcriptRef.current;
     if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
   }, [steps, streaming, clarification, messages]);
-  const send = (text: string, attachments?: { uri: string; preview?: string }[]) => {
+  const send = (text: string, attachments?: { uri: string; preview?: string }[], images?: string[]) => {
     if (streaming) {
       setQueuedMessage(text);
       return;
@@ -207,7 +216,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     setMessages((prev) => prev.find((m) => m.content === text && m.role === "user")
       ? prev
       : [...prev, { id: `local-${Date.now()}`, role: "user", content: text, ts: Date.now() }]);
-    client.send({ type: "chat/send", text, attachments });
+    client.send({ type: "chat/send", text, attachments, images });
   };
   const stop = () => client.send({ type: "chat/stop" });
   const guide = (text: string) => client.send({ type: "chat/guidance", text });
@@ -228,10 +237,24 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const openFile = (path: string) => { console.log("[arc] openFile", path); client.send({ type: "ui/openFile", path }); };
   const openFullscreen = () => client.send({ type: "ui/openFullscreen" });
   const selectModel = (id: string) => client.send({ type: "model/select", modelId: id });
-  const respondApproval = (allowed: boolean) => {
+  const selectMode = (mode: string) => {
+    setCurrentMode(mode);
+    client.send({ type: "mode/select", mode });
+  };
+  const toggleAutoApprove = () => client.send({ type: "autoApprove/toggle" });
+  const respondApproval = (allowed: boolean, rememberCommand?: string, rememberPrefix?: string) => {
     if (!approval) return;
-    client.send({ type: "approval/response", id: approval.id, allowed });
+    client.send({ type: "approval/response", id: approval.id, allowed, ...(rememberCommand ? { rememberCommand } : {}), ...(rememberPrefix ? { rememberPrefix } : {}) });
     setApproval(null);
+  };
+  const getApprovalCommand = (desc: string): string | undefined => {
+    const lines = desc.split("\n\n");
+    return lines.length > 1 ? lines[1].trim() : undefined;
+  };
+  const getApprovalPrefix = (desc: string): string | undefined => {
+    const cmd = getApprovalCommand(desc);
+    if (!cmd) return undefined;
+    return cmd.trim().split(/\s+/)[0] || undefined;
   };
   useEffect(() => {
     if (!approval) return;
@@ -274,7 +297,6 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, []);
-  const cur = models.find((m) => m.id === currentModel);
   const pct = ctxStats?.usedPct ?? 0;
   const chatCost = ctxStats?.cost ?? 0;
   const isEmpty = steps.length === 0 && streaming === null && !hasEverSent && !lastTurnError;
@@ -307,7 +329,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         run.push(item.step);
       } else {
         const m = item.msg;
-        if (m.role === "assistant" && m.toolCalls?.length) continue;
+        if (m.role === "assistant" && !m.content && m.toolCalls?.length) continue;
         if (m.role === "tool") continue;
         flush();
         out.push(<MessageBubble key={m.id} message={m} />);
@@ -336,6 +358,13 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           onSelect={selectModel}
           variant={variant}
         />
+        {modes.length > 0 && (
+          <ModePicker
+            modes={modes}
+            currentMode={currentMode}
+            onSelect={selectMode}
+          />
+        )}
         <span className="arc-topbar-spacer" />
         <ContextMeter pct={pct} />
         <span className="arc-topbar-cost" title="This chat's spend">${chatCost.toFixed(3)}</span>
@@ -348,6 +377,9 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
             <Maximize2 size={14} />
           </button>
         )}
+        <button className={`arc-iconbtn ${autoApproveActive ? "arc-iconbtn-active" : ""}`} title={autoApproveActive ? "Disable auto-approve" : "Enable auto-approve (approve all tool calls)"} onClick={toggleAutoApprove}>
+          {autoApproveActive ? <ShieldCheck size={15} /> : <ShieldOff size={15} />}
+        </button>
         <button className="arc-iconbtn" title="Settings" onClick={openSettings}>
           <Settings2 size={15} />
         </button>
@@ -359,6 +391,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
             activeId={activeId}
             onSelect={switchChat}
             onNew={newChat}
+            onSearch={() => setShowSearch(true)}
             onRename={(id) => setRenaming({ id, value: chats.find((x) => x.id === id)?.title ?? "" })}
             onDelete={deleteChat}
             renaming={renaming}
@@ -470,8 +503,14 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
                   <div className="arc-approval-body">{approval.description.split("\n\n").slice(1).join("\n\n")}</div>
                 )}
                 <div className="arc-approval-actions">
-                  <button className="arc-approval-allow" onClick={() => respondApproval(true)} autoFocus>
-                    Allow <kbd>Enter</kbd>
+                  <button className="arc-approval-allow" onClick={() => respondApproval(true, getApprovalCommand(approval.description))} autoFocus>
+                    Always allow for this session
+                  </button>
+                  <button className="arc-approval-allow" onClick={() => respondApproval(true, undefined, getApprovalPrefix(approval.description))}>
+                    Always allow this prefix
+                  </button>
+                  <button className="arc-approval-allow" onClick={() => respondApproval(true)}>
+                    Allow once
                   </button>
                   <button className="arc-approval-deny" onClick={() => respondApproval(false)}>
                     Deny <kbd>Esc</kbd>
@@ -501,6 +540,12 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           </footer>
         </main>
       </div>
+      {showSearch && (
+        <ConversationSearch
+          client={client}
+          onClose={() => setShowSearch(false)}
+        />
+      )}
       {showSettings && (
         <SettingsModal
           client={client}
@@ -520,6 +565,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === "user";
   const isTool = message.role === "tool";
+  const [enlarged, setEnlarged] = useState<string | null>(null);
   if (isTool) {
     return (
       <div className="arc-bubble arc-bubble-tool" role="note">
@@ -528,20 +574,33 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       </div>
     );
   }
-  if (isUser) {
-    return (
-      <div className="arc-bubble arc-bubble-user">
-        <div className="arc-bubble-text">{message.content}</div>
-      </div>
-    );
-  }
-  return (
-    <div className="arc-bubble arc-bubble-assistant">
-      <div
-        className="arc-bubble-text arc-md"
-        dangerouslySetInnerHTML={{ __html: message.content ? renderMarkdown(message.content) : '<span class="arc-bubble-empty">(empty response)</span>' }}
-      />
+  const userImages = (message as any).images as { image_url: { url: string } }[] | undefined;
+  const imgs = userImages?.length ? (
+    <div className="arc-bubble-images">
+      {userImages.map((img, i) => (
+        <img key={i} src={img.image_url.url} alt={`Pasted ${i + 1}`} className="arc-bubble-img" onClick={() => setEnlarged(img.image_url.url)} />
+      ))}
     </div>
+  ) : null;
+  return (
+    <>
+      <div className={`arc-bubble ${isUser ? "arc-bubble-user" : "arc-bubble-assistant"}`}>
+        {isUser && imgs}
+        {isUser ? (
+          <div className="arc-bubble-text">{message.content}</div>
+        ) : (
+          <div
+            className="arc-bubble-text arc-md"
+            dangerouslySetInnerHTML={{ __html: message.content ? renderMarkdown(message.content) : '<span class="arc-bubble-empty">(empty response)</span>' }}
+          />
+        )}
+      </div>
+      {enlarged && (
+        <div className="arc-image-overlay" onClick={() => setEnlarged(null)}>
+          <img src={enlarged} alt="Enlarged" />
+        </div>
+      )}
+    </>
   );
 }
 function ContextMeter({ pct }: { pct: number }) {
@@ -569,12 +628,13 @@ function Onboarding({ logoUri, monoLogo, hasModels, onOpenSettings }: { logoUri:
   );
 }
 function ChatList({
-  chats, activeId, onSelect, onNew, onRename, onDelete, renaming, setRenaming, onCommitRename, todos,
+  chats, activeId, onSelect, onNew, onSearch, onRename, onDelete, renaming, setRenaming, onCommitRename, todos,
 }: {
   chats: ChatMeta[];
-  activeId: string;
+  activeId: string | null;
   onSelect: (id: string) => void;
   onNew: () => void;
+  onSearch: () => void;
   onRename: (id: string) => void;
   onDelete: (id: string) => void;
   renaming: { id: string; value: string } | null;
@@ -586,7 +646,12 @@ function ChatList({
     <aside className="arc-chatlist">
       <div className="arc-chatlist-head">
         <span>Chats</span>
-        <button className="arc-iconbtn" onClick={onNew} title="New chat"><Plus size={15} /></button>
+        <span style={{ display: "flex", alignItems: "center", gap: 2 }}>
+          <button className="arc-iconbtn" title="Search conversations" onClick={onSearch}>
+            <Search size={14} />
+          </button>
+          <button className="arc-iconbtn" onClick={onNew} title="New chat"><Plus size={15} /></button>
+        </span>
       </div>
       <ul className="arc-chatlist-list">
         {chats.length === 0 && <li className="arc-chatlist-empty">No chats yet.</li>}

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { Agent, type AgentEventSink } from "../src/agent/agent";
 import { ModelRegistry } from "../src/routing/registry";
 import { CheckpointStore } from "../src/checkpoint/store";
+import { ModeRegistry } from "../src/modes/index";
 import type { ChatMessage } from "../src/protocol/protocol";
 import type { ProcessStep } from "../src/protocol/process";
 import * as os from "node:os";
@@ -43,6 +44,8 @@ describe("Agent parallel tool execution", () => {
       isMain: true,
       systemPrompt: "test",
       enabledTools: new Set(),
+      mode: "code",
+      modeRegistry: new ModeRegistry(),
       toolContext: {} as any,
     });
     const calls = [
@@ -72,6 +75,8 @@ describe("Agent parallel tool execution", () => {
       isMain: true,
       systemPrompt: "test",
       enabledTools: new Set(),
+      mode: "code",
+      modeRegistry: new ModeRegistry(),
       toolContext: {} as any,
     });
     const calls = [
@@ -104,6 +109,8 @@ describe("Agent parallel tool execution", () => {
       isMain: true,
       systemPrompt: "test",
       enabledTools: new Set(),
+      mode: "code",
+      modeRegistry: new ModeRegistry(),
       toolContext: {} as any,
     });
     const calls = [

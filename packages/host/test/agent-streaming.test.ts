@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import { Agent, type AgentEventSink } from "../src/agent/agent";
 import { ModelRegistry } from "../src/routing/registry";
 import { CheckpointStore } from "../src/checkpoint/store";
+import { ModeRegistry } from "../src/modes/index";
+import { DEFAULT_APPROVALS, initSession } from "../src/approvals/index";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
@@ -44,6 +46,8 @@ describe("Agent streaming tool output", () => {
       isMain: true,
       systemPrompt: "test",
       enabledTools: new Set(["shell.run"]),
+      mode: "code",
+      modeRegistry: new ModeRegistry(),
       toolContext: {} as any,
     });
     const tc = { id: "call-1", name: "shell.run", args: { command: "node -e \"console.log('chunk-1'); console.log('chunk-2');\"" } };
@@ -74,6 +78,8 @@ describe("Agent streaming tool output", () => {
       isMain: true,
       systemPrompt: "test",
       enabledTools: new Set(),
+      mode: "code",
+      modeRegistry: new ModeRegistry(),
       toolContext: {} as any,
     });
     const tc = { id: "call-2", name: "shell.run", args: { command: "" } };
@@ -98,7 +104,8 @@ describe("shell.run streams stdout", () => {
       {
         root: process.cwd(),
         workspacePath: process.cwd(),
-        shell: { policy: "always", allowlist: [] },
+        approvalsConfig: DEFAULT_APPROVALS,
+        sessionApprovals: initSession(),
         onChunk: (_s, t) => chunks.push(t),
       } as any,
     );

@@ -19,10 +19,24 @@ export const anthropicTransport: Transport = {
       }
       return { role: m.role as "user" | "assistant", content: m.content };
     });
+    const convWithImages = conv.map((c) => {
+      if (c.role !== "user" || typeof c.content !== "string") return c;
+      const orig = req.messages.find((m) => m.content === c.content && m.role === "user");
+      const images = (orig as any)?.images as { image_url: { url: string } }[] | undefined;
+      if (!images?.length) return c;
+      const parts: unknown[] = [{ type: "text", text: c.content }];
+      for (const img of images) {
+        const match = img.image_url.url.match(/^data:(image\/\w+);base64,(.+)$/);
+        if (match) {
+          parts.push({ type: "image", source: { type: "base64", media_type: match[1], data: match[2] } });
+        }
+      }
+      return { role: "user", content: parts };
+    });
     const body: Record<string, unknown> = {
       model: remoteModel,
       max_tokens: req.maxTokens ?? 4096,
-      messages: conv,
+      messages: convWithImages,
       stream: true,
     };
     if (systemMsgs) body.system = systemMsgs;

@@ -3,6 +3,8 @@ import { ModelRegistry } from "../routing/registry.js";
 import { CheckpointStore } from "../checkpoint/store.js";
 import { pickForTier } from "../routing/router.js";
 import { subagentTierFor } from "../routing/handoff.js";
+import { ModeRegistry } from "../modes/index.js";
+import { DEFAULT_APPROVALS } from "../approvals/index.js";
 import * as tools from "./tools.js";
 import type { ModelDescriptor, ModelTier } from "../protocol/protocol.js";
 import type { ProcessStep, TodoItem } from "../protocol/process.js";
@@ -27,6 +29,7 @@ export class SubagentRunner {
   constructor(
     private registry: ModelRegistry,
     private store: CheckpointStore,
+    private modeRegistry?: ModeRegistry,
   ) {}
   async run(
     spec: SubagentSpec,
@@ -73,10 +76,6 @@ export class SubagentRunner {
     const needsApproval = rules.requireApproval ?? false;
     const toolContext = {
       ...ctx,
-      shell: {
-        policy: (ctx.shell?.policy ?? "allowlist") as "always" | "allowlist" | "off",
-        allowlist: ctx.shell?.allowlist ?? [],
-      },
       requestApproval: async (description: string): Promise<boolean> => {
         onApprovalRequest?.(description);
         if (!askParent) return false;
@@ -98,10 +97,14 @@ export class SubagentRunner {
         return answer.toLowerCase().includes("allow");
       },
     };
+    const modeReg = this.modeRegistry ?? new ModeRegistry(ctx.root);
     const agent = new Agent(this.registry, this.store, sink, {
       systemPrompt: spec.instructions,
       enabledTools: new Set([...Object.keys(tools.tools), "subagent.askParent"]),
       workspaceRoot: ctx.root,
+      mode: "code",
+      modeRegistry: modeReg,
+      approvalsConfig: DEFAULT_APPROVALS,
       isMain: false,
       ownerTier: tier,
       toolContext,
