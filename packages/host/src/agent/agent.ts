@@ -48,6 +48,7 @@ export interface AgentOptions {
   ownerTier?: import("../protocol/protocol.js").ModelTier;
   parent?: Agent;
   initialMessages?: ChatMessage[];
+  modelOverride?: ModelDescriptor;
 }
 export class Agent {
   private messages: ChatMessage[] = [];
@@ -87,6 +88,9 @@ export class Agent {
     if (opts.initialMessages?.length) {
       this.messages.push(...opts.initialMessages);
     }
+  }
+  private getCurrentModel(): ModelDescriptor | undefined {
+    return this.opts.modelOverride ?? this.registry.getCurrent();
   }
   getCurrentMode(): string { return this.currentMode; }
   getModeRegistry(): ModeRegistry { return this.opts.modeRegistry; }
@@ -285,7 +289,7 @@ export class Agent {
     this.sink.turnStart(turnId);
     this.abortController = new AbortController();
     try {
-      const current = this.registry.getCurrent();
+      const current = this.getCurrentModel();
       const modeDef = this.opts.modeRegistry.get(this.currentMode);
       const modeAllowed = modeDef ? new Set(modeDef.allowedTools) : this.opts.enabledTools;
       const effectiveTools = new Set([...this.opts.enabledTools].filter((t) => modeAllowed.has(t)));
@@ -298,7 +302,7 @@ export class Agent {
           this.sink.compaction(before, this.messages.length, dec.reason);
         }
       }
-      let model = this.registry.getCurrent();
+      let model = this.getCurrentModel();
       if (!model) {
         const msg: ChatMessage = { id: randomUUID(), role: "assistant", content: "No model configured. Open Arc settings → Models to add one.", ts: Date.now() };
         this.messages.push(msg);
@@ -412,7 +416,8 @@ export class Agent {
         }
       } else {
         if (this.opts.isMain) {
-          const m = /<arc-handoff\s+reason="([^"]*)"\s*\/>/.exec(text);
+          const cleanText = text.replace(/```[\s\S]*?```/g, "").replace(/`[^`]*`/g, "");
+          const m = /<arc-handoff\s+reason="([^"]*)"\s*\/>/.exec(cleanText);
           if (m && this.handoffs.filter((h) => h.direction === "escalate").length < defaultPolicy.maxEscalations) {
             const target = nextModelForHandoff(this.registry, model, "escalate", defaultPolicy);
             if (target) {
@@ -523,7 +528,7 @@ export class Agent {
     if (tc.name === "handoff") {
       const reason = String(tc.args.reason ?? "model requested handoff");
       const direction = (tc.args.direction === "de-escalate" ? "de-escalate" : "escalate") as "escalate" | "de-escalate";
-      const current = this.registry.getCurrent();
+      const current = this.getCurrentModel();
       let output: string;
       let ok = true;
       if (!current) {
@@ -557,7 +562,7 @@ export class Agent {
         this.appendToolOutput(tc.id, "Subagents cannot spawn further subagents.", false);
         return;
       }
-      const parent = this.registry.getCurrent();
+      const parent = this.getCurrentModel();
       if (!parent) {
         this.appendToolOutput(tc.id, "No current model to spawn from.", false);
         return;
@@ -798,9 +803,11 @@ export class Agent {
         this.appendToolOutput(tc.id, "memory.add requires a `content` argument.", false);
         return;
       }
-      const { addMemory } = await import("../memory/store.js");
+      const { addMemory, loadMemory } = await import("../memory/store.js");
       const entry = await addMemory(this.opts.workspaceRoot, category, content);
-      const output = `Memory added under **${entry.category}** (index ${-1} — use memory.list to find the actual index).\n\n${entry.content}`;
+      const entries = await loadMemory(this.opts.workspaceRoot);
+      const idx = entries.length - 1;
+      const output = `Memory added under **${entry.category}** (index ${idx}).\n\n${entry.content}`;
       this.appendToolOutput(tc.id, `Memory added: ${entry.content.slice(0, 80)}`, true);
       this.messages.push({ id: randomUUID(), role: "tool", content: output, toolCallId: tc.id, ts: Date.now() });
       return;
@@ -941,7 +948,7 @@ export class Agent {
     return this.askModel(question, options, parentModel);
   }
   private async askModel(question: string, options: string[], parentModel?: import("../protocol/protocol.js").ModelDescriptor): Promise<string> {
-    const model = parentModel ?? this.registry.getCurrent();
+    const model = parentModel ?? this.getCurrentModel();
     if (!model) return options[options.length - 1] ?? "";
     const decision = pickProvider(this.registry, model);
     if (!decision) return options[options.length - 1] ?? "";
@@ -1046,6 +1053,7 @@ export class Agent {
       for (let i = this.steps.length - 1; i >= 0; i--) {
         if (this.steps[i].id === tc.id) {
           const step = this.steps[i];
+          if (step.pending === false) return;
           const next = (step.output ?? "") + snapshot;
           this.steps[i] = { ...step, output: next.length > 8000 ? next.slice(-8000) : next, pending: true };
           this.sink.steps(this.steps);

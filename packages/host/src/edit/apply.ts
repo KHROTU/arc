@@ -30,13 +30,14 @@ function findRegex(haystack: string, needle: string): { index: number; length: n
   return m ? { index: m.index, length: m[0].length } : null;
 }
 function windowedMatch(haystack: string, needle: string): { index: number; length: number } | null {
-  const nLines = needle.split(NL).length;
+  const needleLines = needle.split(NL);
+  const nLines = needleLines.length;
   if (nLines === 0) return null;
   const hLines = haystack.split(NL);
   for (let i = 0; i <= hLines.length - nLines; i++) {
     let all = true;
     for (let j = 0; j < nLines; j++) {
-      if (hLines[i + j].trim() !== needle.split(NL)[j].trim()) {
+      if (hLines[i + j].trim() !== needleLines[j].trim()) {
         all = false;
         break;
       }
@@ -103,7 +104,10 @@ export function applyEdit(input: ApplyEditInput): ApplyEditResult {
     const col = collapseBlank(norm);
     const colSearch = collapseBlank(normSearch);
     if (col.includes(colSearch)) {
-      return finalize(col, colSearch, collapseBlank(normalizeLines(replace)), replaceAll, "blank-collapse");
+      const w2 = windowedMatch(before, search);
+      if (!w2) {
+        return finalize(col, colSearch, collapseBlank(normalizeLines(replace)), replaceAll, "blank-collapse");
+      }
     }
   }
   {

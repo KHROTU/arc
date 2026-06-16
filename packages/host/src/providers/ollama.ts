@@ -5,12 +5,20 @@ export const ollamaTransport: Transport = {
   async stream(req: StreamRequest): Promise<StreamHandle> {
     const base = (req.provider.baseUrl || "http://127.0.0.1:11434").replace(/\/$/, "");
     const remoteModel = req.model.providers.find((p) => p.id === req.provider.id)?.remoteModel ?? req.model.id;
+    const toolNameCache = new Map<string, string>();
+    for (const m of req.messages) {
+      if (m.role === "assistant" && m.toolCalls) {
+        for (const tc of m.toolCalls) {
+          toolNameCache.set(tc.id, tc.name);
+        }
+      }
+    }
     const body: Record<string, unknown> = {
       model: remoteModel,
       stream: true,
       messages: req.messages.map((m) => {
         if (m.role === "tool") {
-          return { role: "tool", tool_name: toApiToolName(toolNameForId(req.messages, m.toolCallId)), content: m.content };
+          return { role: "tool", tool_name: toApiToolName(toolNameCache.get(m.toolCallId ?? "") ?? "unknown"), content: m.content };
         }
         if (m.role === "assistant" && m.toolCalls?.length) {
           const msg: Record<string, unknown> = { role: "assistant" };
@@ -41,7 +49,7 @@ export const ollamaTransport: Transport = {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
-      signal: req.signal,
+      signal: req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000),
     });
     if (!res.ok || !res.body) {
       throw new Error(`Ollama returned ${res.status}: ${await res.text()}`);
@@ -117,15 +125,4 @@ function safeParseArgs(s: string | undefined): Record<string, unknown> | undefin
   } catch {
     return undefined;
   }
-}
-function toolNameForId(messages: readonly import("../protocol/protocol.js").ChatMessage[], callId: string | undefined): string {
-  if (!callId) return "unknown";
-  for (const m of messages) {
-    if (m.role === "assistant" && m.toolCalls) {
-      for (const tc of m.toolCalls) {
-        if (tc.id === callId) return tc.name;
-      }
-    }
-  }
-  return "unknown";
 }

@@ -138,7 +138,6 @@ export type WebviewMsg =
   | { type: "ui/openSidebar" }
   | { type: "ui/openTab"; tab: string }
   | { type: "ui/showSettings" }
-  | { type: "approval/response"; id: string; allowed: boolean }
   | { type: "search/reindex" }
   | { type: "model/bindUpdate"; modelId: string; providerId: string; remoteModel?: string }
   | { type: "mode/select"; mode: string }

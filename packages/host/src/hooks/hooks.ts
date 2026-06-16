@@ -69,12 +69,15 @@ export interface HookDecision {
 }
 let cachedConfig: HookConfig | undefined;
 let cachedWorkspaceRoot: string | undefined;
+let cachedAt = 0;
+const CACHE_TTL_MS = 30_000;
 export function clearHookConfigCache() {
   cachedConfig = undefined;
   cachedWorkspaceRoot = undefined;
+  cachedAt = 0;
 }
 async function loadHookConfig(workspaceRoot?: string): Promise<HookConfig> {
-  if (workspaceRoot === cachedWorkspaceRoot && cachedConfig) return cachedConfig;
+  if (workspaceRoot === cachedWorkspaceRoot && cachedConfig && Date.now() - cachedAt < CACHE_TTL_MS) return cachedConfig;
   const globalPath = path.join(getArcDir(), "hooks.json");
   const workspacePath = workspaceRoot ? path.join(getWorkspaceArcDir(workspaceRoot), "hooks.json") : null;
   const global: HookConfig = await loadJson(globalPath);
@@ -85,6 +88,7 @@ async function loadHookConfig(workspaceRoot?: string): Promise<HookConfig> {
     postEdit: [...(global.postEdit ?? []), ...(workspace.postEdit ?? [])],
   };
   cachedWorkspaceRoot = workspaceRoot;
+  cachedAt = Date.now();
   return cachedConfig;
 }
 async function loadJson(p: string): Promise<HookConfig> {

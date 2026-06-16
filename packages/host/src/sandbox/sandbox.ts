@@ -26,7 +26,7 @@ export function sandboxBinaryAvailable(profile: SandboxProfile): boolean {
       case "linux":
         return checkLandlock();
       case "win32":
-        return true;
+        return false;
       default:
         return false;
     }

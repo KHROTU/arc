@@ -2,7 +2,7 @@
   "name": "arc",
   "displayName": "Arc",
   "description": "Agentic coding extension with tiered model routing, subagents, handoff, and per-file change snapshots.",
-  "version": "0.0.4",
+  "version": "0.0.4-alpha.1",
   "publisher": "khrotu",
   "license": "Apache-2.0",
   "engines": {

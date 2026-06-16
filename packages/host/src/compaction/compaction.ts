@@ -113,7 +113,7 @@ export function estimateTokens(messages: ChatMessage[], tools?: { description?: 
   }
   if (tools?.length) {
     const toolDefs = tools.map((t) => ({
-      name: t.description ? "" : "",
+      name: "name" in t ? (t as { name: string }).name : "",
       description: t.description ?? "",
       inputSchema: t.inputSchema ?? {},
     }));

@@ -41,7 +41,7 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
     method: "POST",
     headers,
     body: JSON.stringify(body),
-    signal: req.signal,
+    signal: req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000),
   });
   if (!res.ok || !res.body) {
     const text = await res.text().catch(() => "");

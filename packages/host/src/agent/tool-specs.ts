@@ -27,7 +27,7 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
       replace: str("Replacement text. Ignored when `search` is a SEARCH/REPLACE block (the block's REPLACE section is used)."),
       replaceAll: bool("Replace every occurrence instead of the first."),
       runAfter: str("Optional shell command to run after the edit (e.g. 'pnpm build')."),
-    }),
+    }, ["path"]),
   },
   "file.write": {
     description: "Create a new file or overwrite an existing one.",

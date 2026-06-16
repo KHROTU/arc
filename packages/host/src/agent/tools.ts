@@ -280,8 +280,8 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
           bg.stderr += s;
           onChunk?.("stderr", s);
         });
-        proc.on("exit", (code) => { bg.exited = true; bg.exitCode = code ?? undefined; activeProcesses.delete(proc); });
-        proc.on("error", (err) => { bg.exited = true; bg.stderr += `\n[spawn error] ${err.message}`; activeProcesses.delete(proc); });
+        proc.on("exit", (code) => { bg.exited = true; bg.exitCode = code ?? undefined; activeProcesses.delete(proc); setTimeout(() => { bgProcesses.delete(id); }, 60_000); });
+        proc.on("error", (err) => { bg.exited = true; bg.stderr += `\n[spawn error] ${err.message}`; activeProcesses.delete(proc); setTimeout(() => { bgProcesses.delete(id); }, 60_000); });
         return { ok: true, output: `Background process started (id: ${id}). Use shell.check to poll output.` };
       } catch (e: unknown) {
         return { ok: false, output: `Failed to start background process: ${(e as Error).message}` };
@@ -323,6 +323,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const commands = Array.isArray(args.commands) ? (args.commands as string[]).map(String) : [];
       if (commands.length === 0) return { ok: false, output: "customRun requires at least one command." };
       const safeId = name.replace(/[^a-zA-Z0-9_.-]/g, "_");
+      if (!safeId) return { ok: false, output: "customRun name must contain at least one alphanumeric character." };
       const dir = getSkillsDir();
       await fs.mkdir(dir, { recursive: true });
       const filePath = path.join(dir, `${safeId}.json`);

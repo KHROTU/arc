@@ -47,9 +47,6 @@ export class SubagentRunner {
     if (!this.registry.providersFor(model.id).length) {
       return { ok: false, output: `Model ${model.label} has no enabled providers.`, steps: [], todo: [] };
     }
-    const prevModel = this.registry.getCurrent();
-    this.registry.setCurrent(model.id);
-    try {
     const collected: ProcessStep[] = [];
     const todos: TodoItem[] = [];
     const sink: AgentEventSink = {
@@ -108,13 +105,11 @@ export class SubagentRunner {
       isMain: false,
       ownerTier: tier,
       toolContext,
+      modelOverride: model,
     });
     await agent.send(spec.instructions);
     const finalText = agent.getMessages().filter((m) => m.role === "assistant").slice(-1)[0]?.content ?? "";
     return { ok: true, output: finalText, steps: collected, todo: todos };
-    } finally {
-      if (prevModel) this.registry.setCurrent(prevModel.id);
-    }
   }
   async runBatch(
     specs: SubagentSpec[],

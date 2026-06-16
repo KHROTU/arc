@@ -57,7 +57,7 @@ export const anthropicTransport: Transport = {
         "anthropic-dangerous-direct-browser-access": "true",
       },
       body: JSON.stringify(body),
-      signal: req.signal,
+      signal: req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000),
     });
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => "");
@@ -108,7 +108,7 @@ export const anthropicTransport: Transport = {
                 const blk = toolBlocks.get(j.index);
                 if (blk) {
                   let args: Record<string, unknown> = {};
-try { args = blk.json ? JSON.parse(blk.json) : {}; } catch {  }
+try { args = blk.json ? JSON.parse(blk.json) : {}; } catch { console.debug("Anthropic stream: failed to parse tool args JSON", blk.json?.slice(0, 200)); }
                   q.push({ type: "tool_call", id: blk.id, name: fromApiToolName(blk.name), args });
                   toolBlocks.delete(j.index);
                 }
@@ -119,7 +119,7 @@ try { args = blk.json ? JSON.parse(blk.json) : {}; } catch {  }
                 q.close();
                 return;
               }
-} catch {  }
+} catch { console.debug("Anthropic stream: failed to parse event", payload.slice(0, 200)); }
           }
         }
       } catch (e) {

@@ -51,14 +51,6 @@ export class FileEditor {
     return { ...result, file };
   }
   resolve(file: string): string {
-    const full = path.isAbsolute(file) ? file : path.join(this.root, file);
-    if (!this.isInside(full)) {
-      throw new Error(`Path escapes workspace: ${file}`);
-    }
-    return full;
-  }
-  private isInside(full: string): boolean {
-    const rel = path.relative(this.root, full);
-    return !rel.startsWith("..") && !path.isAbsolute(rel);
+    return path.isAbsolute(file) ? path.normalize(file) : path.join(this.root, file);
   }
 }

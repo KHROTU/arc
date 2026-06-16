@@ -1,5 +1,5 @@
 export function helper(): string {
-  return "REPLACE_ME";
+  return "Helper function executed successfully";
 }
 
 export function countLines(text: string): number {

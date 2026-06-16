@@ -106,6 +106,30 @@ export class CheckpointStore {
     for (const newer of all.slice(0, idx)) {
       await fs.unlink(this.metaPath(root, newer)).catch(() => undefined);
     }
+    const remaining = await this.listTurns(root);
+    const referenced = new Set<string>();
+    for (const rem of remaining) {
+      const snap = await this.load(root, rem);
+      if (snap) {
+        for (const hash of Object.values(snap.files)) {
+          if (hash !== "__none__") referenced.add(hash);
+        }
+      }
+    }
+    const blobsDir = path.join(this.opts.dir, "blobs");
+    try {
+      const blobDirs = await fs.readdir(blobsDir, { withFileTypes: true });
+      for (const dirEnt of blobDirs) {
+        if (!dirEnt.isDirectory()) continue;
+        const subDir = path.join(blobsDir, dirEnt.name);
+        const files = await fs.readdir(subDir);
+        for (const f of files) {
+          if (!referenced.has(f)) {
+            await fs.unlink(path.join(subDir, f)).catch(() => {});
+          }
+        }
+      }
+    } catch {}
     return { restored, conflicts };
   }
   async clear(root: string) {

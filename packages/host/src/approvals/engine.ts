@@ -26,7 +26,7 @@ export function resolveApproval(
 }
 function classifyWritePath(filePath: string | undefined, workspaceRoot: string | undefined): "write.local" | "write.external" {
   if (!filePath || !workspaceRoot) return "write.external";
-  const resolved = path.resolve(filePath);
+  const resolved = path.resolve(workspaceRoot, filePath);
   const ws = path.resolve(workspaceRoot);
   return resolved.startsWith(ws + path.sep) || resolved === ws ? "write.local" : "write.external";
 }

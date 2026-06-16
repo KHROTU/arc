@@ -81,6 +81,7 @@ export class McpClient extends EventEmitter {
       await this.send({ method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "arc", version: "0.1.0" } } });
       this.sendNotification("notifications/initialized");
       this.setStatus("ready");
+      this.reconnectAttempts = 0;
       this.scheduleHealth();
     } catch (e) {
       this.setStatus("error");
