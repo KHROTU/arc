@@ -1,7 +1,7 @@
 {
   "name": "arc-workspace",
   "private": true,
-  "version": "0.4.1",
+  "version": "0.4.3",
   "description": "Arc — agentic coding VS Code extension (monorepo root).",
   "packageManager": "pnpm@9.0.0",
   "engines": {

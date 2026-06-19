@@ -12,7 +12,7 @@ Arc is built for speed and precision. It combines a sophisticated multi-model or
 ## Core Principles
 
 - **Model power scales with need.** Arc uses a tiered model registry to delegate sub-tasks to efficient models while reserving "heavy" models for complex reasoning.
-- **Reasource efficiency is the core.** We believe your tools shouldn't compete with your code for resources. Arc is designed to be zero-bloat, requiring no external runtimes or heavy binaries.
+- **Resource efficiency is the core.** We believe your tools shouldn't compete with your code for resources. Arc is designed to be zero-bloat, requiring no external runtimes or heavy binaries.
 - **Context scales with precision.** Token-accurate tracking and AI-powered summarization ensure your conversation stays focused, even as your project grows.
 
 ## Features
@@ -72,10 +72,10 @@ Arc aims to provide a top-of-the-line agentic experience with a minimal footprin
 
 ### Installation
 
-Install the VSIX directly via the VS Code CLI:
+Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=khrotu.arc-code) or directly via the VS Code CLI:
 
 ```bash
-code --install-extension packages/arc/arc-code-0.4.1.vsix
+code --install-extension packages/arc/arc-code-0.4.3.vsix
 ```
 
 ### Development
