@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Settings2, Plus, Trash2, Pencil, Maximize2, X, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search } from "lucide-react";
+import { Settings, Plus, Trash2, Pencil, Maximize2, X, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import ArcProcessUI, { type ProcessStep } from "./AgentProcess";
 import Composer from "./Composer";
@@ -366,7 +366,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           />
         )}
         <span className="arc-topbar-spacer" />
-        <ContextMeter pct={pct} />
+        <span className="arc-ctx-pct" title={`Context ${pct.toFixed(0)}% used`}>{pct.toFixed(0)}%</span>
         <span className="arc-topbar-cost" title="This chat's spend">${chatCost.toFixed(3)}</span>
         <span className="arc-topbar-sep" />
         <button className="arc-iconbtn" title="Compress context" onClick={compact} disabled={!!streaming}>
@@ -381,7 +381,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           {autoApproveActive ? <ShieldCheck size={15} /> : <ShieldOff size={15} />}
         </button>
         <button className="arc-iconbtn" title="Settings" onClick={openSettings}>
-          <Settings2 size={15} />
+          <Settings size={15} />
         </button>
       </header>
       <div className={`arc-body arc-body-${variant}`}>
@@ -603,27 +603,15 @@ function MessageBubble({ message }: { message: ChatMessage }) {
     </>
   );
 }
-function ContextMeter({ pct }: { pct: number }) {
-  const clamped = Math.max(0, Math.min(100, pct));
-  return (
-    <span className="arc-ctx" title={`Context ${clamped.toFixed(0)}% used`}>
-      <span className="arc-ctx-track"><span className="arc-ctx-fill" style={{ width: `${clamped}%` }} /></span>
-      <span className="arc-ctx-pct">{clamped.toFixed(0)}%</span>
-    </span>
-  );
-}
 function Onboarding({ logoUri, monoLogo, hasModels, onOpenSettings }: { logoUri: string; monoLogo: string; hasModels: boolean; onOpenSettings: () => void }) {
   return (
     <div className="arc-onboarding">
       <img className="arc-onboarding-mark" src={logoUri} alt="Arc" onError={swapOnError(monoLogo)} />
-      <h2>Welcome to Arc</h2>
-      <p>Arc orchestrates models by task, escalating complex work to heavier models and returning control when done.</p>
-      <ol className="arc-onboarding-steps">
-        <li><span className="arc-onboarding-num">1</span> Add a <strong>provider</strong> and bind it to a <strong>model</strong> with a tier.</li>
-        <li><span className="arc-onboarding-num">2</span> Pick your model in the selector above.</li>
-        <li><span className="arc-onboarding-num">3</span> Describe your task below — Arc handles the rest.</li>
-      </ol>
-      {!hasModels && <button className="arc-btn" onClick={onOpenSettings}><Settings2 size={14} /> Open settings</button>}
+      {hasModels ? (
+        <p className="arc-onboarding-hint">Start a new session with the model selector using a profile.</p>
+      ) : (
+        <p className="arc-onboarding-hint">No configured model. <button className="arc-link" onClick={onOpenSettings}>Open settings →</button></p>
+      )}
     </div>
   );
 }

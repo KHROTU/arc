@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Plus, Trash2, Plug, SlidersHorizontal, Cpu, KeyRound, X, Check, Info, Search } from "lucide-react";
+import { Plus, Trash2, Plug, Braces, Cpu, KeyRound, X, Check, Info, Search, FileText, Terminal } from "lucide-react";
 import type { RpcClient, HostEvent } from "../rpc";
 import type { ModelDescriptor, ModelTier, ProviderConfig, ProviderKind } from "@arc/host/protocol";
 import { PROVIDERS } from "@arc/host/catalog";
@@ -7,17 +7,18 @@ import { useArcLogo } from "../hooks/useArcLogo";
 type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderConfig[]; monoLogo: string; prideLogo: string; monoLogoText: string; prideLogoText: string; version: string };
 const TIERS: ModelTier[] = ["heavy", "default", "light", "free"];
 const TIER_ORDER: Record<ModelTier, number> = { heavy: 0, default: 1, light: 2, free: 3 };
-type Tab = "models" | "providers" | "mcp" | "behavior" | "search";
+type Tab = "models" | "providers" | "mcp" | "shell" | "context" | "search" | "prompts";
 const TABS: { value: Tab; label: string; icon: React.ReactNode }[] = [
   { value: "models", label: "Models", icon: <Cpu size={15} /> },
   { value: "providers", label: "Providers", icon: <KeyRound size={15} /> },
   { value: "mcp", label: "MCP", icon: <Plug size={15} /> },
-  { value: "behavior", label: "Behavior", icon: <SlidersHorizontal size={15} /> },
+  { value: "shell", label: "Shell", icon: <Terminal size={15} /> },
+  { value: "context", label: "Context", icon: <Braces size={15} /> },
   { value: "search", label: "Search", icon: <Search size={15} /> },
+  { value: "prompts", label: "Prompts", icon: <FileText size={15} /> },
 ];
 export default function SettingsModal({ client, onClose, models, providers, monoLogo, prideLogo, monoLogoText, prideLogoText, version }: Props) {
   const [tab, setTab] = useState<Tab>("models");
-  const logoUri = useArcLogo(monoLogo, prideLogo, false);
   const logoTextUri = useArcLogo(monoLogoText, prideLogoText, false);
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const navRef = useRef<HTMLElement>(null);
@@ -45,7 +46,6 @@ export default function SettingsModal({ client, onClose, models, providers, mono
     <div className="arc-modal-overlay" onClick={onClose}>
       <div className="arc-modal" onClick={(e) => e.stopPropagation()}>
         <header className="arc-modal-head">
-          <img className="arc-settings-logo" src={logoUri} alt="Arc" />
           <h2>Settings</h2>
           <nav ref={navRef} className="arc-settings-tabs">
             {TABS.map((t) => (
@@ -62,8 +62,10 @@ export default function SettingsModal({ client, onClose, models, providers, mono
             {tab === "models" && <ModelsTab client={client} providers={providers} models={models} onSwitchTab={setTab} />}
             {tab === "providers" && <ProvidersTab client={client} providers={providers} models={models} />}
             {tab === "mcp" && <McpTab client={client} />}
-            {tab === "behavior" && <BehaviorTab client={client} />}
+            {tab === "shell" && <ShellTab client={client} />}
+            {tab === "context" && <ContextTab client={client} />}
             {tab === "search" && <SearchTab client={client} />}
+            {tab === "prompts" && <PromptsTab client={client} />}
             <AboutSection logoTextUri={logoTextUri} version={version} />
           </div>
         </main>
@@ -90,14 +92,21 @@ function TierDot({ tier }: { tier: ModelTier }) {
 }
 function ImageProcessingSection({ client }: { client: RpcClient }) {
   const [describer, setDescriber] = useState<string>("none");
+  const [customDescriber, setCustomDescriber] = useState<string>("");
   useEffect(() => {
-    void client.request("arc.image.describeModel").then((v) => setDescriber(typeof v === "string" ? v : "none"));
+    void client.request("arc.image.describeModel").then((v) => {
+      const val = typeof v === "string" ? v : "none";
+      const known = ["none", "minicpm-v:1b", "ministral-3:8b-cloud", "gemma4:31b-cloud"];
+      if (known.includes(val)) { setDescriber(val); setCustomDescriber(""); }
+      else { setDescriber("custom"); setCustomDescriber(val); }
+    });
   }, [client]);
   const models = [
     { value: "none", label: "none" },
     { value: "minicpm-v:1b", label: "minicpm-v:1b" },
     { value: "ministral-3:8b-cloud", label: "ministral-3:8b-cloud" },
     { value: "gemma4:31b-cloud", label: "gemma4:31b-cloud" },
+    { value: "custom", label: "custom…" },
   ];
   return (
     <ul className="arc-rows">
@@ -105,10 +114,15 @@ function ImageProcessingSection({ client }: { client: RpcClient }) {
         <span className="arc-row-label">Describe images with</span>
         <span className="arc-row-meta">model used to describe images for non-VL models</span>
         <span className="arc-spacer" />
-        <select className="arc-input arc-input-sm" value={describer} onChange={(e) => { const v = e.target.value; setDescriber(v); client.send({ type: "config/set", key: "arc.image.describeModel", value: v }); }}>
+        <select className="arc-input arc-input-sm" value={describer} onChange={(e) => { const v = e.target.value; setDescriber(v); if (v !== "custom") { client.send({ type: "config/set", key: "arc.image.describeModel", value: v }); setCustomDescriber(""); } }}>
           {models.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
         </select>
       </div></li>
+      {describer === "custom" && (
+        <li className="arc-row"><div className="arc-row-main">
+          <input className="arc-input arc-input-grow" placeholder="model slug (e.g. llama3.2-vision:11b)" value={customDescriber} onChange={(e) => setCustomDescriber(e.target.value)} onBlur={() => { if (customDescriber.trim()) client.send({ type: "config/set", key: "arc.image.describeModel", value: customDescriber.trim() }); }} />
+        </div></li>
+      )}
     </ul>
   );
 }
@@ -186,7 +200,7 @@ function ModelsTab({ client, providers, models, onSwitchTab }: { client: RpcClie
     >
       {adding && (
         <div className="arc-form">
-          <input className="arc-input" placeholder="Model label (e.g. Claude 3.5 Sonnet)" value={label} autoFocus onChange={(e) => setLabel(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
+            <input className="arc-input" placeholder="model label" value={label} autoFocus onChange={(e) => setLabel(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
           <div className="arc-form-row">
             <select className="arc-input" value={tier} onChange={(e) => setTier(e.target.value as ModelTier)}>
               {TIERS.map((t) => <option key={t} value={t}>{t}</option>)}
@@ -292,10 +306,10 @@ function ProvidersTab({ client, providers, models }: { client: RpcClient; provid
       {adding && (
         <div className="arc-form">
           <div className="arc-form-row">
-            <select className="arc-input" value={kind} onChange={(e) => { setKind(e.target.value as ProviderKind); setBaseUrl(""); }}>
+            <select className="arc-input" value={kind} onChange={(e) => { const k = e.target.value as ProviderKind; const s = PROVIDERS.find(p => p.kind === k); setKind(k); setLabel(s?.label ?? ""); setBaseUrl(""); }}>
               {PROVIDERS.map((p) => <option key={p.kind} value={p.kind}>{p.label}</option>)}
             </select>
-            <input className="arc-input" placeholder="Label (e.g. OpenAI main)" value={label} onChange={(e) => setLabel(e.target.value)} />
+            <input className="arc-input" placeholder={spec?.label ?? "Label"} value={label} onChange={(e) => setLabel(e.target.value)} />
           </div>
           <input className="arc-input" placeholder={spec?.defaultBaseUrl || "https://…"} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
           <input className="arc-input" type="password" placeholder="API key" value={apiKey} onChange={(e) => setApiKey(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
@@ -353,95 +367,146 @@ function McpTab({ client }: { client: RpcClient }) {
     client.send({ type: "mcp/toggleServer", name: serverName, enabled });
   };
   return (
-    <Section
-      title="MCP servers"
-      description="Model Context Protocol servers expose tools to the agent. Persisted to ~/.arc/mcp.json."
-      action={!adding && <button className="arc-btn" onClick={() => setAdding(true)}><Plus size={14} /> Add server</button>}
-    >
-      {adding && (
-        <div className="arc-form">
-          <div className="arc-form-row">
-            <input className="arc-input" placeholder="Server name" value={name} autoFocus onChange={(e) => setName(e.target.value)} />
-            <select className="arc-input" value={transportType} onChange={(e) => setTransportType(e.target.value as "stdio" | "http")}>
-              <option value="stdio">stdio</option>
-              <option value="http">http</option>
-            </select>
-          </div>
-          {transportType === "stdio" ? (
-            <input className="arc-input" placeholder="command + args" value={command} onChange={(e) => setCommand(e.target.value)} />
-          ) : (
-            <input className="arc-input" placeholder="https://…" value={url} onChange={(e) => setUrl(e.target.value)} />
-          )}
-          <div className="arc-form-actions">
-            <button className="arc-btn" onClick={add}><Check size={14} /> Save</button>
-            <button className="arc-btn-ghost" onClick={() => setAdding(false)}>Cancel</button>
-          </div>
-        </div>
-      )}
-      {servers.length === 0 && !adding && <p className="arc-empty">No servers running.</p>}
-      <ul className="arc-rows">
-        {servers.map((s) => (
-          <li key={s.name} className="arc-row">
-            <div className="arc-row-main">
-              <Plug size={14} className="arc-row-icon" />
-              <span className="arc-row-label">{s.name}</span>
-              <span className="arc-row-meta">{s.transport} · {s.toolCount} tool{s.toolCount === 1 ? "" : "s"}</span>
-              <span className="arc-spacer" />
-              <Toggle checked={s.enabled} onChange={(enabled) => toggle(s.name, enabled)} />
-              <button className="arc-iconbtn" onClick={() => client.send({ type: "mcp/removeServer", name: s.name })} title="Remove"><Trash2 size={14} /></button>
+    <>
+      <Section
+        title="Configured servers"
+        description="Model Context Protocol servers expose tools to the agent. Persisted to ~/.arc/mcp.json."
+        action={!adding && <button className="arc-btn" onClick={() => setAdding(true)}><Plus size={14} /> Add server</button>}
+      >
+        {adding && (
+          <div className="arc-form">
+            <div className="arc-form-row">
+              <input className="arc-input" placeholder="Server name" value={name} autoFocus onChange={(e) => setName(e.target.value)} />
+              <select className="arc-input" value={transportType} onChange={(e) => setTransportType(e.target.value as "stdio" | "http")}>
+                <option value="stdio">stdio</option>
+                <option value="http">http</option>
+              </select>
             </div>
-          </li>
-        ))}
-      </ul>
+            {transportType === "stdio" ? (
+              <input className="arc-input" placeholder="command + args" value={command} onChange={(e) => setCommand(e.target.value)} />
+            ) : (
+              <input className="arc-input" placeholder="https://…" value={url} onChange={(e) => setUrl(e.target.value)} />
+            )}
+            <div className="arc-form-actions">
+              <button className="arc-btn" onClick={add}><Check size={14} /> Save</button>
+              <button className="arc-btn-ghost" onClick={() => setAdding(false)}>Cancel</button>
+            </div>
+          </div>
+        )}
+        {servers.length === 0 && !adding && <p className="arc-empty">No servers configured.</p>}
+        <ul className="arc-rows">
+          {servers.map((s) => (
+            <li key={s.name} className="arc-row">
+              <div className="arc-row-main">
+                <Plug size={14} className="arc-row-icon" />
+                <span className="arc-row-label">{s.name}</span>
+                <span className="arc-row-meta">{s.transport} · {s.toolCount} tool{s.toolCount === 1 ? "" : "s"}</span>
+                <span className="arc-spacer" />
+                <Toggle checked={s.enabled} onChange={(enabled) => toggle(s.name, enabled)} />
+                <button className="arc-iconbtn" onClick={() => client.send({ type: "mcp/removeServer", name: s.name })} title="Remove"><Trash2 size={14} /></button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </Section>
+      <McpMarketplace client={client} existingServers={servers} />
+    </>
+  );
+}
+function McpMarketplace({ client, existingServers }: { client: RpcClient; existingServers: { name: string }[] }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [installing, setInstalling] = useState<string | null>(null);
+  const installed = new Set(existingServers.map((s) => s.name));
+  useEffect(() => {
+    const off = client.on((e: any) => {
+      if (e.type === "mcp/marketplaceResults") {
+        setLoading(false);
+        if (e.error) setError(e.error);
+        else { setResults(e.results ?? []); setError(null); }
+      }
+    });
+    client.send({ type: "mcp/marketplaceSearch", query: "" });
+    return off;
+  }, [client]);
+  const search = () => {
+    setLoading(true); setError(null);
+    client.send({ type: "mcp/marketplaceSearch", query: query.trim() });
+  };
+  const install = (item: any) => {
+    const srv = item.server ?? item;
+    const name = srv.name;
+    setInstalling(name);
+    const pkg = srv.packages?.[0];
+    const remote = srv.remotes?.[0];
+    if (remote?.type === "http" && remote.url) {
+      client.send({ type: "mcp/addServer", name, transport: { type: "http", url: remote.url } });
+    } else if (pkg) {
+      const cmd = pkg.registryType === "pypi" ? `uvx ${pkg.identifier}` : `npx -y ${pkg.identifier}`;
+      const parts = cmd.trim().split(/\s+/);
+      client.send({ type: "mcp/addServer", name, transport: { type: "stdio", command: parts[0], args: parts.slice(1) } });
+    }
+    setTimeout(() => setInstalling(null), 3000);
+  };
+  const remoteType = (item: any) => {
+    const r = item.server?.remotes?.[0];
+    if (r?.type === "http") return "HTTP";
+    return "stdio";
+  };
+  return (
+    <Section title="Marketplace" description="Browse the official MCP registry for ready-to-install servers.">
+      <div style={{ marginBottom: 12 }}>
+        <input className="arc-input arc-input-grow" placeholder="Filter by name…" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && search()} />
+      </div>
+      {loading && <p className="arc-empty">Loading marketplace…</p>}
+      {error && <p className="arc-empty" style={{ color: "var(--arc-err)" }}>{error}</p>}
+      {!loading && !error && results.length === 0 && <p className="arc-empty">No results.</p>}
+      <div className="arc-mcp-cards">
+        {results.map((item) => {
+          const srv = item.server ?? item;
+          const isInstalled = installed.has(srv.name);
+          const isInstalling = installing === srv.name;
+          const pkg = srv.packages?.[0];
+          return (
+            <div key={srv.name} className={`arc-mcp-card ${isInstalled ? "is-installed" : ""}`}>
+              <div className="arc-mcp-card-head">
+                <span className="arc-mcp-card-name">{srv.title || srv.name}</span>
+              </div>
+              <p className="arc-mcp-card-desc">{srv.description || ""}</p>
+              <div className="arc-mcp-card-foot">
+                {pkg ? <code>{pkg.identifier}</code> : <span>{remoteType(item)}</span>}
+                {isInstalled ? (
+                  <span style={{ color: "var(--arc-ok)", fontSize: 11, fontWeight: 500 }}>installed</span>
+                ) : (
+                  <button className="arc-btn" style={{ padding: "2px 10px", fontSize: 11 }} onClick={() => install(item)} disabled={isInstalling}>
+                    {isInstalling ? "…" : "Install"}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </Section>
   );
 }
-function BehaviorTab({ client }: { client: RpcClient }) {
-  const [notifEnabled, setNotifEnabled] = useState(true);
-  const [shellApproval, setShellApproval] = useState<"always" | "allowlist" | "off">("allowlist");
-  const [allowlist, setAllowlist] = useState("ls,dir,cat,type,cp,copy,mv,move,rm,del,mkdir,rmdir,grep,rg,find,findstr,sed,awk,diff,git,gh,pnpm,npm,yarn,npx,node,python,python3,pip,pip3,go,cargo,rustc,dotnet,java,javac,make,gcc,g++,curl,wget,tar,gzip,gunzip,zip,unzip,ssh,scp,docker,kubectl,tsc,eslint,prettier,jest,vitest,esbuild,vite,pwsh,powershell,Get-ChildItem,Get-Content,Set-Content,New-Item,Remove-Item,Copy-Item,Move-Item,Test-Path,Select-String,Invoke-WebRequest,echo,cd,tasklist,taskkill,netstat,ping,ipconfig,whoami,winget,choco");
+function ShellTab({ client }: { client: RpcClient }) {
   const [compactionStrategy, setCompactionStrategy] = useState<"model-aware" | "fixed">("model-aware");
   const [safetyMargin, setSafetyMargin] = useState(0.15);
   const [titleGenMethod, setTitleGenMethod] = useState<"first-words" | "ollama">("first-words");
   useEffect(() => {
-    void client.request("arc.notifications.enabled").then((v) => setNotifEnabled(v !== false));
-    void client.request("arc.shell.approval").then((v) => setShellApproval((v as typeof shellApproval) ?? "allowlist"));
-    void client.request("arc.shell.allowlist").then((v) => setAllowlist(Array.isArray(v) ? (v as string[]).join(",") : "ls,dir,cat,type,cp,copy,mv,move,rm,del,mkdir,rmdir,grep,rg,find,findstr,sed,awk,diff,git,gh,pnpm,npm,yarn,npx,node,python,python3,pip,pip3,go,cargo,rustc,dotnet,java,javac,make,gcc,g++,curl,wget,tar,gzip,gunzip,zip,unzip,ssh,scp,docker,kubectl,tsc,eslint,prettier,jest,vitest,esbuild,vite,pwsh,powershell,Get-ChildItem,Get-Content,Set-Content,New-Item,Remove-Item,Copy-Item,Move-Item,Test-Path,Select-String,Invoke-WebRequest,echo,cd,tasklist,taskkill,netstat,ping,ipconfig,whoami,winget,choco"));
     void client.request("arc.compaction.strategy").then((v) => setCompactionStrategy((v as typeof compactionStrategy) ?? "model-aware"));
     void client.request("arc.compaction.safetyMargin").then((v) => setSafetyMargin(typeof v === "number" ? v : 0.15));
     void client.request("arc.titleGeneration.method").then((v) => setTitleGenMethod(v === "ollama" ? "ollama" : "first-words"));
   }, [client]);
-  const PROMPTS = [
-    { name: "Global default", meta: "built into the extension", action: null as React.ReactNode },
-    { name: "~/.arc/workspaces/*/prompt.md", meta: "workspace prompt", action: <button className="arc-btn-ghost" onClick={() => client.send({ type: "ui/openPrompt" })}>Open</button> },
-    { name: "AGENTS.md / CLAUDE.md · ~/.arc/workspaces/*/instructions.md", meta: "auto-loaded rules files", action: null },
-    { name: "~/.arc/workspaces/*/prompts/*.md", meta: "per-mode prompt overrides", action: null },
-  ];
   return (
     <>
-      <Section title="Behavior" description="These mirror Arc's VS Code settings.">
+      <Section title="Compaction" description="Controls when and how conversation context is summarized.">
         <ul className="arc-rows">
           <li className="arc-row"><div className="arc-row-main">
-            <span className="arc-row-label">Notifications</span>
-            <span className="arc-row-meta">OS notifications on completion, handoff, and input</span>
-            <span className="arc-spacer" />
-            <Toggle checked={notifEnabled} onChange={(v) => { setNotifEnabled(v); client.send({ type: "config/set", key: "arc.notifications.enabled", value: v }); }} />
-          </div></li>
-          <li className="arc-row"><div className="arc-row-main">
-            <span className="arc-row-label">Shell approval</span>
-            <span className="arc-spacer" />
-            <select className="arc-input arc-input-sm" value={shellApproval} onChange={(e) => { const v = e.target.value as typeof shellApproval; setShellApproval(v); client.send({ type: "config/set", key: "arc.shell.approval", value: v }); }}>
-              <option value="allowlist">allowlist</option>
-              <option value="always">always ask</option>
-              <option value="off">never ask</option>
-            </select>
-          </div></li>
-          <li className="arc-row"><div className="arc-row-main">
-            <span className="arc-row-label">Allowlist</span>
-            <input className="arc-input arc-input-grow" value={allowlist} onChange={(e) => setAllowlist(e.target.value)} onBlur={() => client.send({ type: "config/set", key: "arc.shell.allowlist", value: allowlist.split(",").map((s) => s.trim()).filter(Boolean) })} />
-          </div></li>
-          <li className="arc-row"><div className="arc-row-main">
-            <span className="arc-row-label">Compaction</span>
+            <span className="arc-row-label">Strategy</span>
             <span className="arc-spacer" />
             <select className="arc-input arc-input-sm" value={compactionStrategy} onChange={(e) => { const v = e.target.value as typeof compactionStrategy; setCompactionStrategy(v); client.send({ type: "config/set", key: "arc.compaction.strategy", value: v }); }}>
               <option value="model-aware">model-aware</option>
@@ -450,13 +515,16 @@ function BehaviorTab({ client }: { client: RpcClient }) {
           </div></li>
           <li className="arc-row"><div className="arc-row-main">
             <span className="arc-row-label">Safety margin</span>
-            <span className="arc-row-meta">window reserved for output</span>
+            <span className="arc-row-meta">window reserved for model output</span>
             <span className="arc-spacer" />
             <input className="arc-input arc-input-sm" type="number" min={0} max={0.5} step={0.05} value={safetyMargin} onChange={(e) => setSafetyMargin(Number(e.target.value))} onBlur={() => client.send({ type: "config/set", key: "arc.compaction.safetyMargin", value: safetyMargin })} />
           </div></li>
+        </ul>
+      </Section>
+      <Section title="Titles" description="How new chat titles are generated.">
+        <ul className="arc-rows">
           <li className="arc-row"><div className="arc-row-main">
-            <span className="arc-row-label">Chat title generation</span>
-            <span className="arc-row-meta">how new chat titles are created</span>
+            <span className="arc-row-label">Method</span>
             <span className="arc-spacer" />
             <select className="arc-input arc-input-sm" value={titleGenMethod} onChange={(e) => { const v = e.target.value as typeof titleGenMethod; setTitleGenMethod(v); client.send({ type: "config/set", key: "arc.titleGeneration.method", value: v }); }}>
               <option value="first-words">first 40 chars</option>
@@ -465,30 +533,88 @@ function BehaviorTab({ client }: { client: RpcClient }) {
           </div></li>
         </ul>
       </Section>
-      <Section title="Image Processing" description="How attached images are handled when the active model is not multimodal.">
+      <Section title="Image processing" description="How attached images are handled when the active model is not multimodal.">
         <ImageProcessingSection client={client} />
       </Section>
-      <Section title="System prompts" description="Higher-precedence content overrides lower. Variables {{workspace}}, {{os}}, {{date}} are supported.">
+    </>
+  );
+}
+function ContextTab({ client }: { client: RpcClient }) {
+  const [compactionStrategy, setCompactionStrategy] = useState<"model-aware" | "fixed">("model-aware");
+  const [safetyMargin, setSafetyMargin] = useState(0.15);
+  const [titleGenMethod, setTitleGenMethod] = useState<"first-words" | "ollama">("first-words");
+  useEffect(() => {
+    void client.request("arc.compaction.strategy").then((v) => setCompactionStrategy((v as typeof compactionStrategy) ?? "model-aware"));
+    void client.request("arc.compaction.safetyMargin").then((v) => setSafetyMargin(typeof v === "number" ? v : 0.15));
+    void client.request("arc.titleGeneration.method").then((v) => setTitleGenMethod(v === "ollama" ? "ollama" : "first-words"));
+  }, [client]);
+  return (
+    <>
+      <Section title="Compaction" description="Controls when and how conversation context is summarized.">
         <ul className="arc-rows">
-          {PROMPTS.map((r) => (
-            <li key={r.name} className="arc-row">
-              <div className="arc-row-main">
-                <span className="arc-row-label">{r.name}</span>
-                <span className="arc-row-meta">{r.meta}</span>
-                <span className="arc-spacer" />
-                {r.action}
-              </div>
-            </li>
-          ))}
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Strategy</span>
+            <span className="arc-spacer" />
+            <select className="arc-input arc-input-sm" value={compactionStrategy} onChange={(e) => { const v = e.target.value as typeof compactionStrategy; setCompactionStrategy(v); client.send({ type: "config/set", key: "arc.compaction.strategy", value: v }); }}>
+              <option value="model-aware">model-aware</option>
+              <option value="fixed">fixed (75%)</option>
+            </select>
+          </div></li>
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Safety margin</span>
+            <span className="arc-row-meta">window reserved for model output</span>
+            <span className="arc-spacer" />
+            <input className="arc-input arc-input-sm" type="number" min={0} max={0.5} step={0.05} value={safetyMargin} onChange={(e) => setSafetyMargin(Number(e.target.value))} onBlur={() => client.send({ type: "config/set", key: "arc.compaction.safetyMargin", value: safetyMargin })} />
+          </div></li>
         </ul>
       </Section>
+      <Section title="Titles" description="How new chat titles are generated.">
+        <ul className="arc-rows">
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Method</span>
+            <span className="arc-spacer" />
+            <select className="arc-input arc-input-sm" value={titleGenMethod} onChange={(e) => { const v = e.target.value as typeof titleGenMethod; setTitleGenMethod(v); client.send({ type: "config/set", key: "arc.titleGeneration.method", value: v }); }}>
+              <option value="first-words">first 40 chars</option>
+              <option value="ollama">gemma3:1b</option>
+            </select>
+          </div></li>
+        </ul>
+      </Section>
+      <Section title="Image processing" description="How attached images are handled when the active model is not multimodal.">
+        <ImageProcessingSection client={client} />
+      </Section>
     </>
+  );
+}
+function PromptsTab({ client }: { client: RpcClient }) {
+  const PROMPTS = [
+    { name: "Global default", meta: "built into the extension", action: null as React.ReactNode },
+    { name: "~/.arc/workspaces/*/prompt.md", meta: "workspace prompt", action: <button className="arc-btn-ghost" onClick={() => client.send({ type: "ui/openPrompt" })}>Open</button> },
+    { name: "AGENTS.md / CLAUDE.md · ~/.arc/workspaces/*/instructions.md", meta: "auto-loaded rules files", action: null },
+    { name: "~/.arc/workspaces/*/prompts/*.md", meta: "per-mode prompt overrides", action: null },
+  ];
+  return (
+    <Section title="System prompts" description="Higher-precedence content overrides lower. Variables {{workspace}}, {{os}}, {{date}} are supported.">
+      <ul className="arc-rows">
+        {PROMPTS.map((r) => (
+          <li key={r.name} className="arc-row">
+            <div className="arc-row-main">
+              <span className="arc-row-label">{r.name}</span>
+              <span className="arc-row-meta">{r.meta}</span>
+              <span className="arc-spacer" />
+              {r.action}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </Section>
   );
 }
 function SearchTab({ client }: { client: RpcClient }) {
   const [enabled, setEnabled] = useState(true);
   const [backend, setBackend] = useState<"hash-based" | "semantic">("hash-based");
-  const [modelTier, setModelTier] = useState<"low" | "mid" | "high">("low");
+  const [modelTier, setModelTier] = useState<"low" | "mid" | "high" | "custom">("low");
+  const [customModel, setCustomModel] = useState("");
   const [ollamaUrl, setOllamaUrl] = useState("http://127.0.0.1:11434");
   const [fileCount, setFileCount] = useState(0);
   const [chunkCount, setChunkCount] = useState(0);
@@ -497,7 +623,12 @@ function SearchTab({ client }: { client: RpcClient }) {
   useEffect(() => {
     void client.request("arc.search.enabled").then((v) => setEnabled(v !== false));
     void client.request("arc.search.backend").then((v) => setBackend((v === "semantic" ? "semantic" : "hash-based")));
-    void client.request("arc.search.modelTier").then((v) => setModelTier((v === "mid" || v === "high") ? v as "low" | "mid" | "high" : "low"));
+    void client.request("arc.search.modelTier").then((v) => {
+      const known = ["low", "mid", "high"];
+      if (typeof v === "string" && known.includes(v)) { setModelTier(v as "low" | "mid" | "high"); setCustomModel(""); }
+      else if (typeof v === "string" && v) { setModelTier("custom"); setCustomModel(v); }
+      else { setModelTier("low"); setCustomModel(""); }
+    });
     void client.request("arc.search.ollamaUrl").then((v) => setOllamaUrl(typeof v === "string" ? v : "http://127.0.0.1:11434"));
     void client.request("arc.search.fileCount").then((v) => setFileCount(typeof v === "number" ? v : 0));
     void client.request("arc.search.chunkCount").then((v) => setChunkCount(typeof v === "number" ? v : 0));
@@ -512,7 +643,7 @@ function SearchTab({ client }: { client: RpcClient }) {
     });
     return off;
   }, [client]);
-  const modelLabel = modelTier === "low" ? "nomic-embed-text:v1.5 (768d)" : modelTier === "mid" ? "qwen3-embedding:0.6b (1024d)" : "qwen3-embedding:8b (4096d)";
+  const modelLabel = modelTier === "custom" ? customModel || "custom" : modelTier === "low" ? "nomic-embed-text:v1.5 (768d)" : modelTier === "mid" ? "qwen3-embedding:0.6b (1024d)" : "qwen3-embedding:8b (4096d)";
   const pct = progress.scanned > 0 ? (progress.indexed / progress.scanned) * 100 : 0;
   const startIndexing = () => {
     setIndexing(true);
@@ -542,15 +673,21 @@ function SearchTab({ client }: { client: RpcClient }) {
         {backend === "semantic" && (
           <>
             <li className="arc-row"><div className="arc-row-main">
-              <span className="arc-row-label">Model tier</span>
+              <span className="arc-row-label">Model</span>
               <span className="arc-row-meta">{modelLabel}</span>
               <span className="arc-spacer" />
-              <select className="arc-input arc-input-sm" value={modelTier} onChange={(e) => { const v = e.target.value as "low" | "mid" | "high"; setModelTier(v); client.send({ type: "config/set", key: "arc.search.modelTier", value: v }); }}>
+              <select className="arc-input arc-input-sm" value={modelTier} onChange={(e) => { const v = e.target.value as "low" | "mid" | "high" | "custom"; setModelTier(v); if (v !== "custom") { client.send({ type: "config/set", key: "arc.search.modelTier", value: v }); setCustomModel(""); } }}>
                 <option value="low">nomic-embed-text:v1.5</option>
                 <option value="mid">qwen3-embedding:0.6b</option>
                 <option value="high">qwen3-embedding:8b</option>
+                <option value="custom">custom…</option>
               </select>
             </div></li>
+            {modelTier === "custom" && (
+              <li className="arc-row"><div className="arc-row-main">
+                <input className="arc-input arc-input-grow" placeholder="model slug (e.g. bge-m3:567m)" value={customModel} onChange={(e) => setCustomModel(e.target.value)} onBlur={() => { if (customModel.trim()) client.send({ type: "config/set", key: "arc.search.modelTier", value: customModel.trim() }); }} />
+              </div></li>
+            )}
             <li className="arc-row"><div className="arc-row-main">
               <span className="arc-row-label">Ollama URL</span>
               <input className="arc-input arc-input-grow" value={ollamaUrl} onChange={(e) => { const v = e.target.value; setOllamaUrl(v); }} onBlur={() => client.send({ type: "config/set", key: "arc.search.ollamaUrl", value: ollamaUrl })} placeholder="http://127.0.0.1:11434" />
@@ -584,7 +721,7 @@ function AboutSection({ logoTextUri, version }: { logoTextUri: string; version: 
           <p className="arc-about-version" style={{ margin: 0, fontSize: "clamp(11px, 1.4vw, 16px)", fontWeight: 600 }}>v{version}</p>
           <p className="arc-about-alpha" style={{ display: "flex", gap: "clamp(4px, 0.8vw, 10px)", alignItems: "flex-start", fontSize: "clamp(10px, 1.1vw, 13px)", color: "var(--vscode-descriptionForeground)", margin: 0 }}>
             <Info size={16} style={{ flexShrink: 0, marginTop: 1, width: "clamp(12px, 1.6vw, 18px)", height: "clamp(12px, 1.6vw, 18px)" }} />
-            <span>This extension is in <strong>alpha testing</strong>. Features, APIs, and configuration formats may change without notice.</span>
+            <span>This extension is in <strong style={{ color: "var(--vscode-foreground)" }}>alpha testing</strong>. Features, APIs, and configuration formats may change without notice.</span>
           </p>
         </div>
       </div>

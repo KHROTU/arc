@@ -374,8 +374,9 @@ export function buildToolSpecs(
   enabled: Iterable<string>,
   mcpTools?: { server: string; name: string; description?: string; inputSchema?: Record<string, unknown> }[],
   opts?: { maxIndividualMcpTools?: number },
-): ToolSpec[] {
+): { specs: ToolSpec[]; mcpReverse: Map<string, { server: string; tool: string }> } {
   const specs: ToolSpec[] = [];
+  const mcpReverse: Map<string, { server: string; tool: string }> = new Map();
   for (const name of enabled) {
     const def = TOOL_PARAM_SPECS[name];
     if (!def) continue;
@@ -389,6 +390,7 @@ export function buildToolSpecs(
       const specName = mcpToolSpecName(t.server, t.name);
       if (!VALID_SPEC_NAME.test(specName)) continue;
       if (mcpEnabled.has("mcp.call") || mcpEnabled.has(specName)) {
+        mcpReverse.set(specName, { server: t.server, tool: t.name });
         specs.push({
           name: specName,
           description: `[MCP ${t.server}] ${t.description ?? t.name}`,
@@ -397,12 +399,15 @@ export function buildToolSpecs(
       }
     }
   }
-  return specs;
+  return { specs, mcpReverse };
 }
 const MCP_TOOL_SEP = "__";
 const VALID_SPEC_NAME = /^[a-zA-Z0-9_-]+$/;
+function safeServerName(server: string): string {
+  return server.replace(/[^a-zA-Z0-9_.-]/g, "_");
+}
 export function mcpToolSpecName(server: string, tool: string): string {
-  return `mcp${MCP_TOOL_SEP}${server}${MCP_TOOL_SEP}${tool}`;
+  return `mcp${MCP_TOOL_SEP}${safeServerName(server)}${MCP_TOOL_SEP}${tool}`;
 }
 export function isMcpToolSpec(name: string): boolean {
   return name.startsWith("mcp__") && name.indexOf("__", 5) > 5;

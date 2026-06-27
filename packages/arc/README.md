@@ -1,4 +1,4 @@
-<p align="center"><img src="packages/arc/assets/arc-logo-mono.png" alt="Arc" /></p>
+<p align="center"><img src="assets/arc-logo-mono.png" alt="Arc" /></p>
 
 **A high-performance, lightweight agentic coding assistant for VS Code.**
 
