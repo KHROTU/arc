@@ -23,6 +23,12 @@ export const PROVIDERS: ProviderSpec[] = [
   { kind: "ollama", label: "Ollama", defaultBaseUrl: "http://127.0.0.1:11434", docs: "https://ollama.com/library" },
   { kind: "vscode-lm", label: "VS Code Language Models" },
   { kind: "openai-compatible", label: "OpenAI-compatible" },
+  { kind: "minimax", label: "MiniMax", defaultBaseUrl: "https://api.minimax.io/v1", docs: "https://platform.minimax.io/docs" },
+  { kind: "minimax-cn", label: "MiniMax (CN)", defaultBaseUrl: "https://api.minimaxi.com/v1", docs: "https://platform.minimax.io/docs" },
+  { kind: "kimi", label: "Kimi", defaultBaseUrl: "https://api.moonshot.ai/v1", docs: "https://platform.moonshot.ai/docs" },
+  { kind: "kimi-cn", label: "Kimi (CN)", defaultBaseUrl: "https://api.moonshot.cn/v1", docs: "https://platform.moonshot.cn/docs" },
+  { kind: "z-ai", label: "Z.ai", defaultBaseUrl: "https://api.z.ai/api/paas/v4", docs: "https://docs.z.ai" },
+  { kind: "z-ai-cn", label: "Z.ai (CN)", defaultBaseUrl: "https://open.bigmodel.cn/api/paas/v4", docs: "https://open.bigmodel.cn/dev/howuse/model" },
 ];
 export function getProviderSpec(kind: ProviderKind): ProviderSpec | undefined {
   return PROVIDERS.find((p) => p.kind === kind);

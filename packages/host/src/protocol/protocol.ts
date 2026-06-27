@@ -35,7 +35,13 @@ export type ProviderKind =
   | "cerebras"
   | "ollama"
   | "vscode-lm"
-  | "openai-compatible";
+  | "openai-compatible"
+  | "minimax"
+  | "minimax-cn"
+  | "kimi"
+  | "kimi-cn"
+  | "z-ai"
+  | "z-ai-cn";
 export interface ProviderConfig {
   id: string;
   kind: ProviderKind;
@@ -122,6 +128,7 @@ export type WebviewMsg =
   | { type: "mcp/removeServer"; name: string }
   | { type: "mcp/toggleServer"; name: string; enabled: boolean }
   | { type: "mcp/list" }
+  | { type: "mcp/marketplaceSearch"; query: string }
   | { type: "ui/attachSelection" }
   | { type: "ui/showProblems" }
   | { type: "ui/openFullscreen" }

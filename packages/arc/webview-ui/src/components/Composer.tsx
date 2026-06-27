@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useLayoutEffect } from "react";
-import { ArrowUp, Paperclip, Square, X } from "lucide-react";
+import { ArrowUp, Paperclip, Square, X, ChevronDown } from "lucide-react";
 type Attachment = { uri: string; preview?: string };
 type Props = {
   onSend: (text: string, attachments?: Attachment[], images?: string[]) => void;
@@ -21,7 +21,9 @@ export default function Composer({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [images, setImages] = useState<string[]>([]);
   const [enlarged, setEnlarged] = useState<string | null>(null);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const actionsRef = useRef<HTMLDivElement>(null);
   useEffect(() => { if (autoFocus) ref.current?.focus(); }, [autoFocus]);
   useLayoutEffect(() => {
     const el = ref.current;
@@ -29,6 +31,16 @@ export default function Composer({
     el.style.height = "0px";
     el.style.height = Math.min(el.scrollHeight, 200) + "px";
   }, [text]);
+  useEffect(() => {
+    if (!actionsOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (actionsRef.current && !actionsRef.current.contains(e.target as Node)) {
+        setActionsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [actionsOpen]);
   useEffect(() => {
     if (pendingAttachment) {
       setAttachments((prev) => [
@@ -125,12 +137,33 @@ export default function Composer({
         <button className="arc-composer-tool" title="Attach editor selection" onClick={attach} disabled={disabled}>
           <Paperclip size={14} />
         </button>
-        <span className="arc-composer-hint">⏎ send · ⇧⏎ newline · ⌃⏎ guide</span>
         <span className="arc-spacer" />
         {streaming ? (
-          <button className="arc-composer-send is-stop" onClick={onStop} title="Stop">
-            <Square size={12} strokeWidth={2.5} />
-          </button>
+          <div className="arc-send-group" ref={actionsRef}>
+            {text.trim() ? (
+              <button className="arc-composer-send" onClick={submit} title="Send (queues after current turn)">
+                <ArrowUp size={15} strokeWidth={2.5} />
+              </button>
+            ) : (
+              <button className="arc-composer-send is-stop" onClick={onStop} title="Stop">
+                <Square size={12} strokeWidth={2.5} />
+              </button>
+            )}
+            <span className="arc-send-sep" />
+            <button className="arc-composer-send is-chevron" onClick={() => setActionsOpen((o) => !o)} title="More actions">
+              <ChevronDown size={12} strokeWidth={2.5} />
+            </button>
+            {actionsOpen && (
+              <div className="arc-send-dropdown">
+                <button className="arc-send-dropdown-item" onClick={() => { setActionsOpen(false); if (text.trim() && onGuidance) { onGuidance(text.trim()); setText(""); } }} disabled={!text.trim()}>
+                  Steer
+                </button>
+                <button className="arc-send-dropdown-item" onClick={() => { setActionsOpen(false); if (text.trim()) { onSend(text.trim(), attachments.length ? attachments : undefined, images.length ? images : undefined); setText(""); setAttachments([]); setImages([]); } }} disabled={!text.trim()}>
+                  Queue
+                </button>
+              </div>
+            )}
+          </div>
         ) : (
           <button className="arc-composer-send" onClick={submit} disabled={disabled || !text.trim()} title="Send (Enter)">
             <ArrowUp size={15} strokeWidth={2.5} />

@@ -7,7 +7,7 @@ Arc is built for speed and precision. It combines a sophisticated multi-model or
 > [!NOTE]  
 > **Early Alpha:** Arc is evolving rapidly. We are actively refining APIs and features; expect frequent updates as we move toward a stable 1.0.
 
-[arc-demo.webm](https://github.com/user-attachments/assets/fa8d9d15-870f-49e2-b1ea-4ed57678483f)
+[arc-demo.webm](https://raw.githubusercontent.com/KHROTU/arc/main/assets/arc-demo.webm)
 
 ## Core Principles
 
