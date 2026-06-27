@@ -285,7 +285,7 @@ function classifyError(message: string): "timeout" | "rate_limit" | "auth" | "pr
   if (m.includes("500") || m.includes("502") || m.includes("503")) return "provider";
   return undefined;
 }
-const buildSystemPrompt = async (): Promise<string> => {
+const buildSystemPrompt = async (mcpAggregator?: McpAggregator): Promise<string> => {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
   const globalParts = await loadGlobalPrompts();
   const wsParts = await loadWorkspacePrompts(root);
@@ -339,7 +339,20 @@ file.read, file.edit, file.write, file.grep, file.glob, shell.run, shell.backgro
 ## Output
 - Report outcomes faithfully: if something fails, state what happened with the output. If something succeeds, state it plainly without hedging. If a step was skipped, say so.
 - Reference code as \`file_path:line_number\` — it's clickable in the UI.`;
-  const merged = mergePrecedence([{ scope: "global", body: basePrompt }, ...parts]);
+  let mcpBlock = "";
+  if (mcpAggregator) {
+    const tools = mcpAggregator.listTools();
+    if (tools.length > 0) {
+      const byServer = new Map<string, typeof tools>();
+      for (const t of tools) { if (!byServer.has(t.server)) byServer.set(t.server, []); byServer.get(t.server)!.push(t); }
+      const lines = ["\n## MCP servers"];
+      for (const [server, serverTools] of byServer) {
+        lines.push(`- ${server} (${serverTools.length} tool${serverTools.length === 1 ? "" : "s"}): ${serverTools.map((t) => t.name).join(", ")}`);
+      }
+      mcpBlock = lines.join("\n");
+    }
+  }
+  const merged = mergePrecedence([{ scope: "global", body: basePrompt + mcpBlock }, ...parts]);
   if (skillRegistryReady) await skillRegistryReady;
   const skillsSection = skillRegistry ? skillRegistry.titlesForSystemPrompt() : "";
   return render(merged, {
@@ -350,7 +363,7 @@ file.read, file.edit, file.write, file.grep, file.glob, shell.run, shell.backgro
 };
 async function createAgent(session: Session): Promise<Agent | undefined> {
   if (!registry || !store || !lsp || !mcp || !ctxRef) return;
-  const systemPrompt = await buildSystemPrompt();
+  const systemPrompt = await buildSystemPrompt(mcp);
   const toolContext = {
     problems: () => lsp.allProblems(),
     problemsFor: (file: string) => lsp.problemsFor(file),
@@ -1071,6 +1084,29 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             const list = mcp.listServers().map((s) => ({ name: s.name, enabled: s.enabled, transport: s.transport.type, toolCount: s.tools.length }));
             webview.postMessage({ type: "mcp/list", servers: list });
           }
+          break;
+        }
+        case "mcp/marketplaceSearch": {
+          try {
+            const q = encodeURIComponent(msg.query ?? "");
+            const url = `https://registry.modelcontextprotocol.io/v0.1/servers?version=latest&limit=50${q ? "&search=" + q : ""}`;
+            const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+            if (!res.ok) { webview.postMessage({ type: "mcp/marketplaceResults", error: `HTTP ${res.status}` }); break; }
+            const data = await res.json();
+            const servers = (data.servers ?? []).sort((a: any, b: any) => {
+              const sa = a._meta?.["io.modelcontextprotocol.registry/official"]?.status ?? "";
+              const sb = b._meta?.["io.modelcontextprotocol.registry/official"]?.status ?? "";
+              if (sa !== sb) return sa === "active" ? -1 : sb === "active" ? 1 : 0;
+              const haPackagesA = a.server?.packages?.length > 0 ? 1 : 0;
+              const haPackagesB = b.server?.packages?.length > 0 ? 1 : 0;
+              if (haPackagesA !== haPackagesB) return haPackagesB - haPackagesA;
+              const haRemotesA = a.server?.remotes?.length > 0 ? 1 : 0;
+              const haRemotesB = b.server?.remotes?.length > 0 ? 1 : 0;
+              if (haRemotesA !== haRemotesB) return haRemotesB - haRemotesA;
+              return (a.server?.name ?? "").localeCompare(b.server?.name ?? "");
+            });
+            webview.postMessage({ type: "mcp/marketplaceResults", results: servers });
+          } catch (e: any) { webview.postMessage({ type: "mcp/marketplaceResults", error: e.message || "Unknown error" }); }
           break;
         }
         case "approval/response": {

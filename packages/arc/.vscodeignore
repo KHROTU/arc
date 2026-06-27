@@ -12,3 +12,5 @@ vitest.config.*.ts
 tsconfig.json
 tsconfig.*.json
 THIRD_PARTY.md
+assets/arc-logo-mono-text.png
+assets/arc-logo-pride-text.png

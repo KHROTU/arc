@@ -1,7 +1,7 @@
 {
   "name": "arc-workspace",
   "private": true,
-  "version": "0.4.3",
+  "version": "0.4.5",
   "description": "Arc — agentic coding VS Code extension (monorepo root).",
   "packageManager": "pnpm@9.0.0",
   "engines": {
@@ -9,11 +9,11 @@
   },
   "scripts": {
     "build": "pnpm -r build",
-    "build:ext": "pnpm --filter @arc/host build && pnpm --filter arc build",
+    "build:ext": "pnpm --filter @arc/host build && pnpm --filter arc-code build",
     "build:webview": "pnpm --filter @arc/webview build",
     "watch": "pnpm -r --parallel build --watch",
     "test": "pnpm -r test",
-    "package": "pnpm --filter arc package",
+    "package": "pnpm --filter arc-code package",
     "clean": "pnpm -r exec rm -rf dist out *.vsix"
   },
   "devDependencies": {
