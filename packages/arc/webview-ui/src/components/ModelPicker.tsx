@@ -99,9 +99,6 @@ export default function ModelPicker({ models, currentModelId, onSelect, variant 
         onClick={() => setOpen((o) => !o)}
         title={current ? `${current.label} · ${TIER_LABELS[current.tier]}` : "Select model"}
       >
-        <span className="arc-model-trigger-tier">
-          {current ? TIER_LABELS[current.tier] : ""}
-        </span>
         <span className="arc-model-trigger-label">
           {current ? current.label : "Select model"}
         </span>
@@ -131,10 +128,10 @@ export default function ModelPicker({ models, currentModelId, onSelect, variant 
                   onClick={() => selectModel(m.id)}
                   onMouseEnter={() => setActiveIdx(i)}
                 >
+                  <span className="arc-model-dropdown-item-label">{m.label}</span>
                   <span className="arc-model-dropdown-item-tier">
                     {TIER_LABELS[m.tier]}
                   </span>
-                  <span className="arc-model-dropdown-item-label">{m.label}</span>
                 </button>
               ))
             )}

@@ -40,6 +40,16 @@ export class McpAggregator {
   private servers = new Map<string, ServerEntry>();
   private listeners = new Set<McpListener>();
   private persist?: McpPersistence;
+  private resolveServer(name: string): ServerEntry | undefined {
+    const direct = this.servers.get(name);
+    if (direct) return direct;
+    const lower = name.toLowerCase();
+    for (const [key, entry] of this.servers) {
+      if (key.toLowerCase() === lower) return entry;
+      if (key.toLowerCase().endsWith("/" + lower) || key.toLowerCase().endsWith("_" + lower)) return entry;
+    }
+    return undefined;
+  }
   setPersistence(fn: McpPersistence) {
     this.persist = fn;
   }
@@ -60,9 +70,8 @@ export class McpAggregator {
     if (config.enabled) {
       try {
         await this.startServer(entry);
-      } catch (e) {
-        this.servers.delete(config.name);
-        throw e;
+      } catch {
+        entry.config.enabled = false;
       }
     }
     this.notify();
@@ -128,7 +137,7 @@ export class McpAggregator {
     return out;
   }
   async call(server: string, tool: string, args: Record<string, unknown>): Promise<{ ok: boolean; output: unknown }> {
-    const s = this.servers.get(server);
+    const s = this.resolveServer(server);
     if (!s) return { ok: false, output: `Unknown MCP server '${server}'` };
     if (!s.config.enabled) return { ok: false, output: `MCP server '${server}' is disabled.` };
     if (!s.client) return { ok: false, output: `MCP server '${server}' is not started.` };
@@ -140,7 +149,7 @@ export class McpAggregator {
     }
   }
   async readResource(server: string, uri: string): Promise<{ ok: boolean; output: unknown }> {
-    const s = this.servers.get(server);
+    const s = this.resolveServer(server);
     if (!s) return { ok: false, output: `Unknown MCP server '${server}'` };
     if (!s.client) return { ok: false, output: `MCP server '${server}' is not started.` };
     try {
@@ -151,7 +160,7 @@ export class McpAggregator {
     }
   }
   async getPrompt(server: string, name: string, args?: Record<string, unknown>): Promise<{ ok: boolean; output: unknown }> {
-    const s = this.servers.get(server);
+    const s = this.resolveServer(server);
     if (!s) return { ok: false, output: `Unknown MCP server '${server}'` };
     if (!s.client) return { ok: false, output: `MCP server '${server}' is not started.` };
     try {
@@ -185,6 +194,9 @@ export class McpAggregator {
     client.on("exit", () => this.notify());
     await client.start();
     entry.client = client;
+    await new Promise((r) => setTimeout(r, 1500));
+    await this.refreshEntry(entry);
+    await new Promise((r) => setTimeout(r, 3000));
     await this.refreshEntry(entry);
   }
   private async refreshEntry(entry: ServerEntry) {

@@ -281,7 +281,7 @@ export class McpClient extends EventEmitter {
   private async startStdio() {
     const t = this.config.transport;
     if (t.type !== "stdio") return;
-    this.proc = spawn(t.command, t.args ?? [], { env: { ...process.env, ...t.env }, stdio: ["pipe", "pipe", "pipe"] }) as ChildProcessByStdio<Writable, Readable, Readable>;
+    this.proc = spawn(t.command, t.args ?? [], { env: { ...process.env, ...t.env }, stdio: ["pipe", "pipe", "pipe"], shell: process.platform === "win32" }) as ChildProcessByStdio<Writable, Readable, Readable>;
     const rl = readline.createInterface({ input: this.proc.stdout });
     rl.on("line", (line) => {
       try {

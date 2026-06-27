@@ -69,6 +69,7 @@ export class Agent {
   private turnCount = 0;
   private lastTodoUpdate = 0;
   private pendingChain: { toolName: string; args: Record<string, unknown>; resultText: string; displayTitle: string } | null = null;
+  private mcpReverse: Map<string, { server: string; tool: string }> = new Map();
   constructor(
     private registry: ModelRegistry,
     private store: CheckpointStore,
@@ -293,7 +294,8 @@ export class Agent {
       const modeDef = this.opts.modeRegistry.get(this.currentMode);
       const modeAllowed = modeDef ? new Set(modeDef.allowedTools) : this.opts.enabledTools;
       const effectiveTools = new Set([...this.opts.enabledTools].filter((t) => modeAllowed.has(t)));
-      const toolSpecs = buildToolSpecs(effectiveTools, this.opts.toolContext.mcp?.listTools());
+      const { specs: toolSpecs, mcpReverse } = buildToolSpecs(effectiveTools, this.opts.toolContext.mcp?.listTools());
+      this.mcpReverse = mcpReverse;
       if (current) {
         const dec = decideCompaction(this.messages, current, this.tracker, undefined, this.lastPromptTokens, toolSpecs);
         if (dec.shouldCompact) {
@@ -372,8 +374,8 @@ export class Agent {
           }
           case "usage": {
             this.tracker.observe(model.id, ev.usage);
-            this.usageByModel[model.id] = addUsage(this.usageByModel[model.id], ev.usage);
-            this.usageByModel[model.id].cost = estimateCost(model, this.usageByModel[model.id]);
+            const turnCost = estimateCost(model, ev.usage);
+            this.usageByModel[model.id] = addUsage(this.usageByModel[model.id], { ...ev.usage, cost: turnCost });
             if (typeof ev.usage.prompt === "number" && ev.usage.prompt > 0) {
               this.lastPromptTokens = Math.max(this.lastPromptTokens, ev.usage.prompt);
             }
@@ -510,7 +512,10 @@ export class Agent {
         this.messages.push({ id: randomUUID(), role: "tool", content: out.output, toolCallId: tc.id, ts: Date.now() });
         return;
       }
-      const result = await mcp.call(parsed.server, parsed.tool, tc.args);
+      const resolved = this.mcpReverse.get(tc.name);
+      const server = resolved?.server ?? parsed.server;
+      const tool = resolved?.tool ?? parsed.tool;
+      const result = await mcp.call(server, tool, tc.args);
       const raw = typeof result.output === "string" ? result.output : JSON.stringify(result.output, null, 2);
       const output = await this.truncateToolOutput(raw, tc.name);
       this.appendToolOutput(tc.id, output, result.ok);
@@ -1134,7 +1139,7 @@ export class Agent {
 }
 function addUsage(a: TurnUsage | undefined, b: TurnUsage): TurnUsage {
   return {
-    prompt: (a?.prompt ?? 0) + b.prompt,
+    prompt: Math.max(a?.prompt ?? 0, b.prompt),
     completion: (a?.completion ?? 0) + b.completion,
     thinking: (a?.thinking ?? 0) + b.thinking,
     cost: (a?.cost ?? 0) + b.cost,

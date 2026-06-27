@@ -25,7 +25,7 @@ export const DEFAULT_APPROVALS: ApprovalsConfig = {
   "shell.other": "ask",
   browser: "ask",
   webfetch: "ask",
-  mcp: { default: "ask", perServer: {} },
+  mcp: { default: "auto", perServer: {} },
 };
 export type ApprovalCategory =
   | "read"
