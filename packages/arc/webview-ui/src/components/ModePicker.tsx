@@ -17,8 +17,9 @@ type Props = {
   modes: ModeDef[];
   currentMode: string;
   onSelect: (mode: string) => void;
+  variant?: "sidebar" | "fullscreen";
 };
-export default function ModePicker({ modes, currentMode, onSelect }: Props) {
+export default function ModePicker({ modes, currentMode, onSelect, variant }: Props) {
   const [open, setOpen] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -90,7 +91,7 @@ export default function ModePicker({ modes, currentMode, onSelect }: Props) {
                   {MODE_ICONS[m.slug] ?? <Wrench size={12} />}
                 </span>
                 <span className="arc-mode-dropdown-item-label">{MODE_LABELS[m.slug] ?? m.slug}</span>
-                <span className="arc-mode-dropdown-item-desc">{m.description}</span>
+                {variant !== "sidebar" && <span className="arc-mode-dropdown-item-desc">{m.description}</span>}
               </button>
             ))}
           </div>

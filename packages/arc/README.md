@@ -1,4 +1,4 @@
-<p align="center"><img src="https://raw.githubusercontent.com/KHROTU/arc/main/packages/arc/assets/arc-logo-mono-text.png" alt="Arc" /></p>
+<p align="center"><img src="assets/arc-logo-mono.png" alt="Arc" /></p>
 
 **A high-performance, lightweight agentic coding assistant for VS Code.**
 
@@ -7,7 +7,7 @@ Arc is built for speed and precision. It combines a sophisticated multi-model or
 > [!NOTE]  
 > **Early Alpha:** Arc is evolving rapidly. We are actively refining APIs and features; expect frequent updates as we move toward a stable 1.0.
 
-[arc-demo.webm](https://raw.githubusercontent.com/KHROTU/arc/main/assets/arc-demo.webm)
+[arc-demo.webm](https://github.com/user-attachments/assets/fa8d9d15-870f-49e2-b1ea-4ed57678483f)
 
 ## Core Principles
 
@@ -55,7 +55,7 @@ Arc is built for speed and precision. It combines a sophisticated multi-model or
 
 Arc aims to provide a top-of-the-line agentic experience with a minimal footprint. By optimizing our dependency tree and focusing on native VS Code APIs, we keep the extension fast and portable.
 
-| Extension | VSIX Size (as of June 27th, 2026) |
+| Extension | VSIX Size (as of June 28th, 2026) |
 | :--- | :--- |
 | **Arc** | **0.24 MB** |
 | Cline | 7.98 MB |
@@ -78,7 +78,7 @@ Arc aims to provide a top-of-the-line agentic experience with a minimal footprin
 Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=khrotu.arc-code) or directly via the VS Code CLI:
 
 ```bash
-code --install-extension packages/arc/arc-code-0.4.6.vsix
+code --install-extension packages/arc/arc-code-0.4.7.vsix
 ```
 
 ### Development

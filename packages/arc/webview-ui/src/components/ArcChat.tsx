@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Settings, Plus, Trash2, Pencil, Maximize2, X, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search } from "lucide-react";
+import { Settings, Plus, Trash2, Pencil, Maximize2, X, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search, ArrowLeft } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import ArcProcessUI, { type ProcessStep } from "./AgentProcess";
 import Composer from "./Composer";
@@ -58,6 +58,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState<{ id: string; text: string } | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [showSidebarList, setShowSidebarList] = useState(false);
   const [waiting, setWaiting] = useState(false);
   const [clarification, setClarification] = useState<{ id: string; question: string; options: string[] } | null>(null);
   const [error, setError] = useState<{ message: string; code?: string } | null>(null);
@@ -173,6 +174,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         case "model/list": setModels(e.models); setCurrentModel(e.currentModelId); break;
         case "provider/list": setProviders(e.providers); break;
         case "ui/showSettings": setShowSettings(true); break;
+        case "ui/showSearch": setShowSearch(true); break;
         case "autoApproveState": setAutoApproveActive(e.active); break;
         case "approval/request":
           setApproval({ id: e.id, description: e.description, kind: e.kind });
@@ -344,8 +346,35 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     }
     return null;
   }, [steps]);
+  const activeTitle = chats.find((c) => c.id === activeId)?.title ?? "Chat";
   return (
     <div className={`arc-shell arc-shell-${variant}`}>
+      {variant === "sidebar" && showSidebarList ? (
+        <div className="arc-body arc-body-sidebar">
+          <div className="arc-sidebar-nav">
+            <button className="arc-iconbtn" title="Back to chat" onClick={() => setShowSidebarList(false)}>
+              <ArrowLeft size={15} />
+            </button>
+            <span className="arc-sidebar-nav-label">Chats</span>
+          </div>
+          <div className="arc-sidebar-list-wrap">
+            <ChatList
+              chats={chats}
+              activeId={activeId}
+              onSelect={(id) => { switchChat(id); setShowSidebarList(false); }}
+              onNew={newChat}
+              onSearch={() => client.send({ type: "ui/openFullscreen", show: "search" })}
+              onRename={(id) => setRenaming({ id, value: chats.find((x) => x.id === id)?.title ?? "" })}
+              onDelete={deleteChat}
+              renaming={renaming}
+              setRenaming={setRenaming}
+              onCommitRename={(id, value) => { renameChat(id, value); setRenaming(null); }}
+              todos={latestTodos}
+            />
+          </div>
+        </div>
+      ) : (
+        <>
       <header className="arc-topbar">
         {variant === "fullscreen" && (
           <button className="arc-iconbtn" title={sidebarCollapsed ? "Show chat list" : "Hide chat list"} onClick={() => setSidebarCollapsed((c) => !c)}>
@@ -363,6 +392,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
             modes={modes}
             currentMode={currentMode}
             onSelect={selectMode}
+            variant={variant}
           />
         )}
         <span className="arc-topbar-spacer" />
@@ -380,10 +410,18 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         <button className={`arc-iconbtn ${autoApproveActive ? "arc-iconbtn-active" : ""}`} title={autoApproveActive ? "Disable auto-approve" : "Enable auto-approve (approve all tool calls)"} onClick={toggleAutoApprove}>
           {autoApproveActive ? <ShieldCheck size={15} /> : <ShieldOff size={15} />}
         </button>
-        <button className="arc-iconbtn" title="Settings" onClick={openSettings}>
+        <button className="arc-iconbtn" title="Settings" onClick={() => { if (variant === "sidebar") client.send({ type: "ui/openFullscreen", show: "settings" }); else openSettings(); }}>
           <Settings size={15} />
         </button>
       </header>
+      {variant === "sidebar" && (
+        <div className="arc-sidebar-nav">
+          <button className="arc-iconbtn" title="Back to chat list" onClick={() => setShowSidebarList(true)}>
+            <ArrowLeft size={15} />
+          </button>
+          <span className="arc-sidebar-nav-title" title={activeTitle}>{activeTitle}</span>
+        </div>
+      )}
       <div className={`arc-body arc-body-${variant}`}>
         {variant === "fullscreen" && !sidebarCollapsed && (
           <ChatList
@@ -540,6 +578,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           </footer>
         </main>
       </div>
+      </> )}
       {showSearch && (
         <ConversationSearch
           client={client}

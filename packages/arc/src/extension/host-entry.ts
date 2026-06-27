@@ -213,8 +213,11 @@ async function initializeAsync(context: vscode.ExtensionContext) {
   void tryLoadIndex();
   initResolve?.();
 }
-async function openFullscreen() {
+async function openFullscreen(): Promise<vscode.Webview | undefined> {
   if (!ctxRef) return;
+  for (const [, s] of fullscreenSessions) {
+    if (s.panel) { s.panel.reveal(); return s.panel.webview; }
+  }
   const panel = vscode.window.createWebviewPanel("arc.fullscreen", "Arc", vscode.ViewColumn.One, {
     enableScripts: true,
     retainContextWhenHidden: true,
@@ -231,6 +234,7 @@ async function openFullscreen() {
   panel.onDidDispose(() => {
     fullscreenSessions.delete(mapKey);
   });
+  return panel.webview;
 }
 function openSettings() {
   if (!ctxRef) return;
@@ -974,7 +978,14 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           void vscode.commands.executeCommand("arc.toggleProblems");
           break;
         case "ui/openFullscreen":
-          void vscode.commands.executeCommand("arc.openFullscreen");
+          void (async () => {
+            const wv = await openFullscreen();
+            const action = (msg as any).show;
+            if (wv && (action === "settings" || action === "search")) {
+              await new Promise((r) => setTimeout(r, 800));
+              wv.postMessage({ type: action === "settings" ? "ui/showSettings" : "ui/showSearch" } as HostMsg);
+            }
+          })();
           break;
         case "ui/openSettings":
           webview.postMessage({ type: "ui/showSettings" });
