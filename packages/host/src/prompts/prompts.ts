@@ -38,7 +38,7 @@ export async function loadGlobalPrompts(): Promise<PromptFile[]> {
 export async function loadWorkspacePrompts(root: string): Promise<PromptFile[]> {
   const out: PromptFile[] = [];
   const wsDir = getWorkspaceArcDir(root);
-  for (const rel of ["AGENTS.md", "CLAUDE.md"]) {
+  for (const rel of ["AGENTS.md", "CLAUDE.md", ".clinerules"]) {
     const p = path.join(root, rel);
     try {
       const body = await fs.readFile(p, "utf-8");

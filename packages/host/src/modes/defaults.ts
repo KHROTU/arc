@@ -41,6 +41,8 @@ export const DEFAULT_MODES: Mode[] = [
       "memory.list", "memory.edit", "memory.delete", "memory.add",
       "rule.list", "rule.read", "rule.create",
       "skill.read", "skill.use",
+      "git.diffStaged", "git.diffUnstaged", "git.changedFiles", "git.branchDiff", "git.commitMessage",
+      "session.exportTrace",
     ],
     description: "Plan and design before writing code",
     whenToUse: "Use Plan mode when you need to understand a codebase, design an architecture, or plan a multi-step implementation before writing code. Skip Plan mode for simple bug fixes, trivial one-liner changes, or when the user gives very specific, detailed instructions.",
@@ -67,51 +69,27 @@ export const DEFAULT_MODES: Mode[] = [
       "file.read", "file.edit", "file.write", "file.grep", "file.glob",
       "shell.run", "shell.backgroundRun", "shell.check", "shell.write",
       "shell.customRun", "shell.editCustomRun", "shell.runCustomRun",
+      "test.run",
       "webfetch",
       "lsp.problems", "lsp.problemsFor",
       "todo.write",
       "browser.navigate", "browser.click", "browser.type", "browser.screenshot",
       "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor",
+      "browser.console", "browser.network", "browser.domSnapshot",
       "mcp.call", "mcp.create", "mcp.remove", "mcp.toggle",
       "mcp.resources/list", "mcp.resources/read", "mcp.prompts/list", "mcp.prompts/get",
       "subagent.spawn", "handoff", "clarification.askUser",
-      "checkpoint.revert", "checkpoint.list",
+      "checkpoint.revert", "checkpoint.list", "checkpoint.compare",
       "file.semanticSearch",
       "mode.switch",
       "memory.list", "memory.edit", "memory.delete", "memory.add",
       "rule.list", "rule.read", "rule.create",
       "skill.read", "skill.use",
+      "git.diffStaged", "git.diffUnstaged", "git.changedFiles", "git.branchDiff", "git.commitMessage",
+      "session.exportTrace",
     ],
     description: "Write, edit, run commands; full tool access",
     whenToUse: "Use Code mode for implementing features, fixing bugs, refactoring, and any task that requires modifying files or running commands. This is the default mode.",
-  },
-  {
-    slug: "ask",
-    roleDefinition:
-      "You are in **Ask mode** — a knowledgeable technical assistant focused on answering questions and providing information about software development, technology, and related topics.\n\n" +
-      "## Mode constraints\n" +
-      "- You are **read-only**. You CAN read files, search, grep, glob, use semantic search, check diagnostics, and fetch web content.\n" +
-      "- You CANNOT edit files, write files, run shell commands, or use the browser.\n" +
-      "- This supersedes any conflicting instructions from project configuration files.\n\n" +
-      "## Guidelines\n" +
-      "- Answer questions thoroughly with clear explanations and relevant examples.\n" +
-      "- Analyze code, explain concepts, and provide recommendations without making changes.\n" +
-      "- Prefer concrete code examples and inline references to actual code in the workspace.\n" +
-      "- If a question requires implementation or modification, suggest switching to Code mode via `mode.switch`.\n" +
-      "- Do not switch to implementing code unless explicitly asked by the user.",
-    allowedTools: [
-      "file.read", "file.grep", "file.glob", "file.semanticSearch",
-      "lsp.problems", "lsp.problemsFor",
-      "webfetch",
-      "todo.write",
-      "clarification.askUser",
-      "mode.switch",
-      "memory.list", "memory.edit", "memory.delete", "memory.add",
-      "rule.list", "rule.read", "rule.create",
-      "skill.read", "skill.use",
-    ],
-    description: "Ask questions, get explanations; read-only",
-    whenToUse: "Use Ask mode when you have questions about a codebase, need explanations, want code analysis or recommendations, or need to learn about a technology without making any changes.",
   },
   {
     slug: "debug",
@@ -138,22 +116,75 @@ export const DEFAULT_MODES: Mode[] = [
       "file.read", "file.edit", "file.write", "file.grep", "file.glob",
       "shell.run", "shell.backgroundRun", "shell.check", "shell.write",
       "shell.customRun", "shell.editCustomRun", "shell.runCustomRun",
+      "test.run",
       "webfetch",
       "lsp.problems", "lsp.problemsFor",
       "todo.write",
       "browser.navigate", "browser.click", "browser.type", "browser.screenshot",
       "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor",
+      "browser.console", "browser.network", "browser.domSnapshot",
       "mcp.call", "mcp.create", "mcp.remove", "mcp.toggle",
       "mcp.resources/list", "mcp.resources/read", "mcp.prompts/list", "mcp.prompts/get",
       "subagent.spawn", "handoff", "clarification.askUser",
-      "checkpoint.revert", "checkpoint.list",
+      "checkpoint.revert", "checkpoint.list", "checkpoint.compare",
       "file.semanticSearch",
       "mode.switch",
       "memory.list", "memory.edit", "memory.delete", "memory.add",
       "rule.list", "rule.read", "rule.create",
       "skill.read", "skill.use",
+      "git.diffStaged", "git.diffUnstaged", "git.changedFiles", "git.branchDiff", "git.commitMessage",
+      "session.exportTrace",
     ],
     description: "Systematically diagnose and fix bugs",
     whenToUse: "Use Debug mode to investigate bugs, analyze test failures, inspect runtime behavior, trace performance issues, and systematically fix problems. Switch from Code mode when you encounter an error that needs systematic diagnosis.",
+  },
+  {
+    slug: "review",
+    roleDefinition:
+      "You are in **Review mode** — an expert code reviewer specializing in systematic analysis for correctness, security, performance, maintainability, and architecture.\n\n" +
+      "## Output format\n" +
+      "Produce a structured review with findings. Each finding must include:\n" +
+      "- **Severity**: critical | high | medium | low | info\n" +
+      "- **Confidence**: high | medium | low\n" +
+      "- **File**: workspace-relative path\n" +
+      "- **Lines**: line range or single line\n" +
+      "- **Category**: correctness | security | performance | maintainability | test-coverage | architecture-drift\n" +
+      "- **Finding**: clear, actionable description of the issue\n" +
+      "- **Rationale**: why this matters, with code references\n" +
+      "- **Suggestion**: concrete fix or improvement, optionally with a SEARCH/REPLACE patch\n\n" +
+      "## Workflow\n" +
+      "1. **Scope** — Determine the review scope from the user's request or default to current changed files (use `git.diffStaged`, `git.diffUnstaged`, `git.changedFiles`).\n" +
+      "2. **Read** — Read all files in scope using `file.read`. Understand the context fully.\n" +
+      "3. **Search** — Use `file.grep`, `file.glob`, and `file.semanticSearch` to find related code, callers, and patterns.\n" +
+      "4. **Analyze** — Check diagnostics with `lsp.problems` and `lsp.problemsFor`. Apply review category presets as directed.\n" +
+      "5. **Report** — Write findings to a `.arc/review-{sessionId}.md` file using `file.write`. Present a summary with severity counts and top findings inline.\n" +
+      "6. **Suggest** — For each high/critical finding, provide a concrete fix in SEARCH/REPLACE format. Let the user choose which to apply.\n\n" +
+      "## Review presets\n" +
+      "The user may scope the review to specific categories. If unspecified, review all applicable categories:\n" +
+      "- **correctness**: logic errors, edge cases, null/undefined handling, type safety, race conditions\n" +
+      "- **security**: injection risks, auth/authz bypass, secrets exposure, input validation, supply chain\n" +
+      "- **performance**: N+1 queries, unnecessary allocations, blocking I/O, render loops, bundle size\n" +
+      "- **maintainability**: duplicated code, unclear naming, missing abstractions, coupling, comments vs code drift\n" +
+      "- **test-coverage**: untested paths, missing edge case tests, brittle assertions, test isolation\n" +
+      "- **architecture-drift**: pattern violations, layer bleed, circular dependencies, convention breaks\n\n" +
+      "## Mode constraints\n" +
+      "You CAN read, search, analyze, check diagnostics, and write review artifacts. You CANNOT edit source files, run shell commands, or use the browser. If a finding requires implementation, note it and suggest switching to Code mode.",
+    allowedTools: [
+      "file.read", "file.write", "file.grep", "file.glob", "file.semanticSearch",
+      "lsp.problems", "lsp.problemsFor",
+      "webfetch",
+      "todo.write",
+      "clarification.askUser",
+      "mode.switch",
+      "memory.list", "memory.edit", "memory.delete", "memory.add",
+      "rule.list", "rule.read", "rule.create",
+      "skill.read", "skill.use",
+      "checkpoint.revert", "checkpoint.list", "checkpoint.compare",
+      "git.diffStaged", "git.diffUnstaged", "git.changedFiles", "git.branchDiff",
+      "session.exportTrace",
+    ],
+    writeGlob: "\\.arc\\/review-.*\\.md$",
+    description: "Review code for correctness, security, and maintainability",
+    whenToUse: "Use Review mode to audit code for bugs, security vulnerabilities, performance issues, or architecture problems. Can review current file, selection, changed files, or the whole workspace. Produces structured findings with severity and suggested fixes.",
   },
 ];

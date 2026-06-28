@@ -20,8 +20,11 @@ const host = {
   external: ["vscode", "playwright", "playwright-core", "playwright-firefox"],
   sourcemap: !isProd,
   minify: isProd,
-  keepNames: true,
+  minifyIdentifiers: isProd,
+  minifySyntax: isProd,
+  minifyWhitespace: isProd,
   treeShaking: true,
+  legalComments: isProd ? "none" : "inline",
   logLevel: "info",
   plugins: [
     {
@@ -32,6 +35,10 @@ const host = {
     },
   ],
 };
+if (isProd) {
+  host.drop = ["console", "debugger"];
+  host.pure = ["console.log", "console.debug", "console.info"];
+}
 
 const webview = {
   entryPoints: [resolve(__dirname, "webview-ui/src/entry.tsx")],
@@ -45,8 +52,11 @@ const webview = {
   define: { "process.env.NODE_ENV": JSON.stringify(isProd ? "production" : "development") },
   sourcemap: !isProd,
   minify: isProd,
-  keepNames: true,
+  minifyIdentifiers: isProd,
+  minifySyntax: isProd,
+  minifyWhitespace: isProd,
   treeShaking: true,
+  legalComments: isProd ? "none" : "inline",
   logLevel: "info",
   plugins: [
     {
@@ -69,6 +79,10 @@ const webview = {
     },
   ],
 };
+if (isProd) {
+  webview.drop = ["console", "debugger"];
+  webview.pure = ["console.log", "console.debug", "console.info"];
+}
 
 const ctx1 = await esbuild.context(host);
 const ctx2 = await esbuild.context(webview);

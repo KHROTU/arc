@@ -72,6 +72,18 @@ export interface TurnUsage {
   thinking: number;
   cost: number;
 }
+export type ExecutionEvent =
+  | { type: "tool_call"; turnId: string; toolCallId: string; toolName: string; args: Record<string, unknown>; ts: number; durationMs: number; ok: boolean; output?: string }
+  | { type: "model_call"; turnId: string; modelId: string; providerId: string; tier: ModelTier; ts: number; durationMs: number; usage?: TurnUsage }
+  | { type: "handoff"; turnId: string; fromModel: string; toModel: string; direction: "escalate" | "de-escalate"; reason: string; ts: number }
+  | { type: "compaction"; turnId: string; before: number; after: number; reason: string; ts: number }
+  | { type: "approval"; turnId: string; toolName: string; category: string; allowed: boolean; ts: number }
+  | { type: "subagent_spawn"; turnId: string; name: string; tier: ModelTier; ts: number }
+  | { type: "user_message"; turnId: string; content: string; ts: number }
+  | { type: "checkpoint_snapshot"; turnId: string; fileCount: number; ts: number }
+  | { type: "mode_switch"; turnId: string; from: string; to: string; ts: number }
+  | { type: "error"; turnId: string; message: string; ts: number }
+  | { type: "retry"; turnId: string; toolName: string; attempt: number; reason: string; ts: number };
 export interface TurnRecord {
   id: string;
   messages: ChatMessage[];
@@ -108,7 +120,14 @@ export type HostMsg =
   | { type: "approval/request"; id: string; description: string; kind: "shell" | "destructive" }
   | { type: "autoApproveState"; active: boolean }
   | { type: "search/indexProgress"; filesScanned: number; filesIndexed: number; chunksEmbedded: number; errors: number }
+  | { type: "mcp/testResult"; server?: string; output: string }
+  | { type: "mcp/traffic"; server: string; dir: string; msg: string }
+  | { type: "memory/list"; memories: { index: number; category: string; content: string; createdAt: string }[] }
+  | { type: "hooks/list"; hooks: { event: string; matcher: string; command: string; enabled: boolean; tools?: string[] }[] }
+  | { type: "session/loadComposer"; text: string }
+  | { type: "session/replaceState"; messages: ChatMessage[]; steps: ProcessStep[]; loadComposer?: string }
   | { type: "session/guidance"; text: string }
+  | { type: "session/timeline"; events: ExecutionEvent[] }
   | { type: "error"; message: string; code?: "timeout" | "rate_limit" | "auth" | "provider" | "malformed" | "network" | "aborted"; inReplyTo?: string };
 export type WebviewMsg =
   | { type: "chat/send"; text: string; attachments?: { uri: string; preview?: string }[]; images?: string[] }
@@ -130,6 +149,7 @@ export type WebviewMsg =
   | { type: "mcp/toggleServer"; name: string; enabled: boolean }
   | { type: "mcp/list" }
   | { type: "mcp/marketplaceSearch"; query: string }
+  | { type: "mcp/testCall"; server: string; tool: string }
   | { type: "ui/attachSelection" }
   | { type: "ui/showProblems" }
   | { type: "ui/openFullscreen" }
@@ -151,5 +171,11 @@ export type WebviewMsg =
   | { type: "mode/select"; mode: string }
   | { type: "autoApprove/toggle" }
   | { type: "approval/response"; id: string; allowed: boolean; rememberCommand?: string; rememberPrefix?: string }
+  | { type: "approval/setPreset"; preset: string }
   | { type: "chat/search"; query: string }
-  | { type: "chat/resume"; id: string };
+  | { type: "chat/resume"; id: string }
+  | { type: "chat/revertToMessage"; messageId: string; restoreFiles?: boolean; content?: string; loadToComposer?: boolean }
+  | { type: "chat/editMessage"; messageId: string; newContent: string; content?: string }
+  | { type: "memory/list" }
+  | { type: "memory/delete"; index: number }
+  | { type: "hooks/list" };

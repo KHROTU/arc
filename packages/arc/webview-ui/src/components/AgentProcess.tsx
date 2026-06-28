@@ -10,7 +10,8 @@ type StepType =
 interface TodoItem {
   id: string;
   text: string;
-  state: "pending" | "in_progress" | "done" | "skipped";
+  state: "pending" | "in_progress" | "done" | "skipped" | "blocked" | "failed";
+  children?: TodoItem[];
 }
 interface DiffHunk {
   added: boolean;

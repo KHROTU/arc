@@ -2,7 +2,7 @@
   "name": "arc-code",
   "displayName": "Arc",
   "description": "Agentic coding extension with tiered model routing, subagents, handoff, and per-file change snapshots.",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "publisher": "khrotu",
   "license": "Apache-2.0",
   "repository": {
@@ -123,7 +123,7 @@
         "arc.shell.allowlist": {
           "type": "array",
           "items": { "type": "string" },
-          "default": ["ls", "dir", "cat", "type", "cp", "copy", "mv", "move", "rm", "del", "mkdir", "rmdir", "grep", "rg", "find", "findstr", "sed", "awk", "diff", "git", "gh", "pnpm", "npm", "yarn", "npx", "node", "python", "python3", "pip", "pip3", "go", "cargo", "rustc", "dotnet", "java", "javac", "make", "gcc", "g++", "curl", "wget", "tar", "gzip", "gunzip", "zip", "unzip", "ssh", "scp", "docker", "kubectl", "tsc", "eslint", "prettier", "jest", "vitest", "esbuild", "vite", "pwsh", "powershell", "Get-ChildItem", "Get-Content", "Set-Content", "New-Item", "Remove-Item", "Copy-Item", "Move-Item", "Test-Path", "Select-String", "Invoke-WebRequest", "echo", "cd", "tasklist", "taskkill", "netstat", "ping", "ipconfig", "whoami", "winget", "choco"],
+          "default": ["ls", "dir", "cat", "type", "cp", "copy", "mv", "move", "rm", "del", "mkdir", "rmdir", "grep", "rg", "find", "findstr", "sed", "awk", "diff", "git", "gh", "pnpm", "npm", "yarn", "npx", "node", "python", "pip", "go", "cargo", "rustc", "make", "gcc", "g++", "curl", "wget", "tar", "zip", "unzip", "ssh", "docker", "kubectl", "tsc", "eslint", "prettier", "jest", "vitest", "esbuild", "vite", "pwsh", "powershell", "Get-ChildItem", "Get-Content", "Set-Content", "New-Item", "Remove-Item", "Copy-Item", "Move-Item", "Test-Path", "Select-String", "Invoke-WebRequest", "echo", "cd", "tasklist", "taskkill", "netstat", "ping", "ipconfig", "whoami"],
           "description": "Commands that can run without explicit approval when shell.approval is 'allowlist'."
         },
         "arc.compaction.strategy": {

@@ -114,7 +114,7 @@ export interface ToolResult {
   ok: boolean;
   output: string;
   touchedFiles?: string[];
-  todoState?: { items: { id: string; text: string; state: "pending" | "in_progress" | "done" | "skipped" }[] };
+  todoState?: { items: { id: string; text: string; state: "pending" | "in_progress" | "done" | "skipped" | "blocked" | "failed"; children?: { id: string; text: string; state: "pending" | "in_progress" | "done" | "skipped" | "blocked" | "failed" }[] }[] };
   clarification?: { id: string; answer: string };
   diffHunks?: DiffHunk[];
   filePath?: string;
@@ -397,6 +397,41 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       return { ok: allOk, output: `Ran custom run '${skill.name}':\n\n${results.join("\n\n")}` };
     },
   },
+  "test.run": {
+    description: "Run tests in the workspace. Auto-detects vitest, jest, mocha, pytest, or go test. Args: { scope?, path? } where scope is 'file'|'nearest'|'workspace'|'failed'.",
+    fn: async (args, ctx) => {
+      const scope = String(args.scope ?? "workspace");
+      const testPath = args.path ? String(args.path) : "";
+      let cmd = "";
+      try {
+        const pkgRaw = await fs.readFile(path.join(ctx.workspacePath, "package.json"), "utf-8");
+        const pkg = JSON.parse(pkgRaw);
+        if (pkg.scripts?.test) cmd = "pnpm test";
+        else if (pkg.devDependencies?.vitest || pkg.dependencies?.vitest) cmd = "npx vitest run";
+        else if (pkg.devDependencies?.jest || pkg.dependencies?.jest) cmd = "npx jest";
+        else if (pkg.devDependencies?.mocha || pkg.dependencies?.mocha) cmd = "npx mocha";
+      } catch {}
+      if (!cmd) {
+        try { await fs.access(path.join(ctx.workspacePath, "go.mod")); cmd = "go test ./..."; } catch {}
+      }
+      if (!cmd) {
+        try {
+          const pyFiles = await fs.readdir(ctx.workspacePath);
+          if (pyFiles.some((f) => f.startsWith("test_") && f.endsWith(".py"))) cmd = "python -m pytest";
+        } catch {}
+      }
+      if (!cmd) return { ok: false, output: "No test runner detected. Add a test script to package.json." };
+      if (scope === "file" && testPath) cmd = `${cmd} -- "${testPath}"`;
+      else if (scope === "failed" && (cmd.includes("vitest") || cmd.includes("jest"))) cmd = `${cmd} --last-failed`;
+      try {
+        const { stdout, stderr } = await pexec(cmd, { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
+        return { ok: true, output: stdout + (stderr ? `\n[stderr]\n${stderr}` : "") };
+      } catch (e: unknown) {
+        const err = e as { stdout?: string; stderr?: string; message?: string };
+        return { ok: false, output: (err.stdout ?? "") + (err.stderr ? `\n[stderr]\n${err.stderr}` : "") || err.message || "Tests failed." };
+      }
+    },
+  },
   "lsp.problems": {
     description: "Get ALL current LSP problems in the workspace (snapshot of the Problems tab). Args: {}",
     fn: async (_args, ctx) => {
@@ -627,6 +662,84 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       return { ok: true, output: `Rule '${name}' created.` };
     },
   },
+  "git.diffStaged": {
+    description: "Show the staged diff (git diff --cached). Args: { path? } to scope to a single file.",
+    fn: async (args, ctx) => {
+      try {
+        const scope = args.path ? ` -- "${String(args.path)}"` : "";
+        const { stdout, stderr } = await pexec(`git diff --cached${scope}`, { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
+        const output = stdout + (stderr ? `\n[stderr]\n${stderr}` : "");
+        return { ok: true, output: output || "(no staged changes)" };
+      } catch (e: unknown) {
+        return { ok: false, output: `git diffStaged failed: ${(e as Error).message}` };
+      }
+    },
+  },
+  "git.diffUnstaged": {
+    description: "Show the unstaged diff (git diff). Args: { path? } to scope to a single file.",
+    fn: async (args, ctx) => {
+      try {
+        const scope = args.path ? ` -- "${String(args.path)}"` : "";
+        const { stdout, stderr } = await pexec(`git diff${scope}`, { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
+        const output = stdout + (stderr ? `\n[stderr]\n${stderr}` : "");
+        return { ok: true, output: output || "(no unstaged changes)" };
+      } catch (e: unknown) {
+        return { ok: false, output: `git diffUnstaged failed: ${(e as Error).message}` };
+      }
+    },
+  },
+  "git.changedFiles": {
+    description: "List all changed files (staged and unstaged) with status. Args: {}",
+    fn: async (_args, ctx) => {
+      try {
+        const { stdout } = await pexec("git status --porcelain", { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
+        if (!stdout.trim()) return { ok: true, output: "(no changed files)" };
+        const lines = stdout.trim().split("\n").map((l) => {
+          const m = l.match(/^(..) (.+)$/);
+          if (!m) return l;
+          const status = m[1].trim();
+          const file = m[2].trim();
+          const staged = status.length > 0 && status !== "??";
+          return `${status || " "} ${file} ${staged ? "(staged)" : "(unstaged)"}`;
+        });
+        return { ok: true, output: lines.join("\n") };
+      } catch (e: unknown) {
+        return { ok: false, output: `git changedFiles failed: ${(e as Error).message}` };
+      }
+    },
+  },
+  "git.branchDiff": {
+    description: "Show the diff between the current branch and its merge base with a target branch (defaults to main/master). Args: { base? }",
+    fn: async (args, ctx) => {
+      try {
+        const base = String(args.base ?? "main");
+        const { stdout: mbOut } = await pexec(`git merge-base HEAD "${base}"`, { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL }).catch(() => ({ stdout: "" }));
+        const mergeBase = mbOut.trim();
+        const target = mergeBase || base;
+        const { stdout, stderr } = await pexec(`git diff "${target}"...HEAD`, { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
+        const output = stdout + (stderr ? `\n[stderr]\n${stderr}` : "");
+        return { ok: true, output: output || "(no differences from base)" };
+      } catch (e: unknown) {
+        return { ok: false, output: `git branchDiff failed: ${(e as Error).message}` };
+      }
+    },
+  },
+  "git.commitMessage": {
+    description: "Generate a well-formed commit message from a diff. Pass the diff as `diff` input, or omit to use the current staged diff. Args: { diff? }",
+    fn: async (args, ctx) => {
+      const diff = args.diff ? String(args.diff) : "";
+      if (!diff) {
+        try {
+          const { stdout } = await pexec("git diff --cached", { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
+          if (!stdout.trim()) return { ok: true, output: "(no staged changes to generate a commit message from)" };
+          return { ok: true, output: `Staged diff (use this as input to compose a commit message):\n${stdout}` };
+        } catch (e: unknown) {
+          return { ok: false, output: `Failed to read staged diff: ${(e as Error).message}` };
+        }
+      }
+      return { ok: true, output: `Diff provided (${diff.length} chars). Use this to compose a conventional commit message:\n${diff}` };
+    },
+  },
   "browser.hover": {
     description: "Hover over an element matching a CSS selector.",
     fn: async (args, ctx) => {
@@ -653,6 +766,32 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
         args.url ? String(args.url) : undefined,
         args.state ? String(args.state) as "networkidle" | "load" | "domcontentloaded" : undefined,
       );
+    },
+  },
+  "browser.console": {
+    description: "Read the browser's console log (last 50 entries). Args: {}",
+    fn: async (_args, ctx) => {
+      const b = await resolveBrowser(ctx.browser);
+      if (!b) return { ok: false, output: "Browser not available." };
+      const logs = b.consoleLog();
+      return { ok: true, output: logs.length ? logs.join("\n") : "(no console output)" };
+    },
+  },
+  "browser.network": {
+    description: "Read the browser's network request log (last 50 entries). Args: {}",
+    fn: async (_args, ctx) => {
+      const b = await resolveBrowser(ctx.browser);
+      if (!b) return { ok: false, output: "Browser not available." };
+      const logs = b.networkLog();
+      return { ok: true, output: logs.length ? logs.join("\n") : "(no network requests)" };
+    },
+  },
+  "browser.domSnapshot": {
+    description: "Get a combined snapshot of the browser's DOM state, console log, and network log. Args: {}",
+    fn: async (_args, ctx) => {
+      const b = await resolveBrowser(ctx.browser);
+      if (!b) return { ok: false, output: "Browser not available." };
+      return { ok: true, output: b.domSnapshot() || "(empty snapshot)" };
     },
   },
 };

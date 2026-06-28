@@ -10,6 +10,9 @@ export interface BrowserAdapter {
   scroll(pixels?: number, selector?: string): Promise<{ ok: boolean; output: string }>;
   waitFor(selector?: string, urlPattern?: string, state?: "networkidle" | "load" | "domcontentloaded"): Promise<{ ok: boolean; output: string }>;
   close(): Promise<void>;
+  consoleLog(): string[];
+  networkLog(): string[];
+  domSnapshot(): string;
 }
 export type BrowserKind = "chromium" | "firefox";
 interface ConsoleEntry { level: string; text: string; location: string; ts: number }
@@ -155,6 +158,9 @@ export async function createBrowser(kind: BrowserKind = "chromium", headless = t
       } catch (e) { return { ok: false, output: `Wait failed: ${(e as Error).message}` }; }
     },
     async close() { await browser.close().catch(() => undefined); },
+    consoleLog() { return consoleLog.map((c) => `[${c.level}] ${c.text}`); },
+    networkLog() { return networkLog.map((n) => `${n.method} ${n.status} ${n.url} ${n.timing}ms`); },
+    domSnapshot() { return captureSummary(); },
   };
   return adapter;
 }
@@ -170,5 +176,8 @@ function stubAdapter(message: string): BrowserAdapter {
     async scroll() { return { ok: false, output: message }; },
     async waitFor() { return { ok: false, output: message }; },
     async close() {},
+    consoleLog() { return []; },
+    networkLog() { return []; },
+    domSnapshot() { return message; },
   };
 }

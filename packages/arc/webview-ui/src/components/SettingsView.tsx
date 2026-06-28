@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Plus, Trash2, Plug, Braces, Cpu, KeyRound, X, Check, Info, Search, FileText, Terminal } from "lucide-react";
+import { Plus, Trash2, Plug, Braces, Cpu, KeyRound, X, Check, Info, FileText, History, ListChecks, Play, ShieldCheck, RefreshCw, CircleDot, AlertTriangle } from "lucide-react";
 import type { RpcClient, HostEvent } from "../rpc";
 import type { ModelDescriptor, ModelTier, ProviderConfig, ProviderKind } from "@arc/host/protocol";
 import { PROVIDERS } from "@arc/host/catalog";
@@ -7,15 +7,15 @@ import { useArcLogo } from "../hooks/useArcLogo";
 type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderConfig[]; monoLogo: string; prideLogo: string; monoLogoText: string; prideLogoText: string; version: string };
 const TIERS: ModelTier[] = ["heavy", "default", "light", "free"];
 const TIER_ORDER: Record<ModelTier, number> = { heavy: 0, default: 1, light: 2, free: 3 };
-type Tab = "models" | "providers" | "mcp" | "shell" | "context" | "search" | "prompts";
+type Tab = "models" | "providers" | "mcp" | "behavior" | "prompts" | "memory" | "hooks";
 const TABS: { value: Tab; label: string; icon: React.ReactNode }[] = [
   { value: "models", label: "Models", icon: <Cpu size={15} /> },
   { value: "providers", label: "Providers", icon: <KeyRound size={15} /> },
   { value: "mcp", label: "MCP", icon: <Plug size={15} /> },
-  { value: "shell", label: "Shell", icon: <Terminal size={15} /> },
-  { value: "context", label: "Context", icon: <Braces size={15} /> },
-  { value: "search", label: "Search", icon: <Search size={15} /> },
+  { value: "behavior", label: "Behavior", icon: <Braces size={15} /> },
   { value: "prompts", label: "Prompts", icon: <FileText size={15} /> },
+  { value: "memory", label: "Memory", icon: <History size={15} /> },
+  { value: "hooks", label: "Hooks", icon: <ListChecks size={15} /> },
 ];
 export default function SettingsModal({ client, onClose, models, providers, monoLogo, prideLogo, monoLogoText, prideLogoText, version }: Props) {
   const [tab, setTab] = useState<Tab>("models");
@@ -58,14 +58,14 @@ export default function SettingsModal({ client, onClose, models, providers, mono
           <button className="arc-iconbtn" onClick={onClose} title="Close"><X size={16} /></button>
         </header>
         <main className="arc-modal-body">
-          <div className="arc-settings-inner">
+          <div className="arc-settings-inner" key={tab}>
             {tab === "models" && <ModelsTab client={client} providers={providers} models={models} onSwitchTab={setTab} />}
             {tab === "providers" && <ProvidersTab client={client} providers={providers} models={models} />}
             {tab === "mcp" && <McpTab client={client} />}
-            {tab === "shell" && <ShellTab client={client} />}
-            {tab === "context" && <ContextTab client={client} />}
-            {tab === "search" && <SearchTab client={client} />}
+            {tab === "behavior" && <BehaviorTab client={client} />}
             {tab === "prompts" && <PromptsTab client={client} />}
+            {tab === "memory" && <MemoryTab client={client} />}
+            {tab === "hooks" && <HooksTab client={client} />}
             <AboutSection logoTextUri={logoTextUri} version={version} />
           </div>
         </main>
@@ -366,6 +366,21 @@ function McpTab({ client }: { client: RpcClient }) {
   const toggle = (serverName: string, enabled: boolean) => {
     client.send({ type: "mcp/toggleServer", name: serverName, enabled });
   };
+  const [testing, setTesting] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<Record<string, string>>({});
+  const testCall = (serverName: string) => {
+    setTesting(serverName); setTestResults((prev) => ({ ...prev, [serverName]: "Calling…" }));
+    client.send({ type: "mcp/testCall", server: serverName, tool: "listResources" });
+  };
+  const [debugMsgs, setDebugMsgs] = useState<{ server: string; dir: string; msg: string }[]>([]);
+  const [showDebug, setShowDebug] = useState(false);
+  useEffect(() => {
+    const off = client.on((e: any) => {
+      if (e.type === "mcp/testResult") { setTestResults((prev) => ({ ...prev, [e.server ?? testing]: e.output ?? "(no response)" })); setTesting(null); }
+      if (e.type === "mcp/traffic") { setDebugMsgs((prev) => [...prev.slice(-49), { server: e.server, dir: e.dir, msg: e.msg }]); }
+    });
+    return off;
+  }, [client]);
   return (
     <>
       <Section
@@ -401,13 +416,38 @@ function McpTab({ client }: { client: RpcClient }) {
                 <Plug size={14} className="arc-row-icon" />
                 <span className="arc-row-label">{s.name}</span>
                 <span className="arc-row-meta">{s.transport} · {s.toolCount} tool{s.toolCount === 1 ? "" : "s"}</span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }} title={s.enabled ? (s.toolCount > 0 ? "Connected" : "Connecting…") : "Disabled"}>
+                  {s.enabled ? (s.toolCount > 0 ? <CircleDot size={12} style={{ color: "var(--arc-ok)" }} /> : <RefreshCw size={11} style={{ color: "var(--vscode-descriptionForeground)", opacity: 0.6, animation: "arc-spin 1.4s linear infinite" }} />) : <AlertTriangle size={12} style={{ color: "var(--arc-err)" }} />}
+                  <span style={{ fontSize: 10, color: "var(--vscode-descriptionForeground)" }}>{s.enabled ? (s.toolCount > 0 ? "OK" : "…") : "OFF"}</span>
+                </span>
                 <span className="arc-spacer" />
+                <button className="arc-chip" style={{ padding: "2px 8px", fontSize: 11 }} onClick={() => testCall(s.name)} disabled={!s.enabled || testing === s.name}><Play size={11} /> Test</button>
                 <Toggle checked={s.enabled} onChange={(enabled) => toggle(s.name, enabled)} />
                 <button className="arc-iconbtn" onClick={() => client.send({ type: "mcp/removeServer", name: s.name })} title="Remove"><Trash2 size={14} /></button>
               </div>
+              {testing === s.name && <p className="arc-empty">Testing {s.name}…</p>}
+              {testResults[s.name] && <div className="arc-mcp-test-output">{testResults[s.name]}</div>}
             </li>
           ))}
         </ul>
+        <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
+          <button className="arc-chip" onClick={() => setShowDebug(!showDebug)} style={{ padding: "3px 8px", fontSize: 11 }}>
+            <ShieldCheck size={12} /> {showDebug ? "Hide" : "Show"} traffic
+          </button>
+          {showDebug && <button className="arc-iconbtn" onClick={() => setDebugMsgs([])} title="Clear"><RefreshCw size={12} /></button>}
+        </div>
+        {showDebug && debugMsgs.length > 0 && (
+          <div className="arc-mcp-debug">
+            {debugMsgs.map((d, i) => (
+              <div key={i} className="arc-mcp-debug-entry">
+                <span className="arc-mcp-debug-server">{d.server}</span>
+                <span className="arc-mcp-debug-dir">{d.dir === "out" ? "→" : "←"}</span>
+                <span className="arc-mcp-debug-msg">{d.msg}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {showDebug && debugMsgs.length === 0 && <p className="arc-empty">No traffic yet. Monitoring…</p>}
       </Section>
       <McpMarketplace client={client} existingServers={servers} />
     </>
@@ -492,15 +532,39 @@ function McpMarketplace({ client, existingServers }: { client: RpcClient; existi
     </Section>
   );
 }
-function ShellTab({ client }: { client: RpcClient }) {
+function BehaviorTab({ client }: { client: RpcClient }) {
   const [compactionStrategy, setCompactionStrategy] = useState<"model-aware" | "fixed">("model-aware");
   const [safetyMargin, setSafetyMargin] = useState(0.15);
   const [titleGenMethod, setTitleGenMethod] = useState<"first-words" | "ollama">("first-words");
+  const [searchEnabled, setSearchEnabled] = useState(true);
+  const [searchBackend, setSearchBackend] = useState<"hash-based" | "semantic">("hash-based");
+  const [searchModelTier, setSearchModelTier] = useState<"low" | "mid" | "high">("low");
+  const [searchChunks, setSearchChunks] = useState(0);
+  const [indexing, setIndexing] = useState(false);
+  const [progress, setProgress] = useState<{ scanned: number; indexed: number; chunks: number; errors: number }>({ scanned: 0, indexed: 0, chunks: 0, errors: 0 });
   useEffect(() => {
     void client.request("arc.compaction.strategy").then((v) => setCompactionStrategy((v as typeof compactionStrategy) ?? "model-aware"));
     void client.request("arc.compaction.safetyMargin").then((v) => setSafetyMargin(typeof v === "number" ? v : 0.15));
     void client.request("arc.titleGeneration.method").then((v) => setTitleGenMethod(v === "ollama" ? "ollama" : "first-words"));
+    void client.request("arc.search.enabled").then((v) => setSearchEnabled(v !== false));
+    void client.request("arc.search.backend").then((v) => setSearchBackend((v === "semantic" ? "semantic" : "hash-based")));
+    void client.request("arc.search.modelTier").then((v) => {
+      if (v === "mid") setSearchModelTier("mid");
+      else if (v === "high") setSearchModelTier("high");
+      else setSearchModelTier("low");
+    });
+    void client.request("arc.search.chunkCount").then((v) => setSearchChunks(typeof v === "number" ? v : 0));
+    const off = client.on((e: any) => {
+      if (e.type === "search/indexProgress") {
+        setIndexing(true);
+        setProgress({ scanned: e.filesScanned, indexed: e.filesIndexed, chunks: e.chunksEmbedded, errors: e.errors });
+        setSearchChunks(e.chunksEmbedded);
+        if (e.filesScanned === e.filesIndexed) setIndexing(false);
+      }
+    });
+    return off;
   }, [client]);
+  const pct = progress.scanned > 0 ? (progress.indexed / progress.scanned) * 100 : 0;
   return (
     <>
       <Section title="Compaction" description="Controls when and how conversation context is summarized.">
@@ -536,52 +600,41 @@ function ShellTab({ client }: { client: RpcClient }) {
       <Section title="Image processing" description="How attached images are handled when the active model is not multimodal.">
         <ImageProcessingSection client={client} />
       </Section>
-    </>
-  );
-}
-function ContextTab({ client }: { client: RpcClient }) {
-  const [compactionStrategy, setCompactionStrategy] = useState<"model-aware" | "fixed">("model-aware");
-  const [safetyMargin, setSafetyMargin] = useState(0.15);
-  const [titleGenMethod, setTitleGenMethod] = useState<"first-words" | "ollama">("first-words");
-  useEffect(() => {
-    void client.request("arc.compaction.strategy").then((v) => setCompactionStrategy((v as typeof compactionStrategy) ?? "model-aware"));
-    void client.request("arc.compaction.safetyMargin").then((v) => setSafetyMargin(typeof v === "number" ? v : 0.15));
-    void client.request("arc.titleGeneration.method").then((v) => setTitleGenMethod(v === "ollama" ? "ollama" : "first-words"));
-  }, [client]);
-  return (
-    <>
-      <Section title="Compaction" description="Controls when and how conversation context is summarized.">
+      <Section title="Semantic search" description="Indexes the workspace with an embedding model for natural-language queries.">
         <ul className="arc-rows">
           <li className="arc-row"><div className="arc-row-main">
-            <span className="arc-row-label">Strategy</span>
+            <span className="arc-row-label">Enable</span>
+            <span className="arc-row-meta">Index the workspace on activation and keep it in sync</span>
             <span className="arc-spacer" />
-            <select className="arc-input arc-input-sm" value={compactionStrategy} onChange={(e) => { const v = e.target.value as typeof compactionStrategy; setCompactionStrategy(v); client.send({ type: "config/set", key: "arc.compaction.strategy", value: v }); }}>
-              <option value="model-aware">model-aware</option>
-              <option value="fixed">fixed (75%)</option>
+            <Toggle checked={searchEnabled} onChange={(v) => { setSearchEnabled(v); client.send({ type: "config/set", key: "arc.search.enabled", value: v }); }} />
+          </div></li>
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Backend</span>
+            <span className="arc-spacer" />
+            <select className="arc-input arc-input-sm" value={searchBackend} onChange={(e) => { const v = e.target.value as typeof searchBackend; setSearchBackend(v); client.send({ type: "config/set", key: "arc.search.backend", value: v }); }}>
+              <option value="hash-based">Hash-based</option>
+              <option value="semantic">Semantic</option>
             </select>
           </div></li>
           <li className="arc-row"><div className="arc-row-main">
-            <span className="arc-row-label">Safety margin</span>
-            <span className="arc-row-meta">window reserved for model output</span>
+            <span className="arc-row-label">Model tier</span>
             <span className="arc-spacer" />
-            <input className="arc-input arc-input-sm" type="number" min={0} max={0.5} step={0.05} value={safetyMargin} onChange={(e) => setSafetyMargin(Number(e.target.value))} onBlur={() => client.send({ type: "config/set", key: "arc.compaction.safetyMargin", value: safetyMargin })} />
-          </div></li>
-        </ul>
-      </Section>
-      <Section title="Titles" description="How new chat titles are generated.">
-        <ul className="arc-rows">
-          <li className="arc-row"><div className="arc-row-main">
-            <span className="arc-row-label">Method</span>
-            <span className="arc-spacer" />
-            <select className="arc-input arc-input-sm" value={titleGenMethod} onChange={(e) => { const v = e.target.value as typeof titleGenMethod; setTitleGenMethod(v); client.send({ type: "config/set", key: "arc.titleGeneration.method", value: v }); }}>
-              <option value="first-words">first 40 chars</option>
-              <option value="ollama">gemma3:1b</option>
+            <select className="arc-input arc-input-sm" value={searchModelTier} onChange={(e) => { const v = e.target.value as typeof searchModelTier; setSearchModelTier(v); client.send({ type: "config/set", key: "arc.search.modelTier", value: v }); }}>
+              <option value="low">nomic-embed-text (768d)</option>
+              <option value="mid">qwen3-embedding:0.6b (1024d)</option>
+              <option value="high">qwen3-embedding:8b (4096d)</option>
             </select>
           </div></li>
         </ul>
-      </Section>
-      <Section title="Image processing" description="How attached images are handled when the active model is not multimodal.">
-        <ImageProcessingSection client={client} />
+        <div className="arc-progress-wrap">
+          <button className="arc-chip" onClick={() => { setIndexing(true); setProgress({ scanned: 0, indexed: 0, chunks: 0, errors: 0 }); client.send({ type: "search/reindex" }); }} disabled={indexing}>Reindex {searchChunks > 0 ? `(${searchChunks} chunks)` : ""}</button>
+          {indexing && (
+            <div style={{ marginTop: 8 }}>
+              <div className="arc-progress-bar"><div className="arc-progress-fill" style={{ width: `${pct}%` }} /></div>
+              <p className="arc-progress-text">{progress.indexed} files · {progress.chunks} chunks{progress.errors > 0 ? ` · ${progress.errors} errors` : ""}</p>
+            </div>
+          )}
+        </div>
       </Section>
     </>
   );
@@ -610,104 +663,69 @@ function PromptsTab({ client }: { client: RpcClient }) {
     </Section>
   );
 }
-function SearchTab({ client }: { client: RpcClient }) {
-  const [enabled, setEnabled] = useState(true);
-  const [backend, setBackend] = useState<"hash-based" | "semantic">("hash-based");
-  const [modelTier, setModelTier] = useState<"low" | "mid" | "high" | "custom">("low");
-  const [customModel, setCustomModel] = useState("");
-  const [ollamaUrl, setOllamaUrl] = useState("http://127.0.0.1:11434");
-  const [fileCount, setFileCount] = useState(0);
-  const [chunkCount, setChunkCount] = useState(0);
-  const [indexing, setIndexing] = useState(false);
-  const [progress, setProgress] = useState<{ scanned: number; indexed: number; chunks: number; errors: number }>({ scanned: 0, indexed: 0, chunks: 0, errors: 0 });
+function MemoryTab({ client }: { client: RpcClient }) {
+  const [memories, setMemories] = useState<{ index: number; category: string; content: string; createdAt: string }[]>([]);
+  const [loading, setLoading] = useState(true);
   useEffect(() => {
-    void client.request("arc.search.enabled").then((v) => setEnabled(v !== false));
-    void client.request("arc.search.backend").then((v) => setBackend((v === "semantic" ? "semantic" : "hash-based")));
-    void client.request("arc.search.modelTier").then((v) => {
-      const known = ["low", "mid", "high"];
-      if (typeof v === "string" && known.includes(v)) { setModelTier(v as "low" | "mid" | "high"); setCustomModel(""); }
-      else if (typeof v === "string" && v) { setModelTier("custom"); setCustomModel(v); }
-      else { setModelTier("low"); setCustomModel(""); }
+    const off = client.on((e: any) => {
+      if (e.type === "memory/list") { setMemories(e.memories ?? []); setLoading(false); }
     });
-    void client.request("arc.search.ollamaUrl").then((v) => setOllamaUrl(typeof v === "string" ? v : "http://127.0.0.1:11434"));
-    void client.request("arc.search.fileCount").then((v) => setFileCount(typeof v === "number" ? v : 0));
-    void client.request("arc.search.chunkCount").then((v) => setChunkCount(typeof v === "number" ? v : 0));
-    const off = client.on((e: import("../rpc").HostEvent) => {
-      if (e.type === "search/indexProgress") {
-        setIndexing(true);
-        setProgress({ scanned: e.filesScanned, indexed: e.filesIndexed, chunks: e.chunksEmbedded, errors: e.errors });
-        setFileCount(e.filesIndexed);
-        setChunkCount(e.chunksEmbedded);
-        if (e.filesScanned === e.filesIndexed) setIndexing(false);
-      }
-    });
+    client.send({ type: "memory/list" });
     return off;
   }, [client]);
-  const modelLabel = modelTier === "custom" ? customModel || "custom" : modelTier === "low" ? "nomic-embed-text:v1.5 (768d)" : modelTier === "mid" ? "qwen3-embedding:0.6b (1024d)" : "qwen3-embedding:8b (4096d)";
-  const pct = progress.scanned > 0 ? (progress.indexed / progress.scanned) * 100 : 0;
-  const startIndexing = () => {
-    setIndexing(true);
-    setProgress({ scanned: 0, indexed: 0, chunks: 0, errors: 0 });
-    client.send({ type: "search/reindex" });
-  };
+  const remove = (idx: number) => client.send({ type: "memory/delete", index: idx });
+  return (
+    <Section title="Stored memories" description="Durable facts persisted to MEMORY.md. The agent reads and writes these across sessions.">
+      {loading && <p className="arc-empty">Loading memories…</p>}
+      {!loading && memories.length === 0 && <p className="arc-empty">No memories stored yet. The agent will add them as it learns.</p>}
+      <ul className="arc-rows">
+        {memories.map((m) => (
+          <li key={m.index} className="arc-row">
+            <div className="arc-row-main">
+              <span className="arc-row-label" style={{ fontWeight: 400 }}>{m.content}</span>
+              <span className="arc-spacer" />
+              <span className="arc-row-meta">{m.category}</span>
+              <span className="arc-row-meta">#{m.index}</span>
+              <button className="arc-iconbtn" onClick={() => remove(m.index)} title="Delete"><Trash2 size={13} /></button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </Section>
+  );
+}
+function HooksTab({ client }: { client: RpcClient }) {
+  const [hooks, setHooks] = useState<{ event: string; matcher: string; command: string; enabled: boolean; tools?: string[] }[]>([]);
+  useEffect(() => {
+    const off = client.on((e: any) => {
+        if (e.type === "hooks/list") setHooks(Array.isArray(e.hooks) ? e.hooks : []);
+    });
+    client.send({ type: "hooks/list" });
+    return off;
+  }, [client]);
   return (
     <Section
-      title="Semantic search"
-      description="Indexes the workspace with an embedding model for natural-language queries."
+      title="Lifecycle hooks"
+      description="Custom scripts that run on agent lifecycle events. Configured in .arc/hooks.json."
     >
-      <ul className="arc-rows">
-        <li className="arc-row"><div className="arc-row-main">
-          <span className="arc-row-label">Enable</span>
-          <span className="arc-row-meta">Index the workspace on activation and keep it in sync</span>
-          <span className="arc-spacer" />
-          <Toggle checked={enabled} onChange={(v) => { setEnabled(v); client.send({ type: "config/set", key: "arc.search.enabled", value: v }); }} />
-        </div></li>
-        <li className="arc-row"><div className="arc-row-main">
-          <span className="arc-row-label">Backend</span>
-          <span className="arc-spacer" />
-          <select className="arc-input arc-input-sm" value={backend} onChange={(e) => { const v = e.target.value as "hash-based" | "semantic"; setBackend(v); client.send({ type: "config/set", key: "arc.search.backend", value: v }); }}>
-            <option value="hash-based">Hash-based</option>
-            <option value="semantic">Semantic</option>
-          </select>
-        </div></li>
-        {backend === "semantic" && (
-          <>
-            <li className="arc-row"><div className="arc-row-main">
-              <span className="arc-row-label">Model</span>
-              <span className="arc-row-meta">{modelLabel}</span>
-              <span className="arc-spacer" />
-              <select className="arc-input arc-input-sm" value={modelTier} onChange={(e) => { const v = e.target.value as "low" | "mid" | "high" | "custom"; setModelTier(v); if (v !== "custom") { client.send({ type: "config/set", key: "arc.search.modelTier", value: v }); setCustomModel(""); } }}>
-                <option value="low">nomic-embed-text:v1.5</option>
-                <option value="mid">qwen3-embedding:0.6b</option>
-                <option value="high">qwen3-embedding:8b</option>
-                <option value="custom">custom…</option>
-              </select>
-            </div></li>
-            {modelTier === "custom" && (
-              <li className="arc-row"><div className="arc-row-main">
-                <input className="arc-input arc-input-grow" placeholder="model slug (e.g. bge-m3:567m)" value={customModel} onChange={(e) => setCustomModel(e.target.value)} onBlur={() => { if (customModel.trim()) client.send({ type: "config/set", key: "arc.search.modelTier", value: customModel.trim() }); }} />
-              </div></li>
-            )}
-            <li className="arc-row"><div className="arc-row-main">
-              <span className="arc-row-label">Ollama URL</span>
-              <input className="arc-input arc-input-grow" value={ollamaUrl} onChange={(e) => { const v = e.target.value; setOllamaUrl(v); }} onBlur={() => client.send({ type: "config/set", key: "arc.search.ollamaUrl", value: ollamaUrl })} placeholder="http://127.0.0.1:11434" />
-            </div></li>
-          </>
-        )}
-      </ul>
-      <div style={{ marginTop: 32 }}>
-        <Section
-          title="Index status"
-          description={`${fileCount} files indexed · ${chunkCount} chunks embedded`}
-          action={<button className="arc-btn" onClick={startIndexing} disabled={indexing}><Search size={14} /> {indexing ? "Indexing…" : "Start indexing"}</button>}
-        >
-          {indexing && (
-            <div className="arc-progress-wrap">
-              <div className="arc-progress-bar"><div className="arc-progress-fill" style={{ width: `${pct}%` }} /></div>
-              <p className="arc-progress-text">{progress.indexed} / {progress.scanned} files · {progress.chunks} chunks{progress.errors > 0 ? ` · ${progress.errors} errors` : ""}</p>
+      {hooks.length === 0 && (
+        <div className="arc-hook-empty">
+          <p className="arc-empty">No hooks configured.</p>
+          <p className="arc-hint-text">Add hooks to <code>.arc/hooks.json</code> in your workspace to run scripts on events like <strong>session.start</strong>, <strong>pre.tool</strong>, <strong>post.tool</strong>, or <strong>stop</strong>.</p>
+        </div>
+      )}
+      <div className="arc-hook-panel">
+        {hooks.map((h, i) => (
+          <div key={i} className="arc-hook-item">
+            <div className="arc-hook-item-head">
+              <span className="arc-hook-item-event">{h.event}</span>
+              {h.tools?.length ? <span className="arc-row-code">{h.tools.join(", ")}</span> : null}
+              <span className="arc-row-meta">matcher: {h.matcher}</span>
+              <span className={`arc-mcp-health-dot ${h.enabled ? "arc-mcp-health-dot-ok" : "arc-mcp-health-dot-err"}`} />
             </div>
-          )}
-        </Section>
+            <div className="arc-hook-item-cmd">{h.command}</div>
+          </div>
+        ))}
       </div>
     </Section>
   );

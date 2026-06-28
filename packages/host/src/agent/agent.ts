@@ -14,9 +14,9 @@ import { SubagentRunner } from "./subagent.js";
 import { runHooks } from "../hooks/hooks.js";
 import type { ModeRegistry } from "../modes/index.js";
 import { type ApprovalsConfig, type SessionApprovals, DEFAULT_APPROVALS, initSession, resolveApproval } from "../approvals/index.js";
-import type { ChatMessage, ModelDescriptor, ToolCall, TurnUsage } from "../protocol/protocol.js";
+import type { ChatMessage, ModelDescriptor, ToolCall, TurnUsage, ExecutionEvent } from "../protocol/protocol.js";
 import type { ProcessStep, TodoItem } from "../protocol/process.js";
-const PSEUDO_TOOLS = new Set(["handoff", "subagent.spawn", "subagent.askParent", "clarification.askUser", "checkpoint.revert", "checkpoint.list", "mode.switch", "skill.use", "memory.add"]);
+const PSEUDO_TOOLS = new Set(["handoff", "subagent.spawn", "subagent.askParent", "clarification.askUser", "checkpoint.revert", "checkpoint.list", "checkpoint.compare", "mode.switch", "skill.use", "memory.add", "session.exportTrace"]);
 const TOOL_OUTPUT_MAX_CHARS = 8000;
 export interface AgentEventSink {
   message(m: ChatMessage): void;
@@ -32,6 +32,7 @@ export interface AgentEventSink {
   error(message: string): void;
   compaction(before: number, after: number, reason: string): void;
   guidance(text: string): void;
+  timeline(events: import("../protocol/protocol.js").ExecutionEvent[]): void;
 }
 export interface AgentOptions {
   systemPrompt: string;
@@ -70,6 +71,26 @@ export class Agent {
   private lastTodoUpdate = 0;
   private pendingChain: { toolName: string; args: Record<string, unknown>; resultText: string; displayTitle: string } | null = null;
   private mcpReverse: Map<string, { server: string; tool: string }> = new Map();
+  private timeline: ExecutionEvent[] = [];
+  private readonly TIMELINE_MAX = 2000;
+  private pushTimeline(ev: ExecutionEvent): void {
+    this.timeline.push(ev);
+    if (this.timeline.length > this.TIMELINE_MAX) {
+      this.timeline = this.timeline.slice(-this.TIMELINE_MAX);
+    }
+  }
+  getTimeline(): ExecutionEvent[] { return this.timeline.slice(); }
+  private async persistPlan(): Promise<void> {
+    try {
+      const arcDir = path.join(this.opts.workspaceRoot, ".arc");
+      await fs.mkdir(arcDir, { recursive: true });
+      await fs.writeFile(
+        path.join(arcDir, "plan-current.json"),
+        JSON.stringify({ todoItems: this.todoItems, updatedAt: new Date().toISOString() }, null, 2),
+        "utf-8",
+      );
+    } catch {}
+  }
   constructor(
     private registry: ModelRegistry,
     private store: CheckpointStore,
@@ -208,6 +229,7 @@ export class Agent {
     }
     this.messages.push(userMsg);
     this.sink.message(userMsg);
+    this.pushTimeline({ type: "user_message", turnId: "", content: content.slice(0, 200), ts: Date.now() });
     this.flushPendingToolChain();
     await this.runTurn();
   }
@@ -249,6 +271,34 @@ export class Agent {
       this.sink.todo(this.todoItems);
     }
     return r;
+  }
+  async revertToMessage(messageId: string, restoreFiles: boolean, content?: string): Promise<{ reverted: boolean; filesRestored?: string[]; conflicts?: string[]; messagesRemoved: number }> {
+    let msgIdx = this.messages.findIndex((m) => m.id === messageId);
+    if (msgIdx < 0 && content) {
+      msgIdx = this.messages.findIndex((m) => m.role === "user" && m.content.trim() === content.trim());
+      if (msgIdx < 0) {
+        msgIdx = this.messages.findIndex((m) => m.role === "user" && m.content.includes(content.slice(0, 30)));
+      }
+    }
+    if (msgIdx < 0) return { reverted: false, messagesRemoved: 0 };
+    const revertTs = this.messages[msgIdx].ts;
+    const removed = this.messages.length - msgIdx;
+    this.messages = this.messages.slice(0, msgIdx);
+    const keptSteps = this.steps.filter((s) => (s.ts ?? 0) <= revertTs);
+    this.steps = keptSteps;
+    this.sink.steps(keptSteps);
+    this.sink.message({ id: randomUUID(), role: "system", content: `Conversation reverted to before message ${messageId.slice(0, 8)}. ${removed} messages removed.`, ts: Date.now() });
+    if (restoreFiles) {
+      const turns = await this.store.listTurns(this.opts.workspaceRoot);
+      for (const turnId of turns) {
+        const snap = await this.store.load(this.opts.workspaceRoot, turnId);
+        if (snap && snap.ts <= (this.messages.length ? this.messages[this.messages.length - 1].ts : Date.now())) {
+          const r = await this.retract(turnId);
+          return { reverted: true, filesRestored: r.restored, conflicts: r.conflicts, messagesRemoved: removed };
+        }
+      }
+    }
+    return { reverted: true, messagesRemoved: removed };
   }
   async guidance(text: string) {
     if (!this.active) return;
@@ -302,6 +352,7 @@ export class Agent {
           const before = this.messages.length;
           this.messages = await compactAsync(this.messages, (msgs) => this.summarizeForCompaction(msgs, current));
           this.sink.compaction(before, this.messages.length, dec.reason);
+          this.pushTimeline({ type: "compaction", turnId, before, after: this.messages.length, reason: dec.reason, ts: Date.now() });
         }
       }
       let model = this.getCurrentModel();
@@ -393,6 +444,7 @@ export class Agent {
         }
       }
       if (thoughtStart) this.finalizeThought(assistantId, thoughtStart);
+      this.pushTimeline({ type: "model_call", turnId, modelId: model.id, providerId: decision.provider.id, tier: model.tier, ts: Date.now(), durationMs: Date.now() - turnTs, usage: this.usageByModel[model.id] });
       const finalAssistant: ChatMessage = {
         id: assistantId,
         role: "assistant",
@@ -544,6 +596,7 @@ export class Agent {
         if (target) {
           this.handoffs.push({ turnId, direction, fromModelId: current.id, toModelId: target.id, reason, ts: Date.now(), costIncurred: 0 });
           this.sink.handoff(current.label, target.label, reason);
+          this.pushTimeline({ type: "handoff", turnId, fromModel: current.id, toModel: target.id, direction, reason, ts: Date.now() });
           this.registry.setCurrent(target.id);
           output = `Handed off to ${target.label} (${direction}). You are now the active model — continue the task.`;
         } else {
@@ -615,6 +668,9 @@ export class Agent {
         if (allChildren.length) {
           this.appendStepChildren(tc.id, allChildren);
         }
+        for (const spec of specs) {
+          this.pushTimeline({ type: "subagent_spawn", turnId, name: spec.name, tier: spec.tier ?? parent.tier, ts: Date.now() });
+        }
         if (this.todoItems.length) {
           const stepId = `todo-${turnId}-${randomUUID().slice(0, 6)}`;
           this.steps.push({ id: stepId, type: "todo_list", title: "Plan", todos: this.todoItems, ts: Date.now() });
@@ -649,6 +705,7 @@ export class Agent {
       if (result.steps.length) {
         this.appendStepChildren(tc.id, result.steps);
       }
+      this.pushTimeline({ type: "subagent_spawn", turnId, name: spec.name, tier: spec.tier ?? parent.tier, ts: Date.now() });
       if (result.todo.length) {
         const idPrefix = `sub-${tc.id}-`;
         const rolled: TodoItem[] = result.todo.map((t) => ({ id: idPrefix + t.id, text: `[${spec.name}] ${t.text}`, state: t.state }));
@@ -743,12 +800,46 @@ export class Agent {
         const snap = await this.store.load(this.opts.workspaceRoot, turns[i]);
         if (snap) {
           const files = Object.keys(snap.files).join(", ") || "(none)";
-          lines.push(`${i + 1}. turnId=${turns[i]}  ts=${new Date(snap.ts).toISOString()}  files=${files}`);
+          const label = snap.label ? `  label="${snap.label}"` : "";
+          lines.push(`${i + 1}. turnId=${turns[i]}  ts=${new Date(snap.ts).toISOString()}  files=${files}${label}`);
         }
       }
       const output = lines.join("\n");
       this.appendToolOutput(tc.id, output, true);
       this.messages.push({ id: randomUUID(), role: "tool", content: output, toolCallId: tc.id, ts: Date.now() });
+      return;
+    }
+    if (tc.name === "checkpoint.compare") {
+      const indexA = tc.args.indexA ? Number(tc.args.indexA) : undefined;
+      const indexB = tc.args.indexB ? Number(tc.args.indexB) : undefined;
+      const turnIdA = tc.args.turnIdA ? String(tc.args.turnIdA) : undefined;
+      const turnIdB = tc.args.turnIdB ? String(tc.args.turnIdB) : undefined;
+      const turns = await this.store.listTurns(this.opts.workspaceRoot);
+      const resolveId = (idOrIndex: string | number | undefined): string | undefined => {
+        if (typeof idOrIndex === "number" && idOrIndex > 0 && idOrIndex <= turns.length) return turns[idOrIndex - 1];
+        if (typeof idOrIndex === "string" && turns.includes(idOrIndex)) return idOrIndex;
+        return undefined;
+      };
+      const idA = resolveId(turnIdA ?? indexA);
+      const idB = resolveId(turnIdB ?? indexB);
+      if (!idA || !idB) {
+        this.appendToolOutput(tc.id, "Provide two valid turn indices (1-based) or turnIds. Use checkpoint.list first.", false);
+        this.messages.push({ id: randomUUID(), role: "tool", content: "Invalid checkpoint indices. Use checkpoint.list first.", toolCallId: tc.id, ts: Date.now() });
+        return;
+      }
+      try {
+        const diff = await this.store.compare(this.opts.workspaceRoot, idA, idB);
+        const lines: string[] = [];
+        if (diff.modified.length) lines.push(`Modified (${diff.modified.length}):\n${diff.modified.map((f) => `  - ${f}`).join("\n")}`);
+        if (diff.added.length) lines.push(`Added (${diff.added.length}):\n${diff.added.map((f) => `  + ${f}`).join("\n")}`);
+        if (diff.removed.length) lines.push(`Removed (${diff.removed.length}):\n${diff.removed.map((f) => `  - ${f}`).join("\n")}`);
+        const output = lines.join("\n\n") || "(no differences between checkpoints)";
+        this.appendToolOutput(tc.id, output, true);
+        this.messages.push({ id: randomUUID(), role: "tool", content: output, toolCallId: tc.id, ts: Date.now() });
+      } catch (e: unknown) {
+        this.appendToolOutput(tc.id, `Compare failed: ${(e as Error).message}`, false);
+        this.messages.push({ id: randomUUID(), role: "tool", content: `Compare failed: ${(e as Error).message}`, toolCallId: tc.id, ts: Date.now() });
+      }
       return;
     }
     if (tc.name === "mode.switch") {
@@ -768,8 +859,61 @@ export class Agent {
       const oldMode = this.currentMode;
       this.currentMode = slug;
       this.userRequestedMode = slug;
+      this.pushTimeline({ type: "mode_switch", turnId, from: oldMode, to: slug, ts: Date.now() });
       const output = `Switched from '${oldMode}' to '${slug}' mode.\n\n## ${slug} mode\n\n${targetMode.roleDefinition}`;
       this.appendToolOutput(tc.id, `Switched to ${slug} mode.`, true);
+      this.messages.push({ id: randomUUID(), role: "tool", content: output, toolCallId: tc.id, ts: Date.now() });
+      return;
+    }
+    if (tc.name === "session.exportTrace") {
+      const events = this.timeline.slice();
+      const mdLines: string[] = ["# Session Execution Trace", "", `Exported: ${new Date().toISOString()}`, ""];
+      let turnId = "";
+      for (const ev of events) {
+        if (ev.turnId !== turnId) {
+          turnId = ev.turnId;
+          mdLines.push(`## Turn ${turnId.slice(0, 8)}`, "");
+        }
+        switch (ev.type) {
+          case "model_call":
+            mdLines.push(`- **Model call** — ${ev.modelId} (${ev.tier}) via ${ev.providerId} — ${ev.durationMs}ms${ev.usage ? ` — ${ev.usage.prompt}+${ev.usage.completion} tokens, $${ev.usage.cost.toFixed(4)}` : ""}`);
+            break;
+          case "tool_call":
+            mdLines.push(`- **${ev.toolName}** — ${ev.ok ? "OK" : "FAILED"} — ${ev.durationMs}ms${ev.output ? ` — ${ev.output.slice(0, 120)}` : ""}`);
+            break;
+          case "handoff":
+            mdLines.push(`- **Handoff** ${ev.direction} — ${ev.fromModel} → ${ev.toModel} — ${ev.reason}`);
+            break;
+          case "compaction":
+            mdLines.push(`- **Compaction** — ${ev.before} → ${ev.after} messages — ${ev.reason}`);
+            break;
+          case "approval":
+            mdLines.push(`- **Approval** — ${ev.toolName} (${ev.category}) — ${ev.allowed ? "Allowed" : "Denied"}`);
+            break;
+          case "subagent_spawn":
+            mdLines.push(`- **Subagent** — ${ev.name} (${ev.tier})`);
+            break;
+          case "user_message":
+            mdLines.push(`- **User** — ${ev.content.slice(0, 120)}`);
+            break;
+          case "checkpoint_snapshot":
+            mdLines.push(`- **Checkpoint** — ${ev.fileCount} file(s)`);
+            break;
+          case "mode_switch":
+            mdLines.push(`- **Mode switch** — ${ev.from} → ${ev.to}`);
+            break;
+          case "error":
+            mdLines.push(`- **Error** — ${ev.message}`);
+            break;
+          default:
+            break;
+        }
+        mdLines.push("");
+      }
+      const md = mdLines.join("\n");
+      const json = JSON.stringify(events, null, 2);
+      const output = `## Session Trace (${events.length} events)\n\n${md}\n\n## JSON\n\n\`\`\`json\n${json.slice(0, 4000)}\n\`\`\``;
+      this.appendToolOutput(tc.id, `Exported ${events.length} event(s).`, true);
       this.messages.push({ id: randomUUID(), role: "tool", content: output, toolCallId: tc.id, ts: Date.now() });
       return;
     }
@@ -818,15 +962,32 @@ export class Agent {
       return;
     }
     if (!def) return;
+    const modeDef = this.opts.modeRegistry.get(this.currentMode);
+    if (modeDef && !modeDef.allowedTools.includes(tc.name)) {
+      this.appendToolOutput(tc.id, `Tool '${tc.name}' is not allowed in '${this.currentMode}' mode.`, false);
+      this.messages.push({ id: randomUUID(), role: "tool", content: `Tool '${tc.name}' not allowed in ${this.currentMode} mode.`, toolCallId: tc.id, ts: Date.now() });
+      return;
+    }
     const target = (tc.args.path as string) ?? (tc.args.file as string);
-    if (target && this.opts.enabledTools.has(tc.name)) {
+    const shouldSnapshot = target && this.opts.enabledTools.has(tc.name);
+    const isShellOrBrowser = tc.name === "shell.run" || tc.name.startsWith("browser.");
+    const isMcpMutation = tc.name === "mcp.create" || tc.name === "mcp.remove" || tc.name === "mcp.toggle";
+    if (shouldSnapshot || isShellOrBrowser || isMcpMutation) {
       try {
-        await this.store.snapshot(turnId, this.opts.workspaceRoot, [target], this.todoItems);
+        const label = tc.name === "shell.run"
+          ? `shell.run: ${String(tc.args.command ?? "").slice(0, 60)}`
+          : tc.name.startsWith("browser.")
+            ? `${tc.name}: ${String(tc.args.url ?? tc.args.selector ?? "").slice(0, 60)}`
+            : isMcpMutation
+              ? `${tc.name}: ${String(tc.args.name ?? "").slice(0, 60)}`
+              : `${tc.name}: ${target}`;
+        const filesToSnapshot = shouldSnapshot ? [target] : [];
+        await this.store.snapshot(turnId, this.opts.workspaceRoot, filesToSnapshot, this.todoItems, label);
+        this.pushTimeline({ type: "checkpoint_snapshot", turnId, fileCount: filesToSnapshot.length || 1, ts: Date.now() });
 } catch {  }
     }
     if (tc.name === "file.edit" || tc.name === "file.write") {
       const writeFilePath = String(tc.args.path);
-      const modeDef = this.opts.modeRegistry.get(this.currentMode);
       if (modeDef?.writeGlob) {
         const check = checkWriteGlob(writeFilePath, modeDef.writeGlob);
         if (!check.allowed) {
@@ -849,6 +1010,7 @@ export class Agent {
           return;
         }
         const approved = await approvalHandler(`Run ${tc.name}?\n\n${prettyToolSummary(tc.name, tc.args)}`);
+        this.pushTimeline({ type: "approval", turnId, toolName: tc.name, category: approvalCategory, allowed: approved, ts: Date.now() });
         if (!approved) {
           this.appendToolOutput(tc.id, `Tool '${tc.name}' denied by user.`, false);
           this.messages.push({ id: randomUUID(), role: "tool", content: "Denied by user.", toolCallId: tc.id, ts: Date.now() });
@@ -900,11 +1062,13 @@ export class Agent {
       onChunk: this.makeChunkHandler(tc),
     };
     let result;
+    const toolStartTs = Date.now();
     try {
       result = await def.fn(tc.args, ctx);
     } catch (e) {
       result = { ok: false, output: `Tool error: ${(e as Error).message}` };
     }
+    this.pushTimeline({ type: "tool_call", turnId, toolCallId: tc.id, toolName: tc.name, args: tc.args, ts: toolStartTs, durationMs: Date.now() - toolStartTs, ok: result.ok, output: result.output.slice(0, 500) });
     const truncatedOutput = await this.truncateToolOutput(result.output, tc.name);
     const isEditOrWrite = tc.name === "file.edit" || tc.name === "file.write";
     this.appendToolOutput(tc.id, isEditOrWrite ? "" : truncatedOutput, result.ok, result.ok ? undefined : prettyToolTitle(tc.name, tc.args, false), result.diffHunks, result.filePath, result.runAfter?.command, result.runAfter?.output);
@@ -915,6 +1079,7 @@ export class Agent {
       this.steps.push({ id: stepId, type: "todo_list", title: "Plan", todos: this.todoItems, ts: Date.now() });
       this.sink.steps(this.steps);
       this.sink.todo(this.todoItems);
+      this.persistPlan().catch(() => {});
     }
     const toolContent = result.runAfter
       ? `${truncatedOutput}\n[runAfter] ${result.runAfter.command}\n${result.runAfter.output}`
@@ -1195,6 +1360,7 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
       case "handoff": return `Handoff failed`;
       case "checkpoint.revert": return `Failed to revert to ${String(args.turnId ?? args.index ?? "")}`;
       case "checkpoint.list": return "Failed to list checkpoints";
+      case "checkpoint.compare": return "Failed to compare checkpoints";
       case "file.semanticSearch": return `Semantic search failed: ${clip(String(args.query ?? ""))}`;
       case "webfetch": return `Failed to fetch ${clip(String(args.url ?? ""))}`;
       case "mode.switch": return `Failed to switch to ${String(args.slug ?? "")} mode`;
@@ -1207,6 +1373,16 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
       case "rule.list": return `Failed to list rules`;
       case "rule.read": return `Failed to read rule ${String(args.name ?? "")}`;
       case "rule.create": return `Failed to create rule ${String(args.name ?? "")}`;
+      case "git.diffStaged": return "Failed to read staged diff";
+      case "git.diffUnstaged": return "Failed to read unstaged diff";
+      case "git.changedFiles": return "Failed to list changed files";
+      case "git.branchDiff": return "Failed to read branch diff";
+      case "git.commitMessage": return "Failed to generate commit message";
+      case "browser.console": return "Failed to read browser console";
+      case "browser.network": return "Failed to read browser network";
+      case "browser.domSnapshot": return "Failed to read browser snapshot";
+      case "test.run": return "Tests failed";
+      case "session.exportTrace": return "Failed to export trace";
       default: return `Failed: ${name}`;
     }
   }
@@ -1245,8 +1421,9 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
     case "mcp.prompts/list": return `Listed MCP prompts on ${args.server ?? ""}`;
     case "mcp.prompts/get": return `Fetched MCP prompt ${args.name ?? ""}`;
     case "subagent.spawn": return `Spawned subagent ${args.name ?? ""}`;
-    case "checkpoint.revert": return `Reverted to turn ${String(args.turnId ?? args.index ?? "").slice(0, 12)}`;
-    case "checkpoint.list": return "Listed checkpoints";
+      case "checkpoint.revert": return `Reverted to turn ${String(args.turnId ?? args.index ?? "").slice(0, 12)}`;
+      case "checkpoint.list": return "Listed checkpoints";
+      case "checkpoint.compare": return "Compared checkpoints";
     case "subagent.askParent": return `Asked parent: ${clip(String(args.question ?? ""), 80)}`;
     case "handoff": return `Handed off (${args.direction ?? "escalate"})`;
     case "clarification.askUser": return `Asked: ${clip(String(args.question ?? ""), 80)}`;
@@ -1261,8 +1438,18 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
     case "memory.delete": return `Deleted memory`;
     case "rule.list": return `Listed rules`;
     case "rule.read": return `Read rule ${clip(String(args.name ?? ""), 40)}`;
-    case "rule.create": return `Created rule ${clip(String(args.name ?? ""), 40)}`;
-    default: return name;
+      case "rule.create": return `Created rule ${clip(String(args.name ?? ""), 40)}`;
+      case "git.diffStaged": return "Read staged diff";
+      case "git.diffUnstaged": return "Read unstaged diff";
+      case "git.changedFiles": return "Listed changed files";
+      case "git.branchDiff": return "Read branch diff";
+      case "git.commitMessage": return "Generated commit message";
+      case "browser.console": return "Read browser console";
+      case "browser.network": return "Read browser network";
+      case "browser.domSnapshot": return "Read browser snapshot";
+      case "test.run": return `Ran tests${args.scope ? " (" + String(args.scope) + ")" : ""}`;
+      case "session.exportTrace": return "Exported session trace";
+      default: return name;
   }
 }
 const READ_TOOLS = new Set(["file.read", "file.grep", "file.glob", "file.semanticSearch"]);
@@ -1270,6 +1457,7 @@ const WRITE_TOOLS = new Set(["file.edit", "file.write"]);
 const SHELL_TOOLS = new Set(["shell.run", "shell.backgroundRun", "shell.check", "shell.write", "shell.customRun", "shell.editCustomRun", "shell.runCustomRun"]);
 const BROWSER_TOOLS = new Set(["browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor"]);
 const MCP_TOOLS = new Set(["mcp.call", "mcp.create", "mcp.remove", "mcp.toggle", "mcp.resources/list", "mcp.resources/read", "mcp.prompts/list", "mcp.prompts/get"]);
+const GIT_TOOLS = new Set(["git.diffStaged", "git.diffUnstaged", "git.changedFiles", "git.branchDiff", "git.commitMessage"]);
 function categoryForTool(name: string): string | undefined {
   if (READ_TOOLS.has(name)) return "read";
   if (WRITE_TOOLS.has(name)) return "write.local";
@@ -1277,6 +1465,7 @@ function categoryForTool(name: string): string | undefined {
   if (BROWSER_TOOLS.has(name)) return "browser";
   if (name === "webfetch") return "webfetch";
   if (MCP_TOOLS.has(name)) return "mcp";
+  if (GIT_TOOLS.has(name)) return "read";
   return undefined;
 }
 function buildApprovalExtra(name: string, args: Record<string, unknown>, workspaceRoot: string): { filePath?: string; workspaceRoot?: string; command?: string; mcpServer?: string } | undefined {
@@ -1309,6 +1498,15 @@ function prettyToolSummary(name: string, args: Record<string, unknown>): string 
     case "mcp.create": return `Register MCP server ${args.name ?? ""}`;
     case "mcp.remove": return `Remove MCP server ${args.name ?? ""}`;
     case "mcp.toggle": return `Toggle MCP server ${args.name ?? ""}`;
+    case "git.diffStaged": return "Staged diff";
+    case "git.diffUnstaged": return "Unstaged diff";
+    case "git.changedFiles": return "Changed files";
+    case "git.branchDiff": return `Branch diff${args.base ? " vs " + String(args.base) : ""}`;
+    case "git.commitMessage": return "Commit message";
+    case "browser.console": return "Browser console";
+    case "browser.network": return "Browser network";
+    case "browser.domSnapshot": return "Browser snapshot";
+    case "test.run": return "Run tests";
     default: return name;
   }
 }

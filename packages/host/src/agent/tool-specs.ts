@@ -101,6 +101,13 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
       cwd: str("Optional working directory (defaults to workspace root)."),
     }, ["id"]),
   },
+  "test.run": {
+    description: "Run tests in the workspace. Auto-detects vitest, jest, mocha, pytest, or go test. Use scope to narrow: 'workspace' (all), 'file' (single file), 'failed' (re-run failures).",
+    parameters: obj({
+      scope: enumStr(["workspace", "file", "nearest", "failed"], "Test scope to run. Defaults to 'workspace'."),
+      path: str("Optional file path to test when scope is 'file'."),
+    }),
+  },
   "lsp.problems": {
     description: "Get ALL current LSP problems across the workspace.",
     parameters: obj({}),
@@ -110,7 +117,7 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
     parameters: obj({ path: str("Workspace-relative file path.") }, ["path"]),
   },
   "todo.write": {
-    description: "Set the live to-do plan. Keep exactly one item in_progress at a time.",
+    description: "Set the live to-do plan. Keep exactly one item in_progress at a time. Tasks can have nested children for substeps.",
     parameters: obj({
       items: {
         type: "array",
@@ -118,7 +125,16 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
         items: obj({
           id: str("Stable id for the item."),
           text: str("What the step does."),
-          state: enumStr(["pending", "in_progress", "done", "skipped"], "Item state."),
+          state: enumStr(["pending", "in_progress", "done", "skipped", "blocked", "failed"], "Item state."),
+          children: {
+            type: "array",
+            description: "Optional sub-steps for this item.",
+            items: obj({
+              id: str("Stable id for the sub-step."),
+              text: str("What the sub-step does."),
+              state: enumStr(["pending", "in_progress", "done", "skipped", "blocked", "failed"], "Sub-step state."),
+            }, ["id", "text", "state"]),
+          },
         }, ["id", "text", "state"]),
       },
     }, ["items"]),
@@ -232,6 +248,10 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
       args: { type: "object", description: "Optional template arguments.", additionalProperties: true },
     }, ["server", "name"]),
   },
+  "session.exportTrace": {
+    description: "Export the session execution timeline as markdown and JSON. Shows all model calls, tool invocations, handoffs, compactions, approvals, and subagent spawns with timing and usage data.",
+    parameters: obj({}),
+  },
   "checkpoint.revert": {
     description: "Revert files modified during a turn. Args: { index } (1=most recent) or { turnId } (exact UUID). Use checkpoint.list first to find available turns.",
     parameters: obj({
@@ -242,6 +262,15 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
   "checkpoint.list": {
     description: "List all available checkpoint snapshots for the current workspace. Returns turn IDs, timestamps, and affected files — most recent first.",
     parameters: obj({}),
+  },
+  "checkpoint.compare": {
+    description: "Compare two checkpoints and show which files changed between them. Args: { indexA, indexB } (1-based indices from checkpoint.list) or { turnIdA, turnIdB } (exact UUIDs).",
+    parameters: obj({
+      indexA: num("1-based index of the first checkpoint."),
+      indexB: num("1-based index of the second checkpoint."),
+      turnIdA: str("Exact turn UUID of the first checkpoint."),
+      turnIdB: str("Exact turn UUID of the second checkpoint."),
+    }),
   },
   "subagent.spawn": {
     description: "Spawn one or more subagents on a (typically cheaper) tier to do delegated grunt work. Use 'batch' to launch parallel subagents.",
@@ -350,6 +379,26 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
       body: str("Markdown body with the rule instructions."),
     }, ["name", "glob", "description", "body"]),
   },
+  "git.diffStaged": {
+    description: "Show the staged diff (git diff --cached). Optionally scope to a single file with `path`.",
+    parameters: obj({ path: str("Optional workspace-relative file path to scope the diff to.") }),
+  },
+  "git.diffUnstaged": {
+    description: "Show the unstaged diff (git diff). Optionally scope to a single file with `path`.",
+    parameters: obj({ path: str("Optional workspace-relative file path to scope the diff to.") }),
+  },
+  "git.changedFiles": {
+    description: "List all changed files in the working tree with their status (staged vs unstaged).",
+    parameters: obj({}),
+  },
+  "git.branchDiff": {
+    description: "Show the diff between the current branch and its merge base with a target branch (defaults to 'main'). Falls back to 'master' if merge-base fails.",
+    parameters: obj({ base: str("Optional target branch to diff against. Defaults to 'main'.") }),
+  },
+  "git.commitMessage": {
+    description: "Supply a diff to compose a conventional commit message, or call without arguments to fetch the current staged diff.",
+    parameters: obj({ diff: str("Optional diff text to base the commit message on.") }),
+  },
   "browser.hover": {
     description: "Hover over an element matching a CSS selector.",
     parameters: obj({ selector: str("CSS selector of the element to hover.") }, ["selector"]),
@@ -368,6 +417,18 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
       url: str("URL pattern to wait for."),
       state: str("Load state: networkidle, load, or domcontentloaded. Defaults to networkidle."),
     }),
+  },
+  "browser.console": {
+    description: "Read the browser's console log (last 50 entries, log/warn/error).",
+    parameters: obj({}),
+  },
+  "browser.network": {
+    description: "Read the browser's network request log (last 50 entries with method, status, URL, timing).",
+    parameters: obj({}),
+  },
+  "browser.domSnapshot": {
+    description: "Get a combined snapshot of the browser's current state including console messages and network requests.",
+    parameters: obj({}),
   },
 };
 export function buildToolSpecs(

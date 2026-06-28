@@ -67,6 +67,7 @@ export class SubagentRunner {
       error: () => {},
       compaction: () => {},
       guidance: () => {},
+      timeline: () => {},
     };
     const rules = spec.rules ?? {};
     const blockedCommands = new Set(rules.blockedCommands ?? []);

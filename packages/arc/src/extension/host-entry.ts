@@ -8,9 +8,9 @@ import {
   pickLogo, ChatHistory, createBrowser, getWorkspaceArcDir,
   ModeRegistry, DEFAULT_APPROVALS, loadApprovalsMemory, saveApprovalPrefix,
   SkillRegistry,
-  RuleRegistry,
+  RuleRegistry, loadMemory, deleteMemory,
   type ChatSnapshot, type ChatMessage, type BrowserAdapter,
-  type HostMsg, type WebviewMsg, type ModelDescriptor, type ProviderConfig, type ProcessStep,
+  type HostMsg, type WebviewMsg, type ModelDescriptor, type ProviderConfig, type ProcessStep, type ApprovalsConfig,
   Indexer, HashEmbeddingBackend, OllamaEmbeddingBackend, DEFAULT_EMBEDDING_MODELS,
   type IndexProgress, type EmbeddingBackend,
 } from "@arc/host";
@@ -43,6 +43,7 @@ let browserPromise: Promise<BrowserAdapter> | undefined;
 let searchIndexer: Indexer | undefined;
 let searchProgress: IndexProgress = { filesScanned: 0, filesIndexed: 0, chunksEmbedded: 0, errors: 0 };
 let searchAbort: AbortController | undefined;
+let approvalsConfig: ApprovalsConfig = { ...DEFAULT_APPROVALS };
 function getBrowser(): Promise<BrowserAdapter> {
   if (browser) return Promise.resolve(browser);
   if (!browserPromise) {
@@ -465,28 +466,33 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     guidance: (text) => broadcast(session, { type: "session/guidance", text }),
     error: (message) => broadcast(session, { type: "error", message, ...(classifyError(message) ? { code: classifyError(message) } : {}) }),
     compaction: (before, after, reason) => broadcast(session, { type: "session/compaction", before, after, reason }),
+    timeline: (events) => broadcast(session, { type: "session/timeline", events }),
   };
   session.agent = new Agent(registry, store, sink, {
     systemPrompt,
     enabledTools: new Set([
-      "file.read", "file.edit", "file.write", "file.grep", "file.glob", "shell.run", "shell.backgroundRun", "shell.check", "shell.write", "shell.customRun", "shell.editCustomRun", "shell.runCustomRun", "webfetch",
+      "file.read", "file.edit", "file.write", "file.grep", "file.glob",       "shell.run", "shell.backgroundRun", "shell.check", "shell.write", "shell.customRun", "shell.editCustomRun", "shell.runCustomRun",
+      "test.run", "webfetch",
       "lsp.problems", "lsp.problemsFor",
       "todo.write",
       "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor",
+      "browser.console", "browser.network", "browser.domSnapshot",
       "mcp.call", "mcp.create", "mcp.remove", "mcp.toggle",
       "mcp.resources/list", "mcp.resources/read", "mcp.prompts/list", "mcp.prompts/get",
       "subagent.spawn", "handoff", "clarification.askUser",
-      "checkpoint.revert", "checkpoint.list",
+      "checkpoint.revert", "checkpoint.list", "checkpoint.compare",
       "file.semanticSearch",
       "mode.switch",
       "skill.read", "skill.use",
       "memory.list", "memory.edit", "memory.delete", "memory.add",
       "rule.list", "rule.read", "rule.create",
+      "git.diffStaged", "git.diffUnstaged", "git.changedFiles", "git.branchDiff", "git.commitMessage",
+      "session.exportTrace",
     ]),
     workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(),
     mode: "code",
     modeRegistry,
-    approvalsConfig: DEFAULT_APPROVALS,
+    approvalsConfig,
     isMain: true,
     toolContext,
     approveShell: async (description) => {
@@ -877,6 +883,42 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             if (agent) await agent.retract(msg.turnId);
           }
           break;
+        case "chat/revertToMessage":
+          {
+            const agent = await awaitAgent(session);
+            if (agent) {
+              const result = await agent.revertToMessage(msg.messageId, !!msg.restoreFiles, msg.content);
+              if (result.reverted) {
+                const msgs = agent.getMessages();
+                const steps = agent.getSteps();
+                const composerText = msg.loadToComposer ? msg.content : undefined;
+                webview.postMessage({ type: "session/replaceState", messages: msgs, steps, loadComposer: composerText });
+              } else {
+                webview.postMessage({ type: "session/message", message: { id: `revert-${Date.now()}`, role: "system", content: "Could not find message to revert to.", ts: Date.now() }, sessionId: session.id });
+              }
+            }
+          }
+          break;
+        case "chat/editMessage":
+          {
+            const agent = await awaitAgent(session);
+            if (agent) {
+              const messages = agent.getMessages();
+              const content = msg.content ?? msg.messageId;
+              let idx = messages.findIndex((m) => m.role === "user" && m.content.trim() === content.trim());
+              if (idx < 0) idx = messages.findIndex((m) => m.role === "user" && m.content.includes(content.slice(0, 30)));
+              if (idx >= 0) {
+                const editTs = messages[idx].ts;
+                messages[idx] = { ...messages[idx], content: msg.newContent, meta: { ...messages[idx].meta, editedOriginal: messages[idx].content } };
+                messages.length = idx + 1;
+                const keptSteps = agent.getSteps().filter((s) => (s.ts ?? 0) <= (editTs ?? 0));
+                await agent.restore({ messages, steps: keptSteps, mode: agent.getCurrentMode(), todoItems: agent.getTodo() });
+                webview.postMessage({ type: "session/replaceState", messages: agent.getMessages(), steps: agent.getSteps() });
+                void agent.continue();
+              }
+            }
+          }
+          break;
         case "model/select":
           if (registry) { registry.setCurrent(msg.modelId); persist?.(); webview.postMessage({ type: "model/list", models: registry.list(), currentModelId: registry.getCurrent()?.id ?? "" }); }
           break;
@@ -1120,27 +1162,78 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           } catch (e: any) { webview.postMessage({ type: "mcp/marketplaceResults", error: e.message || "Unknown error" }); }
           break;
         }
-        case "approval/response": {
-          const p = pendingApprovals.get(msg.id);
-          if (p) {
-            pendingApprovals.delete(msg.id);
-            p.resolve(msg.allowed);
-            if (msg.allowed && session.agent) {
-              if ("rememberCommand" in msg && msg.rememberCommand) {
-                session.agent.addSessionCommand(String(msg.rememberCommand));
-              }
-              if ("rememberPrefix" in msg && msg.rememberPrefix) {
-                const prefix = String(msg.rememberPrefix);
-                session.agent.addCommandPrefix(prefix);
-                const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-                saveApprovalPrefix(root, prefix).catch((err: unknown) => {
-                  log.appendLine(`[arc] Failed to save approval prefix: ${(err as Error)?.message ?? err}`);
-                });
-              }
+        case "mcp/testCall": {
+          if (mcp) {
+            const srvName = String(msg.server);
+            const servers = mcp.listServers();
+            const server = servers.find((s) => s.name === srvName);
+            if (!server) {
+              webview.postMessage({ type: "mcp/testResult", server: srvName, output: `Server '${srvName}' not found.` });
+            } else {
+              const info = `Server: ${server.name}
+Transport: ${JSON.stringify(server.transport)}
+Status: ${server.status}
+Tools: ${server.tools?.length ?? 0}
+Resources: ${server.resources?.length ?? 0}
+Prompts: ${server.prompts?.length ?? 0}`;
+              webview.postMessage({ type: "mcp/traffic", server: srvName, dir: "out", msg: "health check" });
+              webview.postMessage({ type: "mcp/traffic", server: srvName, dir: "in", msg: `status=${server.status} tools=${server.tools?.length ?? 0}` });
+              webview.postMessage({ type: "mcp/testResult", server: srvName, output: info });
             }
           }
           break;
         }
+        case "memory/list": {
+          try {
+            const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+            const entries = await loadMemory(root);
+            const memories = entries.map((e, i) => ({ index: i, category: e.category, content: e.content, createdAt: e.createdAt }));
+            webview.postMessage({ type: "memory/list", memories });
+          } catch {}
+          break;
+        }
+        case "memory/delete": {
+          try {
+            const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+            await deleteMemory(root, Number(msg.index));
+            const entries = await loadMemory(root);
+            const memories = entries.map((e, i) => ({ index: i, category: e.category, content: e.content, createdAt: e.createdAt }));
+            webview.postMessage({ type: "memory/list", memories });
+          } catch {}
+          break;
+        }
+        case "hooks/list": {
+          try {
+            const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+            const hooksPath = path.join(root, ".arc", "hooks.json");
+            const raw = await fs.readFile(hooksPath, "utf-8");
+            const hooks = JSON.parse(raw);
+            const list = Array.isArray(hooks) ? hooks : (hooks.hooks ?? Object.values(hooks).flat());
+            webview.postMessage({ type: "hooks/list", hooks: list });
+          } catch {
+            webview.postMessage({ type: "hooks/list", hooks: [] });
+          }
+          break;
+        }
+        case "approval/response": {
+          const p = pendingApprovals.get(msg.id);
+          if (p) {
+            pendingApprovals.delete(msg.id);
+            if (msg.rememberPrefix) p.session.agent?.addCommandPrefix(msg.rememberPrefix);
+            if (msg.rememberCommand) p.session.agent?.addSessionCommand(msg.rememberCommand);
+            p.resolve(msg.allowed);
+          }
+        }
+        break;
+        case "approval/setPreset": {
+          if (msg.preset === "readonly" || msg.preset === "safe-edit" || msg.preset === "dev" || msg.preset === "autonomous" || msg.preset === "full-trust") {
+            approvalsConfig.preset = msg.preset as import("@arc/host").ApprovalPreset;
+          } else {
+            delete approvalsConfig.preset;
+          }
+          broadcastAll({ type: "session/message", message: { id: `preset-${Date.now()}`, role: "system", content: `Approval preset set to: ${msg.preset}`, ts: Date.now() } });
+        }
+        break;
         case "autoApprove/toggle": {
           const agent = await ensureAgent(session);
           if (agent) {

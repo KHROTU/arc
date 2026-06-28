@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Settings, Plus, Trash2, Pencil, Maximize2, X, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search, ArrowLeft } from "lucide-react";
+import { Settings, Plus, Trash2, Pencil, Maximize2, X, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search, ArrowLeft, Undo2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import ArcProcessUI, { type ProcessStep } from "./AgentProcess";
 import Composer from "./Composer";
@@ -79,6 +79,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [approval, setApproval] = useState<{ id: string; description: string; kind: string } | null>(null);
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
+  const [prefillText, setPrefillText] = useState<string | null>(null);
   const [autoApproveActive, setAutoApproveActive] = useState(false);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const pendingTextRef = useRef<{ id: string; text: string } | null>(null);
@@ -154,8 +155,15 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           });
           break;
         case "session/steps":
-          if (e.sessionId && sessionIdRef.current && e.sessionId !== sessionIdRef.current) break;
           setSteps(e.steps);
+          break;
+        case "session/loadComposer":
+          setPrefillText(e.text);
+          break;
+        case "session/replaceState":
+          setMessages(e.messages);
+          setSteps(e.steps);
+          if (e.loadComposer) setPrefillText(e.loadComposer);
           break;
         case "session/turnStart":
           if (e.sessionId && sessionIdRef.current !== e.sessionId) sessionIdRef.current = e.sessionId;
@@ -334,7 +342,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         if (m.role === "assistant" && !m.content && m.toolCalls?.length) continue;
         if (m.role === "tool") continue;
         flush();
-        out.push(<MessageBubble key={m.id} message={m} />);
+        out.push(<MessageBubble key={m.id} message={m} client={client} />);
       }
     }
     flush();
@@ -512,7 +520,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
                         setClarification(null);
                       }
                     }}
-                  />
+              />
                   <button onClick={() => {
                     const val = (document.querySelector(".arc-clar-custom input") as HTMLInputElement)?.value;
                     if (val) {
@@ -574,6 +582,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
               pendingAttachment={pendingAttachment}
               queuedText={queuedMessage}
               onCancelQueue={cancelQueue}
+              prefillText={prefillText}
             />
           </footer>
         </main>
@@ -601,10 +610,12 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     </div>
   );
 }
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({ message, client }: { message: ChatMessage; client?: RpcClient }) {
   const isUser = message.role === "user";
   const isTool = message.role === "tool";
   const [enlarged, setEnlarged] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const editRef = useRef<HTMLTextAreaElement>(null);
   if (isTool) {
     return (
       <div className="arc-bubble arc-bubble-tool" role="note">
@@ -626,7 +637,42 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       <div className={`arc-bubble ${isUser ? "arc-bubble-user" : "arc-bubble-assistant"}`}>
         {isUser && imgs}
         {isUser ? (
-          <div className="arc-bubble-text">{message.content}</div>
+          editing ? (
+            <div className="arc-bubble-text" style={{ padding: 0 }}>
+              <textarea
+                ref={editRef}
+                autoFocus
+                defaultValue={message.content}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setEditing(false);
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    const newText = editRef.current?.value ?? "";
+                    if (newText.trim()) {
+                      client?.send({ type: "chat/editMessage", messageId: message.id, content: message.content, newContent: newText });
+                    }
+                    setEditing(false);
+                  }
+                }}
+                style={{ width: "100%", minHeight: 40, background: "var(--vscode-input-background)", color: "var(--vscode-input-foreground)", border: "1px solid var(--vscode-input-border)", borderRadius: "var(--arc-radius)", padding: "6px 8px", font: "inherit", fontSize: 13, resize: "none", outline: "none", lineHeight: 1.5 }}
+                rows={2}
+              />
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 4, flexDirection: "row-reverse" }}>
+              <div className="arc-bubble-text">{message.content}</div>
+              {client && (
+                <span style={{ display: "flex", gap: 2, opacity: 0, transition: "opacity 0.18s", flexShrink: 0, alignSelf: "flex-start", marginTop: 2 }} className="arc-msg-actions">
+                  <button className="arc-iconbtn" style={{ width: 22, height: 22 }} title="Revert to here" onClick={() => { client.send({ type: "chat/revertToMessage", messageId: message.id, content: message.content, restoreFiles: true, loadToComposer: true }); }}>
+                    <Undo2 size={12} />
+                  </button>
+                  <button className="arc-iconbtn" style={{ width: 22, height: 22 }} title="Edit message" onClick={() => { setEditing(true); }}>
+                    <Pencil size={12} />
+                  </button>
+                </span>
+              )}
+            </div>
+          )
         ) : (
           <div
             className="arc-bubble-text arc-md"
@@ -710,19 +756,28 @@ function ChatList({
       </ul>
       {todos && todos.length > 0 && (
         <div className="arc-todo-sidebar">
-          <ul className="arc-todo-sidebar-list">
-            {todos.map((t) => (
-              <li key={t.id} className={`arc-todo-sidebar-item arc-todo-sidebar-item-${t.state}`}>
-                <span className="arc-todo-sidebar-mark">
-                  {t.state === "done" ? "✓" : t.state === "in_progress" ? "●" : "○"}
-                </span>
-                <span className="arc-todo-sidebar-text">{t.text}</span>
-              </li>
-            ))}
-          </ul>
+          <TodoList items={todos} level={0} />
         </div>
       )}
     </aside>
+  );
+}
+type TodoItemUI = { id: string; text: string; state: string; children?: TodoItemUI[] };
+function TodoList({ items, level }: { items: TodoItemUI[]; level: number }) {
+  return (
+    <ul className="arc-todo-sidebar-list" style={level > 0 ? { marginLeft: 12, marginTop: 2, borderLeft: "1px solid var(--arc-line-faint)", paddingLeft: 8 } : {}}>
+      {items.map((t) => (
+        <li key={t.id}>
+          <div className={`arc-todo-sidebar-item arc-todo-sidebar-item-${t.state}`}>
+            <span className="arc-todo-sidebar-mark">
+              {t.state === "done" ? "✓" : t.state === "in_progress" ? "●" : t.state === "failed" ? "✗" : t.state === "blocked" ? "⊘" : "○"}
+            </span>
+            <span className="arc-todo-sidebar-text">{t.text}</span>
+          </div>
+          {t.children && t.children.length > 0 && <TodoList items={t.children} level={level + 1} />}
+        </li>
+      ))}
+    </ul>
   );
 }
 function errorLabel(code: string): string {

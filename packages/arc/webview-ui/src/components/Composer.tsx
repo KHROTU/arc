@@ -13,9 +13,10 @@ type Props = {
   autoFocus?: boolean;
   queuedText?: string | null;
   onCancelQueue?: () => void;
+  prefillText?: string | null;
 };
 export default function Composer({
-  onSend, onStop, onGuidance, streaming, disabled, pendingAttachment, onAttach, placeholder, autoFocus = true, queuedText, onCancelQueue,
+  onSend, onStop, onGuidance, streaming, disabled, pendingAttachment, onAttach, placeholder, autoFocus = true, queuedText, onCancelQueue, prefillText,
 }: Props) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -25,6 +26,12 @@ export default function Composer({
   const ref = useRef<HTMLTextAreaElement>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
   useEffect(() => { if (autoFocus) ref.current?.focus(); }, [autoFocus]);
+  useLayoutEffect(() => {
+    if (prefillText !== undefined && prefillText !== null) {
+      setText(prefillText);
+      ref.current?.focus();
+    }
+  }, [prefillText]);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;

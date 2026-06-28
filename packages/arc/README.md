@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/arc-logo-mono.png" alt="Arc" /></p>
+<p align="center"><img src="assets/arc-logo-mono-text.png" alt="Arc" /></p>
 
 **A high-performance, lightweight agentic coding assistant for VS Code.**
 
@@ -23,26 +23,27 @@ Arc is built for speed and precision. It combines a sophisticated multi-model or
 - **Provider Resilience:** 21+ built-in providers, including OpenAI, Anthropic, Google, OpenRouter, DeepSeek, xAI, Groq, Mistral, MiniMax, Kimi, Z.ai, Ollama, and morem with multi-provider failover, weighted load balancing, and bring-your-own-key support.
 - **Subagent System:** Spawn parallel subagents that inherit tiered routing. Subagents work in isolated contexts for codebase exploration, research, and independent task execution.
 - **Adaptive Compaction:** Calculates model-specific averages for thinking and response tokens to trigger precision summarization, maximizing usable context space.
-- **Content-Addressed Checkpoints:** Snapshots only the specific files modified, enabling instant reverts and message retractions without repository-wide performance overhead.
+- **Content-Addressed Checkpoints:** Snapshots only the specific files modified, enabling instant reverts, checkpoint comparisons, and message retractions without repository-wide performance overhead.
 
 ### The Agentic Toolbelt
 
 - **Precision Editing:** Syntax-aware `SEARCH/REPLACE` diffing that respects your codebase's indentation, style, and formatting.
 - **MCP Ecosystem:** Add stdio and HTTP/SSE Model Context Protocol servers, or ask the agent to do so at runtime. Tools, resources, and prompt templates are automatically discovered and exposed to agents.
 - **Local Semantic Search:** Fast, local embedding indices for finding code by intent, not just keywords. Dual backend (hash-based or Ollama) with incremental re-indexing.
-- **Unified Shell:** Streamed terminal execution with parallel tool calling, background process support, and a granular approval system.
-- **Browser Automation:** Built-in Playwright integration to navigate, interact with, and debug web applications directly from the chat. Includes console/network capture and advanced actions (hover, scroll, wait conditions).
+- **Unified Shell:** Streamed terminal execution with parallel tool calling, background process support, a built-in test runner, and a granular approval system.
+- **Browser Automation:** Built-in Playwright integration to navigate, interact with, and debug web applications directly from the chat. Includes console/network capture, DOM snapshots, and advanced actions (hover, scroll, wait conditions).
 
 ### Mode & Skills Subsystem
 
-- **Role-Based Modes:** Four built-in modes (**Plan**, **Code**, **Ask**, **Debug**) with distinct personas, tool access, and per-mode write restrictions. Supports dynamic runtime mode switching.
+- **Role-Based Modes:** Four built-in modes (**Plan**, **Code**, **Debug**, **Review**) with distinct personas, tool access, and per-mode write restrictions. Supports dynamic runtime mode switching.
 - **Custom Modes:** Drop a `.toml` file into your configuration directory to override or create modes with custom toolsets and file write restrictions.
 - **Dynamic Skills:** Extend agent capabilities using `SKILL.md` files with YAML frontmatter. Arc automatically enumerates accompanying scripts or references and injects them into the system prompt on demand.
+- **Git-Aware Workflows:** Inspect staged, unstaged, and branch diffs, list changed files, and generate commit messages directly from the chat.
 
 ### Permissions, Security & Sandbox
 
-- **Granular Approvals:** A matrix-based security layer allowing you to set fine-grained permissions (`auto` vs `ask`) across read, write, shell, browser, and MCP tools.
-- **Session-Scoped Security:** Remembers approved commands or command prefixes until the window closes, paired with a one-click global override shield.
+- **Granular Approvals:** A matrix-based security layer allowing you to set fine-grained permissions (`auto` vs `ask`) across read, write, shell, browser, and MCP tools, with built-in presets from read-only to full trust.
+- **Session-Scoped Security:** Remembers approved commands or command prefixes until the window closes, paired with a one-click global override shield and per-task approval overrides.
 - **Lifecycle Hooks:** Execute custom actions across lifecycle events (e.g., pre/post tool execution, session start) via a robust JSON-decision protocol.
 - **OS Sandboxing:** Optional shell sandboxing via `sandbox-exec` (macOS), `bwrap` (Linux), or WSB (Windows).
 
@@ -57,8 +58,8 @@ Arc aims to provide a top-of-the-line agentic experience with a minimal footprin
 
 | Extension | VSIX Size (as of June 28th, 2026) |
 | :--- | :--- |
-| **Arc** | **0.24 MB** |
-| Cline | 7.98 MB |
+| **Arc** | **0.22 MB** |
+| Cline | 10.18 MB |
 | BLACKBOXAI Agent | 20.15 MB |
 | Roo Code | 30.11 MB |
 | Kilo Code | 101.40 MB |
@@ -78,7 +79,7 @@ Arc aims to provide a top-of-the-line agentic experience with a minimal footprin
 Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=khrotu.arc-code) or directly via the VS Code CLI:
 
 ```bash
-code --install-extension packages/arc/arc-code-0.4.7.vsix
+code --install-extension packages/arc/arc-code-0.4.8.vsix
 ```
 
 ### Development

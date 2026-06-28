@@ -6,7 +6,8 @@ export interface TurnSnapshot {
   ts: number;
   files: Record<string, string>;
   root: string;
-  todoItems?: { id: string; text: string; state: "pending" | "in_progress" | "done" | "skipped" }[];
+  todoItems?: { id: string; text: string; state: "pending" | "in_progress" | "done" | "skipped" | "blocked" | "failed" }[];
+  label?: string;
 }
 export type TurnSnapshotWithTodo = TurnSnapshot;
 export interface CheckpointStoreOptions {
@@ -17,7 +18,7 @@ export class CheckpointStore {
   static hash(content: string | Buffer): string {
     return crypto.createHash("sha256").update(content).digest("hex").slice(0, 32);
   }
-  async snapshot(turnId: string, root: string, files: string[], todoItems?: TurnSnapshot["todoItems"]): Promise<TurnSnapshot> {
+  async snapshot(turnId: string, root: string, files: string[], todoItems?: TurnSnapshot["todoItems"], label?: string): Promise<TurnSnapshot> {
     const map: Record<string, string> = {};
     for (const rel of files) {
       const abs = path.join(root, rel);
@@ -40,6 +41,7 @@ export class CheckpointStore {
     }
     const snap: TurnSnapshot = { turnId, ts: Date.now(), files: map, root };
     if (todoItems && todoItems.length) snap.todoItems = todoItems;
+    if (label) snap.label = label;
     const metaPath = this.metaPath(root, turnId);
     await fs.mkdir(path.dirname(metaPath), { recursive: true });
     await fs.writeFile(metaPath, JSON.stringify(snap, null, 2), "utf-8");
@@ -138,6 +140,23 @@ export class CheckpointStore {
       const entries = await fs.readdir(dir);
       await Promise.all(entries.map((e) => fs.unlink(path.join(dir, e))));
 } catch {  }
+  }
+  async compare(root: string, turnA: string, turnB: string): Promise<{ added: string[]; removed: string[]; modified: string[] }> {
+    const snapA = await this.load(root, turnA);
+    const snapB = await this.load(root, turnB);
+    if (!snapA || !snapB) throw new Error("One or both snapshots not found.");
+    const added: string[] = [];
+    const removed: string[] = [];
+    const modified: string[] = [];
+    const allFiles = new Set([...Object.keys(snapA.files), ...Object.keys(snapB.files)]);
+    for (const file of allFiles) {
+      const hashA = snapA.files[file];
+      const hashB = snapB.files[file];
+      if (!hashA && hashB) added.push(file);
+      else if (hashA && !hashB) removed.push(file);
+      else if (hashA !== hashB) modified.push(file);
+    }
+    return { added, removed, modified };
   }
   private blobPath(hash: string): string {
     return path.join(this.opts.dir, "blobs", hash.slice(0, 2), hash);

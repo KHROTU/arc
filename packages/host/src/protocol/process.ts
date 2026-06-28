@@ -11,7 +11,17 @@ export type StepType =
 export interface TodoItem {
   id: string;
   text: string;
-  state: "pending" | "in_progress" | "done" | "skipped";
+  state: "pending" | "in_progress" | "done" | "skipped" | "blocked" | "failed";
+  children?: TodoItem[];
+  evidence?: {
+    filesTouched?: string[];
+    commandsRun?: string[];
+    testOutput?: string;
+    screenshots?: string[];
+  };
+  assignedTo?: string;
+  retries?: number;
+  blockedBy?: string[];
 }
 export interface DiffHunk {
   added: boolean;

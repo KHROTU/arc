@@ -1,28 +1,34 @@
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import { getWorkspaceArcDir } from "../arc-dir.js";
-import type { ApprovalsConfig, SessionApprovals } from "./types.js";
+import type { ApprovalsConfig, ApprovalPreset, SessionApprovals } from "./types.js";
+import { PRESETS } from "./types.js";
+export function resolvePreset(preset: ApprovalPreset): ApprovalsConfig {
+  return PRESETS[preset] ?? PRESETS.dev;
+}
 export function resolveApproval(
   config: ApprovalsConfig,
   session: SessionApprovals,
   category: string,
   extra?: { filePath?: string; workspaceRoot?: string; command?: string; mcpServer?: string },
 ): "auto" | "ask" {
+  const effectiveConfig = config.preset ? resolvePreset(config.preset) : config;
+  const taskConfig = session.taskOverride ?? effectiveConfig;
   if (session.autoApproveAll) return "auto";
   if (category === "mcp" && extra?.mcpServer) {
-    const perServer = config.mcp.perServer[extra.mcpServer];
+    const perServer = taskConfig.mcp.perServer[extra.mcpServer];
     if (perServer) return perServer;
-    return config.mcp.default;
+    return taskConfig.mcp.default;
   }
   if (category === "write.local" || category === "write.external") {
     const actual = classifyWritePath(extra?.filePath, extra?.workspaceRoot);
-    return config[actual] ?? "ask";
+    return taskConfig[actual] ?? "ask";
   }
   if (category === "shell.safe" || category === "shell.other") {
     if (extra?.command && isSessionAllowed(session, extra.command)) return "auto";
-    return config[category] ?? "ask";
+    return taskConfig[category] ?? "ask";
   }
-  return ((config as unknown as Record<string, string>)[category] as "auto" | "ask") ?? "ask";
+  return ((taskConfig as unknown as Record<string, string>)[category] as "auto" | "ask") ?? "ask";
 }
 function classifyWritePath(filePath: string | undefined, workspaceRoot: string | undefined): "write.local" | "write.external" {
   if (!filePath || !workspaceRoot) return "write.external";
