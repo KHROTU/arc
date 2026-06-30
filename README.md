@@ -1,4 +1,4 @@
-<p align="center"><img src="packages/arc/assets/arc-logo-mono-text.png" alt="Arc" /></p>
+<p align="center"><img src="https://raw.githubusercontent.com/KHROTU/arc/main/packages/arc/assets/arc-logo-mono-text.png" alt="Arc" /></p>
 
 **A high-performance, lightweight agentic coding assistant for VS Code.**
 
@@ -9,67 +9,57 @@ Arc is built for speed and precision. It combines a sophisticated multi-model or
 
 [arc-demo.webm](https://github.com/user-attachments/assets/fa8d9d15-870f-49e2-b1ea-4ed57678483f)
 
-## Core Principles
-
-- **Model power scales with need.** Arc uses a tiered model registry to delegate sub-tasks to efficient models while reserving "heavy" models for complex reasoning.
-- **Resource efficiency is the core.** We believe your tools shouldn't compete with your code for resources. Arc is designed to be zero-bloat, requiring no external runtimes or heavy binaries.
-- **Context scales with precision.** Token-accurate tracking and LLM-powered summarization ensure your conversation stays focused, even as your project grows.
-
 ## Features
 
-### Intelligent Routing & Context
+### Specialties
 
-- **Tiered Registry:** Map models to tiers (`free`, `light`, `default`, `heavy`). Subagents automatically scale up or down based on task complexity.
-- **Provider Resilience:** 21+ built-in providers, including OpenAI, Anthropic, Google, OpenRouter, DeepSeek, xAI, Groq, Mistral, MiniMax, Kimi, Z.ai, Ollama, and morem with multi-provider failover, weighted load balancing, and bring-your-own-key support.
-- **Subagent System:** Spawn parallel subagents that inherit tiered routing. Subagents work in isolated contexts for codebase exploration, research, and independent task execution.
-- **Adaptive Compaction:** Calculates model-specific averages for thinking and response tokens to trigger precision summarization, maximizing usable context space.
-- **Content-Addressed Checkpoints:** Snapshots only the specific files modified, enabling instant reverts, checkpoint comparisons, and message retractions without repository-wide performance overhead.
+- **Tiered model registry** (free/light/default/heavy). Start a chat with a default model, and watch it start subagents using free models for simple tasks, or hand off the entire chat to a heavy model for difficult tasks.
+- **150+ built-in providers** with multi-provider failover, weighted load balancing, and BYOK support, allowing you to configure multiple providers for the same model and automatically switch between them when one is down, out of credits, or flaky.
 
-### The Agentic Toolbelt
+### Tools
 
-- **Precision Editing:** Syntax-aware `SEARCH/REPLACE` diffing that respects your codebase's indentation, style, and formatting.
-- **MCP Ecosystem:** Add stdio and HTTP/SSE Model Context Protocol servers, or ask the agent to do so at runtime. Tools, resources, and prompt templates are automatically discovered and exposed to agents.
-- **Local Semantic Search:** Fast, local embedding indices for finding code by intent, not just keywords. Dual backend (hash-based or Ollama) with incremental re-indexing.
-- **Unified Shell:** Streamed terminal execution with parallel tool calling, background process support, a built-in test runner, and a granular approval system.
-- **Browser Automation:** Built-in Playwright integration to navigate, interact with, and debug web applications directly from the chat. Includes console/network capture, DOM snapshots, and advanced actions (hover, scroll, wait conditions).
+- **File Operations:** Read, write, edit, grep, glob, and semantic search.
+- **Shell Execution:** Run commands (standard or background), manage processes, write to shells, and configure custom execution commands.
+- **LSP Integration:** Check workspace diagnostics and identify file-specific problems.
+- **Playwright Automation:** Navigate, click, type, hover, scroll, evaluate scripts, capture screenshots, read DOM/console/network activity, and wait for specific page states.
+- **Model Context Protocol:** Register, toggle, and remove MCP servers; call custom tools, resources, and prompts.
+- **Subagents & Handoff:** Spawn child agents, query parent agents, and hand off control between instances.
+- **Checkpoint Management:** List, compare, and revert to previous session checkpoints.
+- **Git Integration:** View staged/unstaged diffs, inspect branch differences, list changed files, and generate commit messages.
+- **Memory & Rules:** Read, list, create, and modify persistent memories and behavioral rules.
+- **Web Capabilities:** Fetch web page content and search the web.
+- **Testing & Session Management:** Run automatically detected test suites, manage custom skills, track session history/traces, and update task progress.
+- **User Clarification:** Ask clarifying questions.
 
-### Mode & Skills Subsystem
+### Design
 
-- **Role-Based Modes:** Four built-in modes (**Plan**, **Code**, **Debug**, **Review**) with distinct personas, tool access, and per-mode write restrictions. Supports dynamic runtime mode switching.
-- **Custom Modes:** Drop a `.toml` file into your configuration directory to override or create modes with custom toolsets and file write restrictions.
-- **Dynamic Skills:** Extend agent capabilities using `SKILL.md` files with YAML frontmatter. Arc automatically enumerates accompanying scripts or references and injects them into the system prompt on demand.
-- **Git-Aware Workflows:** Inspect staged, unstaged, and branch diffs, list changed files, and generate commit messages directly from the chat.
+- **Content-addressed checkpoints.** Snapshots only store the files you changed. Each file is hashed with SHA-256 and stored as `blobs/<prefix>/<hash>`, so identical states across turns share the same blob. Restoring writes blobs back, deletes newer metadata, and garbage-collects unreferenced blobs.
+- **EMA-tracked compaction.** The engine maintains an exponential moving average of prompt and completion tokens per model. When estimated usage crosses the model's usable window (total minus a max-output reserve), it sends the conversation midsection to an LLM summarizer, replaces it with a single system message, and keeps the system prompt plus the last six messages intact. The safety margin is configurable per workspace.
+- **Subagent tier delegation.** Subagents spawn one tier below the parent by default (e.g., default->light, light->free) so cheap models handle grunt work. The handoff process follows a fixed pattern both ways (escalate default->heavy, de-escalate heavy->default), and the agent preserves the to-do plan across handoffs so the new model picks up where the last left off. You can also pin subagents to a specific model or tier per invocation.
+- **Granular proxy fallback.** You can set a proxy per category—provider API calls, web tools, or shell commands—with a global fallback.
+- **Dual-backend semantic search.** The indexing engine supports two backends: hash-based and semantic. The index uses a custom `ARCX` format for fast loading and saving. Incremental re-indexing keeps the index in sync without rebuilding.
+- **OS sandboxing for shell commands.** Shell execution supports three native sandboxing profiles: `sandbox-exec` on macOS, `bwrap` on Linux, and WSB on Windows.
+- **Secret scanning at write time.** Every `file.edit` and `file.write` runs through a pre-write hook that scans for AWS keys, GitHub tokens, OpenAI/Anthropic API keys, private key PEM blocks, and hardcoded secrets. You can add custom regex patterns and commands. The scan runs before the file hits disk, so secrets never touch the filesystem.
+- **Mode write-globs.** Each mode can declare a `writeGlob` that restricts which file paths the agent is allowed to modify. Review mode, for example, can only write `**/.arc/review-*.md`, so the agent can produce review artifacts but cannot touch source files. Switching to Code mode lifts the restriction.
 
-### Permissions, Security & Sandbox
-
-- **Granular Approvals:** A matrix-based security layer allowing you to set fine-grained permissions (`auto` vs `ask`) across read, write, shell, browser, and MCP tools, with built-in presets from read-only to full trust.
-- **Session-Scoped Security:** Remembers approved commands or command prefixes until the window closes, paired with a one-click global override shield and per-task approval overrides.
-- **Lifecycle Hooks:** Execute custom actions across lifecycle events (e.g., pre/post tool execution, session start) via a robust JSON-decision protocol.
-- **OS Sandboxing:** Optional shell sandboxing via `sandbox-exec` (macOS), `bwrap` (Linux), or WSB (Windows).
-
-### Memory & Vision Support
-
-- **Durable Memory:** Persistent fact-tracking across workspaces (`MEMORY.md`) with full runtime CRUD capabilities via the agent.
-- **Multimodal & Fallback Vision:** Native support for vision-capable models. For text-only models, Arc gracefully routes images through a local/cloud vision model to generate text descriptions inline.
-
-## Architecture & Efficiency
+## Efficiency
 
 Arc aims to provide a top-of-the-line agentic experience with a minimal footprint. By optimizing our dependency tree and focusing on native VS Code APIs, we keep the extension fast and portable.
 
-| Extension | VSIX Size (as of June 28th, 2026) |
+| Extension | VSIX Size (as of June 30th, 2026) |
 | :--- | :--- |
-| **Arc** | **0.22 MB** |
+| **Arc** | **0.23 MB** |
 | Cline | 10.18 MB |
 | BLACKBOXAI Agent | 20.15 MB |
 | Roo Code | 30.11 MB |
-| Kilo Code | 101.40 MB |
+| Kilo Code | 81.79 MB |
 | Continue | 111.48 MB |
 
 ## Featuren't
 
-- **TUI/CLI/Remote access?** We believe agents are tools, not replacements. Working with agents and being responsible for the quality is the most accountable way to use them, while staying in the same window where your code editor already is (basically, if you use any of the three methods in the title it's harder to know what changed, or if you do you need to constantly switch between apps which defeats the purpose of boosting productivity)
+- **TUI/CLI/Remote access?** We believe agents are tools, not replacements. Working with agents and being responsible for quality is the most accountable way to use them while staying in the same window as your code editor. (Using any of the three methods mentioned makes it harder to track what changed; alternatively, doing so requires you to constantly switch between apps, which defeats the purpose of boosting productivity.)
 - **Model routing/Cloud features?** We broke.
-- **Slash commands/@-commands?** You're using a GUI. Use the buttons. If you prefer terminal-style inputs, go try OpenCode, it's really cool.
+- **Slash commands/@-commands?** You're using a GUI. Use the buttons. If you prefer terminal-style inputs, go try OpenCode; it's really cool.
 - **Autocomplete?** Inline LLM suggestions tend to be sluggish and (usually) mediocre. You’ll get faster and better results by writing the code yourself or by using and reviewing the work of agents.
 
 ## Getting Started
@@ -79,7 +69,7 @@ Arc aims to provide a top-of-the-line agentic experience with a minimal footprin
 Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=khrotu.arc-code) or directly via the VS Code CLI:
 
 ```bash
-code --install-extension packages/arc/arc-code-0.4.9.vsix
+code --install-extension packages/arc/arc-code-0.4.10.vsix
 ```
 
 ### Development

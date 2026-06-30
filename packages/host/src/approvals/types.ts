@@ -8,7 +8,8 @@ export interface ApprovalsConfig {
   "shell.safe": ApprovalLevel;
   "shell.other": ApprovalLevel;
   browser: ApprovalLevel;
-  webfetch: ApprovalLevel;
+  "web.fetch": ApprovalLevel;
+  "web.search": ApprovalLevel;
   mcp: {
     default: ApprovalLevel;
     perServer: Record<string, ApprovalLevel>;
@@ -28,7 +29,8 @@ export const PRESETS: Record<ApprovalPreset, ApprovalsConfig> = {
     "shell.safe": "ask",
     "shell.other": "ask",
     browser: "ask",
-    webfetch: "ask",
+    "web.fetch": "auto",
+    "web.search": "auto",
     mcp: { default: "ask", perServer: {} },
   },
   "safe-edit": {
@@ -38,7 +40,8 @@ export const PRESETS: Record<ApprovalPreset, ApprovalsConfig> = {
     "shell.safe": "auto",
     "shell.other": "ask",
     browser: "ask",
-    webfetch: "ask",
+    "web.fetch": "auto",
+    "web.search": "auto",
     mcp: { default: "auto", perServer: {} },
   },
   "dev": {
@@ -48,7 +51,8 @@ export const PRESETS: Record<ApprovalPreset, ApprovalsConfig> = {
     "shell.safe": "auto",
     "shell.other": "ask",
     browser: "auto",
-    webfetch: "auto",
+    "web.fetch": "auto",
+    "web.search": "auto",
     mcp: { default: "auto", perServer: {} },
   },
   "autonomous": {
@@ -58,7 +62,8 @@ export const PRESETS: Record<ApprovalPreset, ApprovalsConfig> = {
     "shell.safe": "auto",
     "shell.other": "auto",
     browser: "auto",
-    webfetch: "auto",
+    "web.fetch": "auto",
+    "web.search": "auto",
     mcp: { default: "auto", perServer: {} },
   },
   "full-trust": {
@@ -68,7 +73,8 @@ export const PRESETS: Record<ApprovalPreset, ApprovalsConfig> = {
     "shell.safe": "auto",
     "shell.other": "auto",
     browser: "auto",
-    webfetch: "auto",
+    "web.fetch": "auto",
+    "web.search": "auto",
     mcp: { default: "auto", perServer: {} },
   },
 };
@@ -79,7 +85,8 @@ export const DEFAULT_APPROVALS: ApprovalsConfig = {
   "shell.safe": "auto",
   "shell.other": "ask",
   browser: "ask",
-  webfetch: "ask",
+  "web.fetch": "auto",
+  "web.search": "auto",
   mcp: { default: "auto", perServer: {} },
 };
 export type ApprovalCategory =
@@ -89,5 +96,5 @@ export type ApprovalCategory =
   | "shell.safe"
   | "shell.other"
   | "browser"
-  | "webfetch"
+  | "web.fetch"
   | "mcp";

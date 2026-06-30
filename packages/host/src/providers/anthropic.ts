@@ -1,4 +1,5 @@
 import { AsyncEventQueue, readableToAsyncIterable } from "../util/stream.js";
+import { makeProxyDispatcher } from "../util/proxy.js";
 import { fromApiToolName, toApiToolName, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
 export const anthropicTransport: Transport = {
   kind: "anthropic",
@@ -58,6 +59,7 @@ export const anthropicTransport: Transport = {
       },
       body: JSON.stringify(body),
       signal: req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000),
+      ...(req.proxyUrl ? { dispatcher: makeProxyDispatcher(req.proxyUrl) } : {}),
     });
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => "");

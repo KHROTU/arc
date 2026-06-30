@@ -17,11 +17,13 @@ export class ChatHistory {
   private currentId: string | undefined;
   private messages: Record<string, unknown[]> = {};
   private steps: Record<string, unknown[]> = {};
+  private maxMessages = 500;
   load(input: { chats?: ChatMeta[]; currentId?: string; messages?: Record<string, unknown[]>; steps?: Record<string, unknown[]> }) {
     this.chats = input.chats ?? [];
     this.currentId = input.currentId;
     this.messages = input.messages ?? {};
     this.steps = input.steps ?? {};
+    for (const id of Object.keys(this.messages)) this.trimChat(id);
   }
   snapshot(): ChatSnapshot {
     return { chats: this.chats, currentId: this.currentId, messages: this.messages, steps: this.steps };
@@ -82,12 +84,16 @@ export class ChatHistory {
   }
   setMessages(id: string, msgs: unknown[]): void {
     this.messages[id] = msgs;
-  }
-  getSteps(id: string): unknown[] {
-    return this.steps[id] ?? [];
+    this.trimChat(id);
   }
   setSteps(id: string, s: unknown[]): void {
     this.steps[id] = s;
+    if (s.length > this.maxMessages) {
+      this.steps[id] = s.slice(-this.maxMessages);
+    }
+  }
+  getSteps(id: string): unknown[] {
+    return this.steps[id] ?? [];
   }
   search(query: string): { chat: ChatMeta; matches: { index: number; text: string }[] }[] {
     const lower = query.toLowerCase();
@@ -109,5 +115,15 @@ export class ChatHistory {
       }
     }
     return results;
+  }
+  private trimChat(id: string): void {
+    const msgs = this.messages[id];
+    if (msgs && msgs.length > this.maxMessages) {
+      this.messages[id] = msgs.slice(-this.maxMessages);
+    }
+    const steps = this.steps[id];
+    if (steps && steps.length > this.maxMessages) {
+      this.steps[id] = steps.slice(-this.maxMessages);
+    }
   }
 }

@@ -34,7 +34,7 @@ export const DEFAULT_MODES: Mode[] = [
     allowedTools: [
       "file.read", "file.grep", "file.glob", "file.semanticSearch",
       "lsp.problems", "lsp.problemsFor",
-      "webfetch",
+      "web.fetch", "web.search",
       "todo.write",
       "clarification.askUser",
       "mode.switch",
@@ -70,7 +70,7 @@ export const DEFAULT_MODES: Mode[] = [
       "shell.run", "shell.backgroundRun", "shell.check", "shell.write",
       "shell.customRun", "shell.editCustomRun", "shell.runCustomRun",
       "test.run",
-      "webfetch",
+      "web.fetch", "web.search",
       "lsp.problems", "lsp.problemsFor",
       "todo.write",
       "browser.navigate", "browser.click", "browser.type", "browser.screenshot",
@@ -107,7 +107,7 @@ export const DEFAULT_MODES: Mode[] = [
       "- Use `file.grep` and `file.glob` to trace error sources across the codebase.\n" +
       "- Use `shell.run` with diagnostic flags (verbose, debug output, stack traces).\n" +
       "- For web apps: use `browser.navigate`, `browser.screenshot`, `browser.evaluate`, and `browser.readDom` to inspect runtime state.\n" +
-      "- For API issues: use `webfetch` to check endpoints, or `shell.run` with curl.\n\n" +
+      "- For API issues: use `web.fetch` to check endpoints, or `shell.run` with curl.\n\n" +
       "## Anti-patterns to avoid\n" +
       "- Do NOT apply speculative fixes before identifying the root cause.\n" +
       "- Do NOT make unrelated refactors while debugging.\n" +
@@ -117,7 +117,7 @@ export const DEFAULT_MODES: Mode[] = [
       "shell.run", "shell.backgroundRun", "shell.check", "shell.write",
       "shell.customRun", "shell.editCustomRun", "shell.runCustomRun",
       "test.run",
-      "webfetch",
+      "web.fetch", "web.search",
       "lsp.problems", "lsp.problemsFor",
       "todo.write",
       "browser.navigate", "browser.click", "browser.type", "browser.screenshot",
@@ -172,7 +172,7 @@ export const DEFAULT_MODES: Mode[] = [
     allowedTools: [
       "file.read", "file.write", "file.grep", "file.glob", "file.semanticSearch",
       "lsp.problems", "lsp.problemsFor",
-      "webfetch",
+      "web.fetch", "web.search",
       "todo.write",
       "clarification.askUser",
       "mode.switch",

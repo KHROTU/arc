@@ -167,11 +167,18 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
     description: "Close the browser.",
     parameters: obj({}),
   },
-  "webfetch": {
+  "web.fetch": {
     description: "Fetch raw text content from a web URL.",
     parameters: obj({
       url: str("Full URL to fetch."),
     }, ["url"]),
+  },
+  "web.search": {
+    description: "Search the web using DuckDuckGo and return the top results.",
+    parameters: obj({
+      query: str("Search query string."),
+      count: num("Maximum number of results to return (default 10, max 20)."),
+    }, ["query"]),
   },
   "file.semanticSearch": {
     description: "Semantic search across the workspace via the local embedding index.",

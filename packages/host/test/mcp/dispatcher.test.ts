@@ -73,7 +73,7 @@ describe("MCP tool spec injection + dispatcher routing", () => {
     const client = new McpClient({ name: "fs", enabled: true, transport: { type: "http", url: fake.url } }, { healthIntervalMs: 0 });
     agg.setPersistence(async () => {});
     await agg.addServer({ name: "fs", enabled: true, transport: { type: "http", url: fake.url } });
-    const specs = buildToolSpecs(new Set(["mcp.call"]), agg.listTools());
+    const { specs } = buildToolSpecs(new Set(["mcp.call"]), agg.listTools());
     expect(specs.find((s) => s.name === "mcp__fs__echo")).toBeDefined();
     await agg.dispose();
     await fake.close();

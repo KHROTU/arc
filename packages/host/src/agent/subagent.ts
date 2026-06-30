@@ -107,6 +107,8 @@ export class SubagentRunner {
       ownerTier: tier,
       toolContext,
       modelOverride: model,
+      proxyUrl: toolContext.proxyUrl,
+      proxyProvider: toolContext.proxyProvider,
     });
     await agent.send(spec.instructions);
     const finalText = agent.getMessages().filter((m) => m.role === "assistant").slice(-1)[0]?.content ?? "";

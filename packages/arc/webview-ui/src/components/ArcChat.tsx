@@ -550,10 +550,10 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
                 )}
                 <div className="arc-approval-actions">
                   <button className="arc-approval-allow" onClick={() => respondApproval(true, getApprovalCommand(approval.description))} autoFocus>
-                    Always allow for this session
+                    Allow session
                   </button>
                   <button className="arc-approval-allow" onClick={() => respondApproval(true, undefined, getApprovalPrefix(approval.description))}>
-                    Always allow this prefix
+                    Allow prefix
                   </button>
                   <button className="arc-approval-allow" onClick={() => respondApproval(true)}>
                     Allow once

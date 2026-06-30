@@ -268,7 +268,7 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile }: { step: Proc
   if (step.type === "subagent") return <GroupNode step={step} onOpenFile={onOpenFile} />;
   if (step.type === "thought") return <ThoughtNode step={step} />;
   const isReadTool = step.toolName === "file.read";
-  const isNoDetail = isReadTool || step.toolName === "webfetch";
+  const isNoDetail = isReadTool || step.toolName === "web.fetch";
   const isWriteTool = step.toolName === "file.write";
   const isEditTool = step.toolName === "file.edit";
   const hasDiff = isWriteTool || isEditTool;

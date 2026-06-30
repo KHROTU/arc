@@ -50,6 +50,10 @@ export interface AgentOptions {
   parent?: Agent;
   initialMessages?: ChatMessage[];
   modelOverride?: ModelDescriptor;
+  proxyUrl?: string;
+  proxyProvider?: string;
+  proxyWeb?: string;
+  proxyShell?: string;
 }
 export class Agent {
   private messages: ChatMessage[] = [];
@@ -113,6 +117,9 @@ export class Agent {
   }
   private getCurrentModel(): ModelDescriptor | undefined {
     return this.opts.modelOverride ?? this.registry.getCurrent();
+  }
+  private resolveProviderProxy(): string | undefined {
+    return this.opts.proxyProvider || this.opts.proxyUrl;
   }
   getCurrentMode(): string { return this.currentMode; }
   getModeRegistry(): ModeRegistry { return this.opts.modeRegistry; }
@@ -258,10 +265,12 @@ export class Agent {
       this.sink.steps(this.steps);
     }
   }
-  async retract(turnId: string): Promise<{ restored: string[]; conflicts: string[] }> {
+  async retract(turnId: string, skipSteps = false): Promise<{ restored: string[]; conflicts: string[] }> {
     const r = await this.store.restore(this.opts.workspaceRoot, turnId);
-    this.steps = this.steps.filter((s) => !s.id.startsWith(`turn-${turnId}-`));
-    this.sink.steps(this.steps);
+    if (!skipSteps) {
+      this.steps = this.steps.filter((s) => !s.id.startsWith(`turn-${turnId}-`));
+      this.sink.steps(this.steps);
+    }
     const snap = await this.store.load(this.opts.workspaceRoot, turnId);
     if (snap && snap.todoItems) {
       this.todoItems = snap.todoItems;
@@ -293,7 +302,7 @@ export class Agent {
       for (const turnId of turns) {
         const snap = await this.store.load(this.opts.workspaceRoot, turnId);
         if (snap && snap.ts <= (this.messages.length ? this.messages[this.messages.length - 1].ts : Date.now())) {
-          const r = await this.retract(turnId);
+          const r = await this.retract(turnId, true);
           return { reverted: true, filesRestored: r.restored, conflicts: r.conflicts, messagesRemoved: removed };
         }
       }
@@ -387,6 +396,7 @@ export class Agent {
         messages: this.messages,
         tools: toolSpecs.length ? toolSpecs : undefined,
         signal: this.abortController.signal,
+        proxyUrl: this.resolveProviderProxy(),
       });
       for await (const ev of stream.events) {
         if (this.abortController.signal.aborted) break;
@@ -1018,7 +1028,7 @@ export class Agent {
         }
       }
     }
-    const hookTools = new Set(["shell.run", "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "webfetch", "mcp.call", "file.edit", "file.write", "file.read", "subagent.spawn", "handoff"]);
+    const hookTools = new Set(["shell.run", "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "web.fetch", "web.search", "mcp.call", "file.edit", "file.write", "file.read", "subagent.spawn", "handoff"]);
     if (hookTools.has(tc.name)) {
       const decisions = await runHooks({
         event: "pre.tool",
@@ -1122,19 +1132,20 @@ export class Agent {
     if (!model) return options[options.length - 1] ?? "";
     const decision = pickProvider(this.registry, model);
     if (!decision) return options[options.length - 1] ?? "";
-    const transport = transportFor(decision.provider);
-    try {
-      const optsStr = options.map((o, i) => `${i + 1}. ${o}`).join("\n");
-      const prompt: ChatMessage[] = [
-        { id: randomUUID(), role: "system", content: `You are an agentic coding assistant. A subagent you delegated work to is asking for your approval. Answer with ONLY a single digit (1 or 2) corresponding to the option. Do not explain.`, ts: Date.now() },
-        { id: randomUUID(), role: "user", content: `${question}\n\nOptions:\n${optsStr}`, ts: Date.now() },
-      ];
-      const stream = await transport.stream({
-        model,
-        provider: decision.provider,
-        messages: prompt,
-        signal: AbortSignal.timeout(10_000),
-      });
+      const transport = transportFor(decision.provider);
+      try {
+        const optsStr = options.map((o, i) => `${i + 1}. ${o}`).join("\n");
+        const prompt: ChatMessage[] = [
+          { id: randomUUID(), role: "system", content: `You are an agentic coding assistant. A subagent you delegated work to is asking for your approval. Answer with ONLY a single digit (1 or 2) corresponding to the option. Do not explain.`, ts: Date.now() },
+          { id: randomUUID(), role: "user", content: `${question}\n\nOptions:\n${optsStr}`, ts: Date.now() },
+        ];
+        const stream = await transport.stream({
+          model,
+          provider: decision.provider,
+          messages: prompt,
+          signal: AbortSignal.timeout(10_000),
+          proxyUrl: this.resolveProviderProxy(),
+        });
       let text = "";
       for await (const ev of stream.events) {
         if (ev.type === "text") text += ev.delta;
@@ -1193,6 +1204,7 @@ export class Agent {
         provider: provider.provider,
         messages: prompt,
         signal: AbortSignal.timeout(20_000),
+        proxyUrl: this.resolveProviderProxy(),
       });
       let text = "";
       for await (const ev of stream.events) {
@@ -1362,7 +1374,8 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
       case "checkpoint.list": return "Failed to list checkpoints";
       case "checkpoint.compare": return "Failed to compare checkpoints";
       case "file.semanticSearch": return `Semantic search failed: ${clip(String(args.query ?? ""))}`;
-      case "webfetch": return `Failed to fetch ${clip(String(args.url ?? ""))}`;
+      case "web.fetch": return `Failed to fetch ${clip(String(args.url ?? ""))}`;
+      case "web.search": return `Search failed: ${clip(String(args.query ?? ""))}`;
       case "mode.switch": return `Failed to switch to ${String(args.slug ?? "")} mode`;
       case "skill.read": return `Failed to read skill ${String(args.name ?? "")}`;
       case "skill.use": return `Failed to load skill ${String(args.name ?? "")}`;
@@ -1421,14 +1434,15 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
     case "mcp.prompts/list": return `Listed MCP prompts on ${args.server ?? ""}`;
     case "mcp.prompts/get": return `Fetched MCP prompt ${args.name ?? ""}`;
     case "subagent.spawn": return `Spawned subagent ${args.name ?? ""}`;
-      case "checkpoint.revert": return `Reverted to turn ${String(args.turnId ?? args.index ?? "").slice(0, 12)}`;
-      case "checkpoint.list": return "Listed checkpoints";
-      case "checkpoint.compare": return "Compared checkpoints";
+    case "checkpoint.revert": return `Reverted to turn ${String(args.turnId ?? args.index ?? "").slice(0, 12)}`;
+    case "checkpoint.list": return "Listed checkpoints";
+    case "checkpoint.compare": return "Compared checkpoints";
     case "subagent.askParent": return `Asked parent: ${clip(String(args.question ?? ""), 80)}`;
     case "handoff": return `Handed off (${args.direction ?? "escalate"})`;
     case "clarification.askUser": return `Asked: ${clip(String(args.question ?? ""), 80)}`;
     case "file.semanticSearch": return `Searched: ${clip(String(args.query ?? ""), 80)}`;
-    case "webfetch": return `Fetched ${clip(String(args.url ?? ""))}`;
+    case "web.fetch": return `Fetched ${clip(String(args.url ?? ""))}`;
+    case "web.search": return `Searched for: ${clip(String(args.query ?? ""), 60)}`;
     case "mode.switch": return `Switched to ${String(args.slug ?? "")} mode`;
     case "skill.read": return `Read skill ${clip(String(args.name ?? ""), 40)}`;
     case "skill.use": return `Loaded skill ${clip(String(args.name ?? ""), 40)}`;
@@ -1438,18 +1452,18 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
     case "memory.delete": return `Deleted memory`;
     case "rule.list": return `Listed rules`;
     case "rule.read": return `Read rule ${clip(String(args.name ?? ""), 40)}`;
-      case "rule.create": return `Created rule ${clip(String(args.name ?? ""), 40)}`;
-      case "git.diffStaged": return "Read staged diff";
-      case "git.diffUnstaged": return "Read unstaged diff";
-      case "git.changedFiles": return "Listed changed files";
-      case "git.branchDiff": return "Read branch diff";
-      case "git.commitMessage": return "Generated commit message";
-      case "browser.console": return "Read browser console";
-      case "browser.network": return "Read browser network";
-      case "browser.domSnapshot": return "Read browser snapshot";
-      case "test.run": return `Ran tests${args.scope ? " (" + String(args.scope) + ")" : ""}`;
-      case "session.exportTrace": return "Exported session trace";
-      default: return name;
+    case "rule.create": return `Created rule ${clip(String(args.name ?? ""), 40)}`;
+    case "git.diffStaged": return "Read staged diff";
+    case "git.diffUnstaged": return "Read unstaged diff";
+    case "git.changedFiles": return "Listed changed files";
+    case "git.branchDiff": return "Read branch diff";
+    case "git.commitMessage": return "Generated commit message";
+    case "browser.console": return "Read browser console";
+    case "browser.network": return "Read browser network";
+    case "browser.domSnapshot": return "Read browser snapshot";
+    case "test.run": return `Ran tests${args.scope ? " (" + String(args.scope) + ")" : ""}`;
+    case "session.exportTrace": return "Exported session trace";
+    default: return name;
   }
 }
 const READ_TOOLS = new Set(["file.read", "file.grep", "file.glob", "file.semanticSearch"]);
@@ -1463,7 +1477,8 @@ function categoryForTool(name: string): string | undefined {
   if (WRITE_TOOLS.has(name)) return "write.local";
   if (SHELL_TOOLS.has(name)) return "shell.other";
   if (BROWSER_TOOLS.has(name)) return "browser";
-  if (name === "webfetch") return "webfetch";
+  if (name === "web.fetch") return "web.fetch";
+  if (name === "web.search") return "web.fetch";
   if (MCP_TOOLS.has(name)) return "mcp";
   if (GIT_TOOLS.has(name)) return "read";
   return undefined;
@@ -1493,7 +1508,8 @@ function prettyToolSummary(name: string, args: Record<string, unknown>): string 
     case "browser.evaluate": return `Evaluate: ${clip(String(args.script ?? ""), 60)}`;
     case "browser.readDom": return "Read page DOM";
     case "browser.close": return "Close browser";
-    case "webfetch": return `Fetch ${clip(String(args.url ?? ""))}`;
+    case "web.fetch": return `Fetch ${clip(String(args.url ?? ""))}`;
+    case "web.search": return `Search for ${clip(String(args.query ?? ""), 40)}`;
     case "mcp.call": return `MCP ${args.server ?? ""}/${args.tool ?? ""}`;
     case "mcp.create": return `Register MCP server ${args.name ?? ""}`;
     case "mcp.remove": return `Remove MCP server ${args.name ?? ""}`;

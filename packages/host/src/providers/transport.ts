@@ -23,6 +23,7 @@ export interface StreamRequest {
   temperature?: number;
   maxTokens?: number;
   signal?: AbortSignal;
+  proxyUrl?: string;
 }
 export interface StreamHandle {
   events: AsyncIterable<StreamEvent>;
@@ -32,12 +33,10 @@ export interface Transport {
   kind: ProviderKind;
   stream(req: StreamRequest): Promise<StreamHandle>;
 }
-export { openAICompatibleTransport } from "./openai-compatible.js";
-export { anthropicTransport } from "./anthropic.js";
-export { ollamaTransport } from "./ollama.js";
 import { openAICompatibleTransport } from "./openai-compatible.js";
 import { anthropicTransport } from "./anthropic.js";
 import { ollamaTransport } from "./ollama.js";
+export { openAICompatibleTransport, anthropicTransport, ollamaTransport };
 import type { TurnUsage } from "../protocol/protocol.js";
 export function transportFor(provider: import("../protocol/protocol.js").ProviderConfig): Transport {
   if (provider.kind === "ollama") return ollamaTransport;

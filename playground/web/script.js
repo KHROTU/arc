@@ -18,7 +18,7 @@ document.getElementById("submit-btn").addEventListener("click", () => {
         : "Name is valid.";
       break;
   }
-  
+
   document.getElementById("output").textContent = output;
   document.getElementById("message").textContent = "Form submitted!";
 });

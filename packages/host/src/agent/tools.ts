@@ -6,12 +6,17 @@ import { FileEditor } from "../edit/editor.js";
 import { getSkillsDir } from "../arc-dir.js";
 import { runPreWriteHooks, runPostEditHooks } from "../hooks/hooks.js";
 import { getSandboxArgs } from "../sandbox/sandbox.js";
+import { makeProxyDispatcher } from "../util/proxy.js";
 import type { SandboxProfile } from "../sandbox/sandbox.js";
 import type { DiffHunk } from "../protocol/process.js";
 const pexec = promisify(exec);
 const IS_WIN = process.platform === "win32";
-const SHELL = IS_WIN ? "pwsh.exe" : true;
+const SHELL: string | boolean = IS_WIN ? "pwsh.exe" : true;
 const EXEC_SHELL: string | undefined = IS_WIN ? "pwsh.exe" : undefined;
+function shellEnv(proxyUrl: string | undefined): Record<string, string> | undefined {
+  if (!proxyUrl) return undefined;
+  return { HTTP_PROXY: proxyUrl, HTTPS_PROXY: proxyUrl, http_proxy: proxyUrl, https_proxy: proxyUrl };
+}
 type BrowserAdapter = import("../browser/browser.js").BrowserAdapter;
 type BrowserSource = BrowserAdapter | (() => Promise<BrowserAdapter>);
 async function resolveBrowser(src: BrowserSource | undefined): Promise<BrowserAdapter | undefined> {
@@ -55,8 +60,9 @@ async function runSingleCommand(
 ): Promise<{ ok: boolean; output: string }> {
   const sandboxArgs = _ctx.sandboxProfile ? getSandboxArgs(_ctx.sandboxProfile, _ctx.workspacePath) : [];
   const fullCmd = sandboxArgs.length ? sandboxArgs.concat([cmd]).join(" ") : cmd;
+  const proxyEnv = shellEnv(_ctx.proxyShell || _ctx.proxyUrl);
   return new Promise((resolve) => {
-    const proc = spawn(fullCmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    const proc = spawn(fullCmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...(proxyEnv ? { env: { ...process.env, ...proxyEnv } } : {}) });
     activeProcesses.add(proc);
     let stdout = "";
     let stderr = "";
@@ -108,6 +114,10 @@ export interface ToolContext {
   mcp?: import("../mcp/mcp.js").McpAggregator;
   workspacePath: string;
   onChunk?: (stream: "stdout" | "stderr", text: string) => void;
+  proxyUrl?: string;
+  proxyProvider?: string;
+  proxyWeb?: string;
+  proxyShell?: string;
   semanticSearch?: (query: string, k?: number) => Promise<{ file: string; start: number; end: number; score: number; snippet: string }[]>;
 }
 export interface ToolResult {
@@ -215,8 +225,9 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const timeoutSec = args.timeout ? Number(args.timeout) : -1;
       const cwd = (args.cwd ? String(args.cwd) : ctx.root) || ctx.root;
       const onChunk = ctx.onChunk;
+      const proxyEnv = shellEnv(ctx.proxyShell || ctx.proxyUrl);
       return new Promise<ToolResult>((resolve) => {
-        const proc = spawn(fullCmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+        const proc = spawn(fullCmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...(proxyEnv ? { env: { ...process.env, ...proxyEnv } } : {}) });
         activeProcesses.add(proc);
         let stdout = "";
         let stderr = "";
@@ -264,7 +275,8 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const cmd = String(args.command);
       const cwd = (args.cwd ? String(args.cwd) : ctx.root) || ctx.root;
       try {
-        const proc = spawn(cmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+        const proxyEnv = shellEnv(ctx.proxyShell || ctx.proxyUrl);
+        const proc = spawn(cmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...(proxyEnv ? { env: { ...process.env, ...proxyEnv } } : {}) });
         activeProcesses.add(proc);
         const bg: BgProcess = { proc, stdout: "", stderr: "", exited: false, exitCode: undefined };
         const id = String(bgIds++);
@@ -423,8 +435,11 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       if (!cmd) return { ok: false, output: "No test runner detected. Add a test script to package.json." };
       if (scope === "file" && testPath) cmd = `${cmd} -- "${testPath}"`;
       else if (scope === "failed" && (cmd.includes("vitest") || cmd.includes("jest"))) cmd = `${cmd} --last-failed`;
+      const testProxyEnv = shellEnv(ctx.proxyShell || ctx.proxyUrl);
+      const execOpts: Record<string, unknown> = { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL };
+      if (testProxyEnv) execOpts.env = { ...process.env, ...testProxyEnv };
       try {
-        const { stdout, stderr } = await pexec(cmd, { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
+        const { stdout, stderr } = await pexec(cmd, execOpts);
         return { ok: true, output: stdout + (stderr ? `\n[stderr]\n${stderr}` : "") };
       } catch (e: unknown) {
         const err = e as { stdout?: string; stderr?: string; message?: string };
@@ -464,17 +479,38 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
   "browser.evaluate": { description: "Run JS in the page. Args: { script }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.evaluate(String(a.script)) : { ok: false, output: "Browser not available." }; } },
   "browser.readDom": { description: "Read the page's accessibility tree. Args: {} ", fn: async (_a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.readDom() : { ok: false, output: "Browser not available." }; } },
   "browser.close": { description: "Close the browser. Args: {}", fn: async (_a, ctx) => { const b = await resolveBrowser(ctx.browser); if (b) await b.close(); return { ok: true, output: "Browser closed." }; } },
-  "webfetch": {
+  "web.fetch": {
     description: "Fetch raw text content from a web URL. Args: { url }",
-    fn: async (args) => {
+    fn: async (args, ctx) => {
       try {
         const url = String(args.url);
-        const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+        const webProxy = ctx.proxyWeb || ctx.proxyUrl;
+        const res = await fetch(url, {
+          signal: AbortSignal.timeout(15000),
+          ...(webProxy ? { dispatcher: makeProxyDispatcher(webProxy) } : {}),
+        });
         if (!res.ok) return { ok: false, output: `HTTP ${res.status}: ${res.statusText}` };
         const text = await res.text();
         return { ok: true, output: text };
       } catch (e: unknown) {
         return { ok: false, output: `Fetch failed: ${(e as Error).message}` };
+      }
+    },
+  },
+  "web.search": {
+    description: "Search the web via DuckDuckGo. Args: { query, count? }",
+    fn: async (args, ctx) => {
+      try {
+        const rawQuery = String(args.query ?? "");
+        const count = Math.min(args.count ? Number(args.count) : 10, 20);
+        const dispatcher = ctx.proxyWeb || ctx.proxyUrl ? makeProxyDispatcher(ctx.proxyWeb || ctx.proxyUrl!) : undefined;
+        const results = await ddgSearch(rawQuery, count, dispatcher);
+        const out = results.length > 0
+          ? results.map((r, i) => `${i + 1}. **${r.title}**\n   ${r.snippet}\n   ${r.url}`).join("\n\n")
+          : "No results found (CAPTCHA or rate limit may have been triggered). Try a more specific query.";
+        return { ok: true, output: out };
+      } catch (e: unknown) {
+        return { ok: false, output: `Search failed: ${(e as Error).message}` };
       }
     },
   },
@@ -795,3 +831,95 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     },
   },
 };
+interface SearchResult { title: string; snippet: string; url: string; }
+const STEALTH_HEADERS: Record<string, string> = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Accept-Encoding": "gzip, deflate, br",
+  "DNT": "1",
+  "Upgrade-Insecure-Requests": "1",
+  "Sec-Fetch-Dest": "document",
+  "Sec-Fetch-Mode": "navigate",
+  "Sec-Fetch-Site": "none",
+  "Sec-Fetch-User": "?1",
+};
+const CAPTCHA_MARKERS = ["anomaly-modal", "not a robot", "g-recaptcha", "challenge-form", "not a bot"];
+async function ddgSearch(query: string, max: number, proxyDispatcher: unknown): Promise<SearchResult[]> {
+  const results = await ddgSearchLite(query, max, proxyDispatcher);
+  if (results.length > 0) return results;
+  return await ddgSearchHtml(query, max, proxyDispatcher);
+}
+async function ddgSearchLite(query: string, max: number, proxyDispatcher: unknown): Promise<SearchResult[]> {
+  try {
+    const formData = new URLSearchParams({ q: query, kl: "us-en" });
+    const opts: Record<string, unknown> = {
+      method: "POST",
+      headers: { ...STEALTH_HEADERS, "Content-Type": "application/x-www-form-urlencoded" },
+      body: formData.toString(),
+      signal: AbortSignal.timeout(15000),
+    };
+    if (proxyDispatcher) opts.dispatcher = proxyDispatcher;
+    const res = await fetch("https://lite.duckduckgo.com/lite/", opts as RequestInit);
+    if (!res.ok) return [];
+    const html = await res.text();
+    return parseLiteResults(html, max);
+  } catch {
+    return [];
+  }
+}
+async function ddgSearchHtml(query: string, max: number, proxyDispatcher: unknown): Promise<SearchResult[]> {
+  try {
+    const params = new URLSearchParams({ q: query });
+    const opts: Record<string, unknown> = { headers: STEALTH_HEADERS, signal: AbortSignal.timeout(15000) };
+    if (proxyDispatcher) opts.dispatcher = proxyDispatcher;
+    const res = await fetch(`https://html.duckduckgo.com/html/?${params.toString()}`, opts as RequestInit);
+    if (!res.ok) return [];
+    const html = await res.text();
+    if (hasCaptcha(html)) return [];
+    return parseHtmlResults(html, max);
+  } catch {
+    return [];
+  }
+}
+function hasCaptcha(html: string): boolean {
+  return CAPTCHA_MARKERS.some((m) => html.toLowerCase().includes(m));
+}
+function extractUddgUrl(raw: string): string {
+  const m = /uddg=([^"&]+)/.exec(raw);
+  return m ? decodeURIComponent(m[1]) : raw;
+}
+function decodeHtml(s: string): string {
+  return s.replace(/<[^>]*>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#\d+;/g, "").trim();
+}
+function parseLiteResults(html: string, max: number): SearchResult[] {
+  if (hasCaptcha(html)) return [];
+  const results: SearchResult[] = [];
+  const linkRe = /<a[^>]*href="(https?:\/\/[^"]+)"[^>]*class='?result-link'?[^>]*>([\s\S]*?)<\/a>/gi;
+  const snippetRe = /<td[^>]*class='?result-snippet'?[^>]*>([\s\S]*?)<\/td>/gi;
+  const links = [...html.matchAll(linkRe)];
+  const snippets = [...html.matchAll(snippetRe)];
+  for (let i = 0; i < Math.min(links.length, max); i++) {
+    const href = links[i][1] ?? "";
+    const title = decodeHtml(links[i][2] ?? "");
+    const snippet = i < snippets.length ? decodeHtml(snippets[i][1] ?? "") : "";
+    if (title && href) results.push({ title, snippet, url: href });
+  }
+  return results;
+}
+function parseHtmlResults(html: string, max: number): SearchResult[] {
+  if (hasCaptcha(html) || !html.includes("result__body")) return [];
+  const results: SearchResult[] = [];
+  const re = /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null && results.length < max) {
+    const rawHref = m[1] ?? "";
+    const title = decodeHtml(m[2] ?? "");
+    const snippet = decodeHtml(m[3] ?? "");
+    const url = extractUddgUrl(rawHref);
+    if (title && url && !url.startsWith("//duckduckgo.com") && !url.startsWith("/")) {
+      results.push({ title, snippet, url });
+    }
+  }
+  return results;
+}

@@ -2,7 +2,7 @@
   "name": "arc-code",
   "displayName": "Arc",
   "description": "Agentic coding extension with tiered model routing, subagents, handoff, and per-file change snapshots.",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "publisher": "khrotu",
   "license": "Apache-2.0",
   "repository": {
@@ -176,6 +176,31 @@
           "enum": ["none", "minicpm-v:1b", "ministral-3:8b-cloud", "gemma4:31b-cloud"],
           "default": "none",
           "description": "Model to describe attached images when the active model isn't multimodal. Uses local Ollama or Ollama Cloud."
+        },
+        "arc.proxy.url": {
+          "type": "string",
+          "default": "",
+          "description": "Fallback proxy URL used when a category-specific proxy is not set. Applies to provider API calls, web tools, and shell commands. Example: http://proxy.company.com:8080."
+        },
+        "arc.proxy.providerUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Proxy URL for model provider API calls (OpenAI, Anthropic, Ollama, etc.). Falls back to arc.proxy.url if empty."
+        },
+        "arc.proxy.webUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Proxy URL for web.fetch and web.search tools. Falls back to arc.proxy.url if empty."
+        },
+        "arc.proxy.shellUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Proxy URL for shell commands. Sets HTTP_PROXY/HTTPS_PROXY environment variables on spawned child processes. Falls back to arc.proxy.url if empty."
+        },
+        "arc.discord.spoofRpc": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show the file the agent is actively editing as your Discord presence (spoofs file activity so Discord RPC extensions report agent edits as your status)."
         }
       }
     },

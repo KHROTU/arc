@@ -1,4 +1,5 @@
 import { AsyncEventQueue, readableToAsyncIterable } from "../util/stream.js";
+import { makeProxyDispatcher } from "../util/proxy.js";
 import { fromApiToolName, toApiToolName, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
 export const openAICompatibleTransport: Transport & { withBase: (base: string) => Transport } = {
   kind: "openai",
@@ -42,6 +43,7 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
     headers,
     body: JSON.stringify(body),
     signal: req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000),
+    ...(req.proxyUrl ? { dispatcher: makeProxyDispatcher(req.proxyUrl) } : {}),
   });
   if (!res.ok || !res.body) {
     const text = await res.text().catch(() => "");

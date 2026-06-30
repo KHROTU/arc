@@ -14,6 +14,7 @@ import {
   Indexer, HashEmbeddingBackend, OllamaEmbeddingBackend, DEFAULT_EMBEDDING_MODELS,
   type IndexProgress, type EmbeddingBackend,
 } from "@arc/host";
+import { initDiscordRpcSpof, reportAgentActivity, reportAgentIdle } from "./discord-rpc.js";
 const SECRET_PREFIX = "arc.apiKey.";
 let log: vscode.OutputChannel;
 let ctxRef: vscode.ExtensionContext;
@@ -196,10 +197,8 @@ async function initializeAsync(context: vscode.ExtensionContext) {
       webview.postMessage({ type: "mcp/list", servers: list });
     }
   });
-  void hydrateMcp(mcp, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()).catch((err) => {
-    log.appendLine(`[arc] MCP hydration failed: ${(err as Error)?.stack ?? err}`);
-  });
   setNotifier(makeVSCodeNotifier());
+  initDiscordRpcSpof(context);
   const savedState = context.globalState.get<{ messages: unknown[]; steps: unknown[]; mode: string; todoItems: unknown[] }>("arc.agentState");
   const currentChat = chatHistory.ensure(chatHistory.current());
   sidebarSession.id = currentChat.id;
@@ -213,6 +212,9 @@ async function initializeAsync(context: vscode.ExtensionContext) {
   persist();
   void tryLoadIndex();
   initResolve?.();
+  void hydrateMcp(mcp, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()).catch((err) => {
+    log.appendLine(`[arc] MCP hydration failed: ${(err as Error)?.stack ?? err}`);
+  });
 }
 async function openFullscreen(): Promise<vscode.Webview | undefined> {
   if (!ctxRef) return;
@@ -239,10 +241,17 @@ async function openFullscreen(): Promise<vscode.Webview | undefined> {
 }
 function openSettings() {
   if (!ctxRef) return;
-  if (sidebarSession.view) sidebarSession.view.webview.postMessage({ type: "ui/showSettings" });
-  for (const [, s] of fullscreenSessions) s.panel?.webview.postMessage({ type: "ui/showSettings" });
-  if (!sidebarSession.view && fullscreenSessions.size === 0) openFullscreen().then(() => {
-    for (const [, s] of fullscreenSessions) s.panel?.webview.postMessage({ type: "ui/showSettings" });
+  if (sidebarSession.view) {
+    sidebarSession.view.webview.postMessage({ type: "ui/showSettings" });
+    return;
+  }
+  for (const [, s] of fullscreenSessions) {
+    if (s.panel) { s.panel.webview.postMessage({ type: "ui/showSettings" }); return; }
+  }
+  openFullscreen().then(() => {
+    for (const [, s] of fullscreenSessions) {
+      if (s.panel) { s.panel.webview.postMessage({ type: "ui/showSettings" }); return; }
+    }
   });
 }
 function newTask() {
@@ -290,6 +299,13 @@ function classifyError(message: string): "timeout" | "rate_limit" | "auth" | "pr
   if (m.includes("500") || m.includes("502") || m.includes("503")) return "provider";
   return undefined;
 }
+function resolveProxy(kind: "url" | "providerUrl" | "webUrl" | "shellUrl"): string | undefined {
+  const cfg = vscode.workspace.getConfiguration();
+  const fallback = cfg.get<string>("arc.proxy.url") || undefined;
+  if (kind === "url") return fallback;
+  const specific = cfg.get<string>(`arc.proxy.${kind}`) || undefined;
+  return specific || fallback;
+}
 const buildSystemPrompt = async (mcpAggregator?: McpAggregator): Promise<string> => {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
   const globalParts = await loadGlobalPrompts();
@@ -317,7 +333,7 @@ Working dir: ${root} | OS: ${process.platform} | Date: ${new Date().toISOString(
 - Never use destructive commands (git reset --hard, git checkout --) unless explicitly asked.
 
 ## Tool efficiency
-- Prefer dedicated tools over shell.run when one fits: file.grep over rg/grep, file.glob over ls/find, file.read over cat/head/tail, webfetch over curl.
+- Prefer dedicated tools over shell.run when one fits: file.grep over rg/grep, file.glob over ls/find, file.read over cat/head/tail, web.fetch over curl.
 - When reading a large file, use offset/limit on file.read to target just the lines you need.
 - For file.edit, pass the SEARCH/REPLACE block format in \`search\` — it is unambiguous and survives whitespace drift. Format:\n\npath/to/file.ts\n<<<<<<< SEARCH\nexact lines to replace (include enough context to be unique)\n=======\nreplacement lines\n>>>>>>> REPLACE\n\nInclude enough surrounding lines for a unique match. Fall back to plain search+replace only for trivial one-line changes.
 - After a successful file.edit or file.write, do NOT re-read the file to verify — the tool would have errored if the change failed. LSP diagnostics run automatically.
@@ -331,7 +347,7 @@ Working dir: ${root} | OS: ${process.platform} | Date: ${new Date().toISOString(
 - Commit or push only when the user asks. If on the default branch, branch first.
 
 ## Tools
-file.read, file.edit, file.write, file.grep, file.glob, shell.run, shell.backgroundRun, shell.check, shell.write, webfetch, lsp.problems, lsp.problemsFor, todo.write, browser.*, mcp.call, checkpoint.revert, checkpoint.list, subagent.spawn, handoff, clarification.askUser, skill.read, skill.use, mode.switch, memory.add, memory.list, memory.edit, memory.delete, rule.list, rule.read, rule.create
+file.read, file.edit, file.write, file.grep, file.glob, shell.run, shell.backgroundRun, shell.check, shell.write, web.fetch, web.search, lsp.problems, lsp.problemsFor, todo.write, browser.*, mcp.call, checkpoint.revert, checkpoint.list, subagent.spawn, handoff, clarification.askUser, skill.read, skill.use, mode.switch, memory.add, memory.list, memory.edit, memory.delete, rule.list, rule.read, rule.create
 
 ## Workflow
 1. Understand the task. Use file.grep and file.glob to locate relevant code. Read files with file.read (use offset/limit for large files).
@@ -377,6 +393,9 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     browser: getBrowser,
     skillRegistry,
     ruleRegistry,
+    proxyUrl: resolveProxy("url"),
+    proxyWeb: resolveProxy("webUrl"),
+    proxyShell: resolveProxy("shellUrl"),
     grep: async (pattern: string, include?: string) => {
       const results: { file: string; line: number; column: number; text: string }[] = [];
       const MAX_FILES = 200;
@@ -431,8 +450,17 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       session.steps = steps;
       chatHistory?.setSteps(session.id, steps);
       broadcast(session, { type: "session/steps", steps, sessionId: sinkId });
+      const lastStep = steps[steps.length - 1];
+      if (lastStep?.type === "tool" && (lastStep.toolName === "file.edit" || lastStep.toolName === "file.write" || lastStep.toolName === "file.read")) {
+        const toolStep = lastStep as { toolName: string; args?: Record<string, unknown>; filePath?: string };
+        const path = toolStep.filePath ?? (toolStep.args as Record<string, unknown>)?.path as string | undefined;
+        if (path) reportAgentActivity("edit", path);
+      }
     },
-    turnStart: (turnId) => broadcast(session, { type: "session/turnStart", turnId, sessionId: sinkId }),
+    turnStart: (turnId) => {
+      broadcast(session, { type: "session/turnStart", turnId, sessionId: sinkId });
+      reportAgentActivity("think");
+    },
     turnEnd: (turnId, ok, error) => broadcast(session, { type: "session/turnEnd", turnId, ok, ...(error ? { error } : {}), sessionId: sinkId }),
     usage: (usage, perModel) => {
       const totals = chatTotals.get(session.id) ?? { cost: 0, promptTokens: 0, completionTokens: 0, window: 0 };
@@ -462,6 +490,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       if (chatHistory) chatHistory.setMessages(session.id, session.agent.getMessages());
       void persistAsync?.();
       broadcast(session, { type: "session/done" });
+      reportAgentIdle();
     },
     guidance: (text) => broadcast(session, { type: "session/guidance", text }),
     error: (message) => broadcast(session, { type: "error", message, ...(classifyError(message) ? { code: classifyError(message) } : {}) }),
@@ -472,7 +501,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     systemPrompt,
     enabledTools: new Set([
       "file.read", "file.edit", "file.write", "file.grep", "file.glob",       "shell.run", "shell.backgroundRun", "shell.check", "shell.write", "shell.customRun", "shell.editCustomRun", "shell.runCustomRun",
-      "test.run", "webfetch",
+      "test.run", "web.fetch", "web.search",
       "lsp.problems", "lsp.problemsFor",
       "todo.write",
       "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor",
@@ -494,6 +523,8 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     modeRegistry,
     approvalsConfig,
     isMain: true,
+    proxyUrl: resolveProxy("url"),
+    proxyProvider: resolveProxy("providerUrl"),
     toolContext,
     approveShell: async (description) => {
       const id = String(++approvalId);
@@ -597,8 +628,6 @@ function switchToChat(chatId: string, webview: vscode.Webview) {
   }
   chatTotals.set(chatId, { cost: 0, promptTokens: 0, completionTokens: 0, window: 0 });
   pushContextStats(webview, chatId);
-  sidebarSession.agent = undefined as unknown as Agent;
-  sidebarSession.agentReady = undefined;
   void ensureAgent(sidebarSession);
   for (const [, s] of fullscreenSessions) {
     s.agent = undefined as unknown as Agent;

@@ -3,7 +3,7 @@ import { McpAggregator } from "../../src/mcp/mcp";
 import { buildToolSpecs, parseMcpToolSpec, isMcpToolSpec, mcpToolSpecName } from "../../src/agent/tool-specs";
 describe("buildToolSpecs MCP injection", () => {
   it("emits mcp__<server>__<tool> entries when tool count is below cap", () => {
-    const specs = buildToolSpecs(
+    const { specs } = buildToolSpecs(
       new Set(["mcp.call"]),
       [{ server: "fs", name: "read", description: "Read a file", inputSchema: { type: "object", properties: {} } }],
     );
@@ -13,13 +13,13 @@ describe("buildToolSpecs MCP injection", () => {
   });
   it("falls back to proxy when tool count exceeds the cap", () => {
     const tools = Array.from({ length: 60 }, (_, i) => ({ server: "fs", name: `t${i}`, description: `Tool ${i}` }));
-    const specs = buildToolSpecs(new Set(["mcp.call"]), tools, { maxIndividualMcpTools: 40 });
+    const { specs } = buildToolSpecs(new Set(["mcp.call"]), tools, { maxIndividualMcpTools: 40 });
     expect(specs.find((s) => s.name === "mcp__fs__t0")).toBeUndefined();
     expect(specs.find((s) => s.name === "mcp.call")).toBeDefined();
   });
   it("preserves JSON schema for each MCP tool", () => {
     const schema = { type: "object", properties: { path: { type: "string" } }, required: ["path"] };
-    const specs = buildToolSpecs(new Set(["mcp.call"]), [{ server: "fs", name: "read", inputSchema: schema }]);
+    const { specs } = buildToolSpecs(new Set(["mcp.call"]), [{ server: "fs", name: "read", inputSchema: schema }]);
     const mcpSpec = specs.find((s) => s.name === "mcp__fs__read");
     expect(mcpSpec?.parameters).toEqual(schema);
   });
@@ -31,7 +31,7 @@ describe("buildToolSpecs MCP injection", () => {
     expect(mcpToolSpecName("fs", "read")).toBe("mcp__fs__read");
   });
   it("includes mcp.create, mcp.remove, mcp.toggle specs when enabled", () => {
-    const specs = buildToolSpecs(new Set(["mcp.create", "mcp.remove", "mcp.toggle"]), []);
+    const { specs } = buildToolSpecs(new Set(["mcp.create", "mcp.remove", "mcp.toggle"]), []);
     expect(specs.find((s) => s.name === "mcp.create")).toBeDefined();
     expect(specs.find((s) => s.name === "mcp.remove")).toBeDefined();
     expect(specs.find((s) => s.name === "mcp.toggle")).toBeDefined();
