@@ -7,7 +7,7 @@ let currentFile: string | undefined;
 let lastEditTime = 0;
 let cooldownTimer: ReturnType<typeof setTimeout> | undefined;
 let prevEditor: vscode.TextEditor | undefined;
-export function initDiscordRpcSpof(context: vscode.ExtensionContext): void {
+export function initDiscordRpcSpoof(context: vscode.ExtensionContext): void {
   const cfg = vscode.workspace.getConfiguration();
   enabled = cfg.get<boolean>("arc.discord.spoofRpc", false);
   if (enabled) register(context);

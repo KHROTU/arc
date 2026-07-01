@@ -8,8 +8,6 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      // Allow tests to import source TS files using the `.js` import suffix.
-      // We strip `.js` and add `.ts` so vitest can resolve the source.
       "^(\\.{1,2}\\/.*)\\.js$": "$1",
     },
   },

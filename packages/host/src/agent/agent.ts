@@ -32,7 +32,7 @@ export interface AgentEventSink {
   error(message: string): void;
   compaction(before: number, after: number, reason: string): void;
   guidance(text: string): void;
-  timeline(events: import("../protocol/protocol.js").ExecutionEvent[]): void;
+  timeline?(events: import("../protocol/protocol.js").ExecutionEvent[]): void;
 }
 export interface AgentOptions {
   systemPrompt: string;

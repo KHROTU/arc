@@ -14,7 +14,7 @@ import {
   Indexer, HashEmbeddingBackend, OllamaEmbeddingBackend, DEFAULT_EMBEDDING_MODELS,
   type IndexProgress, type EmbeddingBackend,
 } from "@arc/host";
-import { initDiscordRpcSpof, reportAgentActivity, reportAgentIdle } from "./discord-rpc.js";
+import { initDiscordRpcSpoof, reportAgentActivity, reportAgentIdle } from "./discord-rpc.js";
 const SECRET_PREFIX = "arc.apiKey.";
 let log: vscode.OutputChannel;
 let ctxRef: vscode.ExtensionContext;
@@ -219,7 +219,7 @@ async function initializeAsync(context: vscode.ExtensionContext) {
     }
   });
   setNotifier(makeVSCodeNotifier());
-  initDiscordRpcSpof(context);
+  initDiscordRpcSpoof(context);
   const savedState = context.globalState.get<{ messages: unknown[]; steps: unknown[]; mode: string; todoItems: unknown[] }>("arc.agentState");
   const currentChat = chatHistory.ensure(chatHistory.current());
   sidebarSession.id = currentChat.id;
@@ -527,7 +527,6 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       broadcast(session, { type: "error", message, ...(code ? { code } : {}) });
     },
     compaction: (before, after, reason) => broadcast(session, { type: "session/compaction", before, after, reason }),
-    timeline: (events) => broadcast(session, { type: "session/timeline", events }),
   };
   session.agent = new Agent(registry, store, sink, {
     systemPrompt,
@@ -965,9 +964,10 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             const agent = await awaitAgent(session);
             if (agent) {
               const messages = agent.getMessages();
-              const content = msg.content ?? msg.messageId;
-              let idx = messages.findIndex((m) => m.role === "user" && m.content.trim() === content.trim());
-              if (idx < 0) idx = messages.findIndex((m) => m.role === "user" && m.content.includes(content.slice(0, 30)));
+              const editId = msg.messageId;
+              const editContent = msg.content ?? msg.messageId;
+              let idx = messages.findIndex((m) => m.id === editId);
+              if (idx < 0) idx = messages.findIndex((m) => m.role === "user" && m.content === editContent);
               if (idx >= 0) {
                 const editTs = messages[idx].ts;
                 messages[idx] = { ...messages[idx], content: msg.newContent, meta: { ...messages[idx].meta, editedOriginal: messages[idx].content } as ChatMessage["meta"] };

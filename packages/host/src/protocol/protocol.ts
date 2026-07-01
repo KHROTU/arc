@@ -258,7 +258,6 @@ export type HostMsg =
   | { type: "session/loadComposer"; text: string }
   | { type: "session/replaceState"; messages: ChatMessage[]; steps: ProcessStep[]; loadComposer?: string }
   | { type: "session/guidance"; text: string }
-  | { type: "session/timeline"; events: ExecutionEvent[] }
   | { type: "error"; message: string; code?: "timeout" | "rate_limit" | "auth" | "provider" | "malformed" | "network" | "aborted"; inReplyTo?: string };
 export type WebviewMsg =
   | { type: "chat/send"; text: string; attachments?: { uri: string; preview?: string }[]; images?: string[] }
