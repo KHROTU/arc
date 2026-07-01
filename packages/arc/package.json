@@ -112,7 +112,7 @@
         "arc.notifications.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Show OS notifications when a task completes, handoff occurs, or input is needed."
+          "description": "Show native OS notifications when a task completes, handoff occurs, or input is needed."
         },
         "arc.shell.approval": {
           "type": "string",
@@ -196,6 +196,18 @@
           "type": "string",
           "default": "",
           "description": "Proxy URL for shell commands. Sets HTTP_PROXY/HTTPS_PROXY environment variables on spawned child processes. Falls back to arc.proxy.url if empty."
+        },
+        "arc.appearance.prideLogo": {
+          "type": "string",
+          "enum": ["always", "june", "never"],
+          "default": "june",
+          "description": "When to show the pride logo in the welcome text and sidebar icon."
+        },
+        "arc.appearance.toolTree": {
+          "type": "string",
+          "enum": ["auto", "collapsed"],
+          "default": "auto",
+          "description": "How tool call trees display. 'auto' expands the tree and last call (closes earlier calls) and closes when the chain ends. 'collapsed' keeps all trees collapsed."
         },
         "arc.discord.spoofRpc": {
           "type": "boolean",

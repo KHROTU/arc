@@ -24,7 +24,8 @@ if (!root) {
     const prideText = root.getAttribute("data-pride-text") || "";
     const version = root.getAttribute("data-version") || "0.0.0";
     const isPride = root.getAttribute("data-pride-active") === "true";
-    createRoot(root).render(<App mode={mode} monoLogo={mono} prideLogo={pride} monoLogoText={monoText} prideLogoText={prideText} prideActive={isPride} version={version} />);
+    const toolTree = (root.getAttribute("data-tool-tree") as "auto" | "collapsed") || "auto";
+    createRoot(root).render(<App mode={mode} monoLogo={mono} prideLogo={pride} monoLogoText={monoText} prideLogoText={prideText} prideActive={isPride} toolTreeMode={toolTree} version={version} />);
   } catch (err) {
     root.innerHTML = `<pre style="color:#f88;padding:20px;white-space:pre-wrap;font:12px monospace">${(err as Error)?.stack ?? String(err)}</pre>`;
   }

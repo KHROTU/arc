@@ -20,6 +20,7 @@ type Props = {
   monoLogoText: string;
   prideLogoText: string;
   prideActive: boolean;
+  toolTreeMode: "auto" | "collapsed";
   variant: "sidebar" | "fullscreen";
   version: string;
 };
@@ -50,7 +51,7 @@ function RippleSpinner() {
     </svg>
   );
 }
-export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, prideLogoText, prideActive, variant, version }: Props) {
+export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, prideLogoText, prideActive, toolTreeMode, variant, version }: Props) {
   const logoUri = useArcLogo(monoLogo, prideLogo, prideActive);
   const [chats, setChats] = useState<ChatMeta[]>([]);
   const [activeId, setActiveId] = useState<string>("");
@@ -330,7 +331,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     let run: ProcessStep[] = [];
     const flush = () => {
       if (run.length) {
-        out.push(<ArcProcessUI key={`steps-${run[0].id}`} steps={run} onOpenFile={openFile} />);
+        out.push(<ArcProcessUI key={`steps-${run[0].id}`} steps={run} onOpenFile={openFile} toolTreeMode={toolTreeMode} />);
         run = [];
       }
     };

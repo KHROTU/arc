@@ -1,4 +1,4 @@
-import { useState, useEffect, memo, useCallback } from "react";
+import { useState, useEffect, memo, useCallback, useMemo } from "react";
 import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
 import {
   ChevronRight, Bot, ArrowRight, Check, Circle, CircleDot,
@@ -189,8 +189,10 @@ const ClarificationBlock = memo(({ question, options }: { question?: string; opt
   </div>
 ));
 ClarificationBlock.displayName = "ClarificationBlock";
-const GroupNode = memo(({ step, onOpenFile }: { step: ProcessStep; onOpenFile?: (path: string) => void }) => {
-  const [open, setOpen] = useState(step.type === "subagent");
+export type ToolTreeMode = "auto" | "collapsed";
+const GroupNode = memo(({ step, onOpenFile, toolTreeMode }: { step: ProcessStep; onOpenFile?: (path: string) => void; toolTreeMode: ToolTreeMode }) => {
+  const initialOpen = step.type === "subagent" || toolTreeMode === "auto";
+  const [open, setOpen] = useState(initialOpen);
   const childCount = step.children?.length || 0;
   return (
     <div className="arc-proc-group">
@@ -217,7 +219,7 @@ const GroupNode = memo(({ step, onOpenFile }: { step: ProcessStep; onOpenFile?: 
           >
             <div className="arc-proc-children">
               <span className="arc-proc-treeline" />
-              <StepList steps={step.children} onOpenFile={onOpenFile} />
+              <StepList steps={step.children} onOpenFile={onOpenFile} toolTreeMode={toolTreeMode} />
             </div>
           </motion.div>
         )}
@@ -263,9 +265,9 @@ const ThoughtNode = memo(({ step }: { step: ProcessStep }) => {
   );
 });
 ThoughtNode.displayName = "ThoughtNode";
-const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile }: { step: ProcessStep; isActive: boolean; onToggle: () => void; onOpenFile?: (path: string) => void }) => {
-  if (step.type === "tool_group") return <GroupNode step={step} onOpenFile={onOpenFile} />;
-  if (step.type === "subagent") return <GroupNode step={step} onOpenFile={onOpenFile} />;
+const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, toolTreeMode }: { step: ProcessStep; isActive: boolean; onToggle: () => void; onOpenFile?: (path: string) => void; toolTreeMode: ToolTreeMode }) => {
+  if (step.type === "tool_group") return <GroupNode step={step} onOpenFile={onOpenFile} toolTreeMode={toolTreeMode} />;
+  if (step.type === "subagent") return <GroupNode step={step} onOpenFile={onOpenFile} toolTreeMode={toolTreeMode} />;
   if (step.type === "thought") return <ThoughtNode step={step} />;
   const isReadTool = step.toolName === "file.read";
   const isNoDetail = isReadTool || step.toolName === "web.fetch";
@@ -346,7 +348,7 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile }: { step: Proc
                   <span className="arc-proc-block-label">Process</span>
                   <div className="arc-proc-children" style={{ marginLeft: 0, paddingLeft: 16 }}>
                     <span className="arc-proc-treeline" />
-                    <StepList steps={step.children} onOpenFile={onOpenFile} />
+                    <StepList steps={step.children} onOpenFile={onOpenFile} toolTreeMode={toolTreeMode} />
                   </div>
                 </div>
               )}
@@ -358,26 +360,33 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile }: { step: Proc
   );
 });
 ProcessNode.displayName = "ProcessNode";
-const StepList = memo(({ steps, onOpenFile }: { steps: ProcessStep[]; onOpenFile?: (path: string) => void }) => {
+const StepList = memo(({ steps, onOpenFile, toolTreeMode }: { steps: ProcessStep[]; onOpenFile?: (path: string) => void; toolTreeMode: ToolTreeMode }) => {
+  const isEnded = useMemo(() => steps.length > 0 && steps.every((s) => s.pending === false), [steps]);
   const [openIds, setOpenIds] = useState<Set<string>>(() => {
+    if (toolTreeMode === "collapsed") return new Set<string>();
     const ids = new Set<string>();
-    if (steps.length) ids.add(steps[steps.length - 1].id);
     for (const s of steps) if (s.children?.length) ids.add(s.id);
+    if (steps.length) ids.add(steps[steps.length - 1].id);
     return ids;
   });
   const [prevLen, setPrevLen] = useState(steps.length);
   useEffect(() => {
+    if (toolTreeMode === "collapsed") return;
+    if (isEnded) {
+      setOpenIds(new Set<string>());
+      setPrevLen(steps.length);
+      return;
+    }
     if (steps.length > prevLen && steps.length > 0) {
-      const lastStep = steps[steps.length - 1];
       setOpenIds((cur) => {
-        const next = new Set(cur);
-        next.add(lastStep.id);
+        const next = new Set<string>();
         for (const s of steps) if (s.children?.length) next.add(s.id);
+        next.add(steps[steps.length - 1].id);
         return next;
       });
     }
     setPrevLen(steps.length);
-  }, [steps, prevLen]);
+  }, [steps, prevLen, toolTreeMode, isEnded]);
   const handleToggle = useCallback((id: string) => {
     setOpenIds((cur) => {
       const next = new Set(cur);
@@ -394,13 +403,14 @@ const StepList = memo(({ steps, onOpenFile }: { steps: ProcessStep[]; onOpenFile
           isActive={openIds.has(step.id)}
           onToggle={() => handleToggle(step.id)}
           onOpenFile={onOpenFile}
+          toolTreeMode={toolTreeMode}
         />
       ))}
     </>
   );
 });
 StepList.displayName = "StepList";
-export default function ArcProcessUI({ steps = [], onOpenFile }: { steps: ProcessStep[]; onOpenFile?: (path: string) => void }) {
+export default function ArcProcessUI({ steps = [], onOpenFile, toolTreeMode = "auto" }: { steps: ProcessStep[]; onOpenFile?: (path: string) => void; toolTreeMode?: ToolTreeMode }) {
   if (!steps.length) return null;
   const rendered: ProcessStep[] = steps.length > 1
     ? [{ id: `called-${steps[0].id}`, type: "tool_group", title: "Called", children: steps }]
@@ -408,7 +418,7 @@ export default function ArcProcessUI({ steps = [], onOpenFile }: { steps: Proces
   return (
     <div className="arc-proc">
       <LayoutGroup>
-        <StepList steps={rendered} onOpenFile={onOpenFile} />
+        <StepList steps={rendered} onOpenFile={onOpenFile} toolTreeMode={toolTreeMode} />
       </LayoutGroup>
     </div>
   );

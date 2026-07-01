@@ -1078,7 +1078,7 @@ export class Agent {
     } catch (e) {
       result = { ok: false, output: `Tool error: ${(e as Error).message}` };
     }
-    this.pushTimeline({ type: "tool_call", turnId, toolCallId: tc.id, toolName: tc.name, args: tc.args, ts: toolStartTs, durationMs: Date.now() - toolStartTs, ok: result.ok, output: result.output.slice(0, 500) });
+    this.pushTimeline({ type: "tool_call", turnId, toolCallId: tc.id, toolName: tc.name, args: tc.args, ts: toolStartTs, durationMs: Date.now() - toolStartTs, ok: result.ok, output: (result.output ?? "").slice(0, 500) });
     const truncatedOutput = await this.truncateToolOutput(result.output, tc.name);
     const isEditOrWrite = tc.name === "file.edit" || tc.name === "file.write";
     this.appendToolOutput(tc.id, isEditOrWrite ? "" : truncatedOutput, result.ok, result.ok ? undefined : prettyToolTitle(tc.name, tc.args, false), result.diffHunks, result.filePath, result.runAfter?.command, result.runAfter?.output);
@@ -1399,10 +1399,15 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
       default: return `Failed: ${name}`;
     }
   }
+  const cleanFilePath = (p: string): string => {
+    const m = p.match(/[/\\]tool_outputs[/\\]([a-zA-Z0-9_]+)_(\d{4}-\d{2}-\d{2}T[^/\\]*)$/);
+    if (m) return `${m[1].replace(/_/g, ".")} output`;
+    return p.replace(/[/\\]\.arc[/\\]workspaces[/\\][a-f0-9-]+[/\\]/g, "/.arc/.../");
+  };
   switch (name) {
-    case "file.read": return `Read ${path}${rangeInfo()}`;
-    case "file.edit": return `Edited ${path}`;
-    case "file.write": return `Wrote ${path}`;
+    case "file.read": return `Read ${cleanFilePath(path)}${rangeInfo()}`;
+    case "file.edit": return `Edited ${cleanFilePath(path)}`;
+    case "file.write": return `Wrote ${cleanFilePath(path)}`;
     case "file.grep": return `Grepped /${clip(String(args.pattern ?? ""))}/`;
     case "file.glob": return `Globbed ${clip(String(args.pattern ?? ""))}`;
     case "shell.run": return `Ran ${clip(String(args.command ?? ""))}`;
@@ -1544,7 +1549,7 @@ function renderForSummary(msgs: ChatMessage[]): string {
     } else if (m.role === "user") {
       out.push(`[user] ${m.content}`);
     } else if (m.role === "assistant") {
-      const tc = m.toolCalls?.length ? ` tools=${m.toolCalls.map((t) => `${t.name}(${JSON.stringify(t.args).slice(0, 80)})`).join("; ")}` : "";
+      const tc = m.toolCalls?.length ? ` tools=${m.toolCalls.map((t) => `${t.name}(${(JSON.stringify(t.args) ?? "").slice(0, 80)})`).join("; ")}` : "";
       out.push(`[assistant] ${m.content.slice(0, 300)}${tc}`);
     } else if (m.role === "tool") {
       out.push(`[tool:${m.toolCallId ?? ""}] ${m.content.slice(0, 300)}`);

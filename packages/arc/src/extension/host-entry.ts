@@ -6,6 +6,7 @@ import {
   ModelRegistry, Agent, CheckpointStore, LspBridge, McpAggregator,
   makeVSCodeNotifier, setNotifier, notify, loadWorkspacePrompts, loadGlobalPrompts, mergePrecedence, render, injectRelevantRules,
   pickLogo, ChatHistory, createBrowser, getWorkspaceArcDir,
+  type PrideMode,
   ModeRegistry, DEFAULT_APPROVALS, loadApprovalsMemory,
   SkillRegistry,
   RuleRegistry, loadMemory, deleteMemory,
@@ -105,7 +106,8 @@ export function activate(context: vscode.ExtensionContext) {
   });
 }
 function registerViewsAndCommands(context: vscode.ExtensionContext) {
-  const logo = pickLogo();
+  const prideMode: PrideMode = vscode.workspace.getConfiguration().get<PrideMode>("arc.appearance.prideLogo", "june") ?? "june";
+  const logo = pickLogo(prideMode);
   void vscode.commands.executeCommand("setContext", "arc.isPrideMonth", logo.kind === "pride");
   const sidebarProvider: vscode.WebviewViewProvider = {
     async resolveWebviewView(webviewView: vscode.WebviewView) {
@@ -206,6 +208,11 @@ async function initializeAsync(context: vscode.ExtensionContext) {
     }
   };
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
+    if (e.affectsConfiguration("arc.appearance.prideLogo")) {
+      const prideMode: PrideMode = vscode.workspace.getConfiguration().get<PrideMode>("arc.appearance.prideLogo", "june") ?? "june";
+      const logo = pickLogo(prideMode);
+      void vscode.commands.executeCommand("setContext", "arc.isPrideMonth", logo.kind === "pride");
+    }
     if (e.affectsConfiguration("arc")) persist();
   }));
   store = new CheckpointStore({ dir: context.globalStorageUri.fsPath });
@@ -249,7 +256,9 @@ async function openFullscreen(): Promise<vscode.Webview | undefined> {
     retainContextWhenHidden: true,
     localResourceRoots: [vscode.Uri.file(ctxRef.extensionPath)],
   });
-  panel.iconPath = vscode.Uri.file(ctxRef.asAbsolutePath("assets/arc-logo-mono.svg"));
+  const prideMode: PrideMode = vscode.workspace.getConfiguration().get<PrideMode>("arc.appearance.prideLogo", "june") ?? "june";
+  const logoFile = pickLogo(prideMode).file;
+  panel.iconPath = vscode.Uri.file(ctxRef.asAbsolutePath(`assets/${logoFile}`));
   panel.webview.html = getWebviewHtml(panel.webview, ctxRef.extensionUri, "fullscreen");
   const mapKey = `fullscreen-${Date.now()}`;
   const chatId = chatHistory.ensure(chatHistory.current()).id;
@@ -340,50 +349,56 @@ const buildSystemPrompt = async (mcpAggregator?: McpAggregator): Promise<string>
 Working dir: ${root} | OS: ${process.platform} | Date: ${new Date().toISOString().slice(0, 10)}
 
 ## Communication
-- Drop articles, filler, hedging, and pleasantries where meaning stays clear. Short synonyms and fragments OK for routine feedback.
-- Technical terms, code, API names, CLI commands, and error strings are always verbatim. Code blocks unchanged.
-- No emojis, no em dashes. Lists flat — no nested bullets. No tool-call narration.
-- EXCEPTIONS (revert to full sentences): security warnings, destructive operation confirmations, multi-step sequences where fragment order risks misread, compression creates ambiguity, user asks to clarify.
-- Default to action: assume the user wants implementation, not a plan. Stay with the work until handled — don't stop at analysis or half-finished fixes.
+- STRICTLY FORBIDDEN from starting messages with "Great", "Certainly", "Okay", "Sure". Drop articles, filler, hedging, and pleasantries. Fragments OK.
+- Technical terms, code, API names, CLI commands, and error strings are always verbatim.
+- No emojis, no em dashes. Lists flat — no nested bullets. No tool-call narration. No "I'll now…" or "Let me…" filler. Do not refer to tool names when speaking to the user.
+- EXCEPTIONS (revert to full sentences): security warnings, destructive op confirmations, multi-step sequences where fragment order risks misread, compression creates ambiguity, user asks to clarify.
+- Default to action: assume the user wants implementation, not analysis. Stay with the work until handled — don't stop at halfway.
 
 ## Rules
-- Respect existing conventions, libraries, and patterns. Do NOT refactor or modify unrelated code. Let the codebase teach you how to move.
-- Make precise, surgical changes that fully address the request. Do NOT describe code you haven't written — implement it completely.
-- Discover bugs caused by or tightly coupled to your changes — fix those too. Skip unrelated pre-existing issues.
-- Add abstraction only when it removes real complexity, reduces meaningful duplication, or clearly matches an established local pattern.
-- If a request is ambiguous, ask before acting. Reserve questions for decisions the codebase cannot answer; for everything else pick a sensible default and proceed.
-- Write diagnostic-as-code: no comments unless the WHY is non-obvious. The code should explain itself.
-- Never revert changes you did not make. If there are unrelated changes in files you touch, work with them. Ignore changes in unrelated files.
+- Respect existing conventions, libraries, and patterns. Let the codebase teach you how to move.
+- Make precise, surgical changes that fully address the request. Implement completely — don't describe undone code.
+- Discover bugs caused by your changes — fix those. Skip unrelated pre-existing issues.
+- Add abstraction only when it removes real complexity, reduces meaningful duplication, or matches a local pattern.
+- If a request is ambiguous, ask before acting. Reserve questions for decisions the codebase cannot answer; pick a sensible default for the rest.
+- Write diagnostic-as-code: no comments unless the WHY is non-obvious.
+- Never revert changes you did not make. Work with unrelated changes in files you touch.
 - Never use destructive commands (git reset --hard, git checkout --) unless explicitly asked.
 
 ## Tool efficiency
-- Prefer dedicated tools over shell.run when one fits: file.grep over rg/grep, file.glob over ls/find, file.read over cat/head/tail, web.fetch over curl.
-- When reading a large file, use offset/limit on file.read to target just the lines you need.
-- For file.edit, pass the SEARCH/REPLACE block format in \`search\` — it is unambiguous and survives whitespace drift. Format:\n\npath/to/file.ts\n<<<<<<< SEARCH\nexact lines to replace (include enough context to be unique)\n=======\nreplacement lines\n>>>>>>> REPLACE\n\nInclude enough surrounding lines for a unique match. Fall back to plain search+replace only for trivial one-line changes.
-- After a successful file.edit or file.write, do NOT re-read the file to verify — the tool would have errored if the change failed. LSP diagnostics run automatically.
-- Launch independent Read or Glob calls in parallel — one response, multiple tool calls.
-- Reflect on command output before proceeding to the next step.
+- Prefer dedicated tools over shell.run: file.grep over rg/grep, file.glob over ls/find, file.read over cat/head/tail, web.fetch over curl.
+- Use offset/limit on file.read to target just the lines you need.
+- SEARCH/REPLACE block format for file.edit:\n\npath/to/file.ts\n<<<<<<< SEARCH\nexact lines (include enough context for uniqueness)\n=======\nreplacement lines\n>>>>>>> REPLACE
+- After successful file.edit or file.write, do NOT re-read to verify — the tool errors on failure. Trust the result. LSP diagnostics run automatically.
+- Launch independent Read/Glob calls in parallel. Batch tool calls in one response.
+- Reflect on command output before proceeding.
 
 ## Shell
-- Use shell.run for short-lived commands, shell.backgroundRun for long-running processes (builds, servers, watchers).
-- Poll background processes with shell.check; send stdin with shell.write.
-- Chain commands with && instead of separate shell.run calls. Suppress pagers (git --no-pager, append | cat).
-- Commit or push only when the user asks. If on the default branch, branch first.
+- shell.run for short-lived commands, shell.backgroundRun for long-running processes (builds, servers, watchers).
+- Poll with shell.check; send stdin with shell.write.
+- Chain commands (&& on Unix, ; on PowerShell) instead of separate shell.run calls. Suppress pagers (git --no-pager, append | cat).
+- Commit or push only when explicitly asked. If on the default branch, branch first.
 
 ## Tools
 file.read, file.edit, file.write, file.grep, file.glob, shell.run, shell.backgroundRun, shell.check, shell.write, web.fetch, web.search, lsp.problems, lsp.problemsFor, todo.write, browser.*, mcp.call, checkpoint.revert, checkpoint.list, subagent.spawn, handoff, clarification.askUser, skill.read, skill.use, mode.switch, memory.add, memory.list, memory.edit, memory.delete, rule.list, rule.read, rule.create
 
+## Memory & Rules
+- Use memory.add to persist key facts, decisions, and patterns the user establishes. Retrieve with memory.list before starting work.
+- Use rule.read and rule.list to recall workspace conventions and constraints before making changes.
+- Rules are source code, not prose — write them as actionable constraints the agent must follow.
+
 ## Workflow
 1. Understand the task. Use file.grep and file.glob to locate relevant code. Read files with file.read (use offset/limit for large files).
-2. **Plan-first for complex work:** When the task spans multiple files, involves architectural decisions, or has ambiguous scope, pause and use \`clarification.askUser\` to ask: "Plan first? I can outline a todo list for your review before making changes." If the user approves, produce a full todo list via \`todo.write\` and wait for sign-off (the user will say "proceed" or similar) before executing. Update the plan dynamically as you discover new information — add, remove, or reorder items as needed. Mark the current item \`in_progress\`, and mark items \`done\` after verifying them.
-3. **For straightforward tasks:** proceed directly. Keep exactly one todo item in_progress at a time. After file.edit/write, fix any diagnostics in the same turn.
-4. Delegate grunt work to subagents — they are cheap. For independent parallel investigations, launch multiple subagents in one turn.
-5. If a task exceeds your capability, call handoff with a clear reason.
-6. Do not create markdown files for planning, notes, or tracking — use todo.write instead.
+2. Plan-first for complex work: spans multiple files, architectural decisions, ambiguous scope — pause and ask "Plan first?" via clarification.askUser. If approved, produce a todo list, wait for sign-off, then execute. Update the plan dynamically — add, remove, reorder items as you learn. Mark items done after verifying.
+3. For straightforward tasks: proceed directly. Keep exactly one todo item in_progress. Fix diagnostics in the same turn after edits.
+4. Delegate grunt work to subagents — they are cheap. For independent investigations, launch multiple in one turn.
+5. Self-check before finishing: if your last paragraph is a plan, analysis, or list of what remains, you are not done. Do the work now.
+6. Do not create markdown files for planning — use todo.write.
 
 ## Output
-- Report outcomes faithfully: if something fails, state what happened with the output. If something succeeds, state it plainly without hedging. If a step was skipped, say so.
-- Reference code as \`file_path:line_number\` — it's clickable in the UI.`;
+- Lead with the outcome: your first sentence after tool work should answer what happened.
+- Report outcomes directly: success stated plainly, failure stated with what went wrong. No hedging, no praise, no summary if nothing changed.
+- Reference code as \`file_path:line_number\` — clickable in the UI.`;
   let mcpBlock = "";
   if (mcpAggregator) {
     const tools = mcpAggregator.listTools();
@@ -1019,7 +1034,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
         }
         case "provider/add": {
           if (registry) {
-            registry.upsertProvider({ ...msg.provider, enabled: msg.provider.enabled ?? true });
+            registry.upsertProvider({ ...msg.provider, apiKey: msg.apiKey, enabled: msg.provider.enabled ?? true });
             if (msg.apiKey) await ctxRef.secrets.store(`${SECRET_PREFIX}${msg.provider.id}`, msg.apiKey);
             persist?.();
             webview.postMessage({ type: "provider/list", providers: registry.listProviders() });
@@ -1359,7 +1374,12 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
   const monoLogoText = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "assets", "arc-logo-mono-text.svg"));
   const prideLogoText = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "assets", "arc-logo-pride-text.svg"));
   const extVersion = ctxRef?.extension?.packageJSON?.version ?? "0.0.0";
-  const isPride = new Date().getUTCMonth() === 5;
+  const prideMode: PrideMode = vscode.workspace.getConfiguration().get<PrideMode>("arc.appearance.prideLogo", "june") ?? "june";
+  let isPride: boolean;
+  if (prideMode === "never") isPride = false;
+  else if (prideMode === "always") isPride = true;
+  else isPride = new Date().getUTCMonth() === 5;
+  const toolTree = vscode.workspace.getConfiguration().get<string>("arc.appearance.toolTree", "auto") ?? "auto";
   const favicon = isPride ? prideLogo : monoLogo;
   const nonce = String(Math.random()).slice(2);
   return `<!doctype html>
@@ -1371,7 +1391,7 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
   <link rel="stylesheet" href="${styleUri}" />
 </head>
 <body>
-  <div id="root" data-mode="${mode}" data-mono="${monoLogo}" data-pride="${prideLogo}" data-mono-text="${monoLogoText}" data-pride-text="${prideLogoText}" data-pride-active="${isPride}" data-version="${extVersion}"></div>
+  <div id="root" data-mode="${mode}" data-mono="${monoLogo}" data-pride="${prideLogo}" data-mono-text="${monoLogoText}" data-pride-text="${prideLogoText}" data-pride-active="${isPride}" data-tool-tree="${toolTree}" data-version="${extVersion}"></div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
