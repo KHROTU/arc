@@ -2,7 +2,13 @@ import * as vscode from "vscode";
 export interface Notifier {
   notify(kind: "done" | "awaiting" | "handoff" | "error", message: string): void;
 }
-export function setNotifier(_n: Notifier) {}
+let _notifier: Notifier | undefined;
+export function setNotifier(n: Notifier): void {
+  _notifier = n;
+}
+export function notify(kind: "done" | "awaiting" | "handoff" | "error", message: string): void {
+  _notifier?.notify(kind, message);
+}
 export function makeVSCodeNotifier(): Notifier {
   return {
     notify(kind, message) {

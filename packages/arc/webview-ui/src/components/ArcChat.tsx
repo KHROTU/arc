@@ -371,13 +371,13 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
               activeId={activeId}
               onSelect={(id) => { switchChat(id); setShowSidebarList(false); }}
               onNew={newChat}
-              onSearch={() => client.send({ type: "ui/openFullscreen", show: "search" })}
+              onSearch={() => client.send({ type: "ui/openFullscreen", show: "search" } as any)}
               onRename={(id) => setRenaming({ id, value: chats.find((x) => x.id === id)?.title ?? "" })}
               onDelete={deleteChat}
               renaming={renaming}
               setRenaming={setRenaming}
               onCommitRename={(id, value) => { renameChat(id, value); setRenaming(null); }}
-              todos={latestTodos}
+              todos={latestTodos as any}
             />
           </div>
         </div>
@@ -418,7 +418,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         <button className={`arc-iconbtn ${autoApproveActive ? "arc-iconbtn-active" : ""}`} title={autoApproveActive ? "Disable auto-approve" : "Enable auto-approve (approve all tool calls)"} onClick={toggleAutoApprove}>
           {autoApproveActive ? <ShieldCheck size={15} /> : <ShieldOff size={15} />}
         </button>
-        <button className="arc-iconbtn" title="Settings" onClick={() => { if (variant === "sidebar") client.send({ type: "ui/openFullscreen", show: "settings" }); else openSettings(); }}>
+        <button className="arc-iconbtn" title="Settings" onClick={() => { if (variant === "sidebar") client.send({ type: "ui/openFullscreen", show: "settings" } as any); else openSettings(); }}>
           <Settings size={15} />
         </button>
       </header>
@@ -443,7 +443,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
             renaming={renaming}
             setRenaming={setRenaming}
             onCommitRename={(id, value) => { renameChat(id, value); setRenaming(null); }}
-            todos={latestTodos}
+            todos={latestTodos as any}
           />
         )}
         <main className="arc-main">
@@ -600,8 +600,6 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           onClose={() => setShowSettings(false)}
           models={models}
           providers={providers}
-          monoLogo={monoLogo}
-          prideLogo={prideLogo}
           monoLogoText={monoLogoText}
           prideLogoText={prideLogoText}
           version={version}

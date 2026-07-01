@@ -1,8 +1,7 @@
 export function makeProxyDispatcher(proxyUrl: string): unknown {
   try {
-    const undici = require("undici") as { ProxyAgent?: new (opts: { uri: string }) => unknown };
-    if (!undici.ProxyAgent) return undefined;
-    return new undici.ProxyAgent({ uri: proxyUrl });
+    const { ProxyAgent } = require("undici") as { ProxyAgent: new (opts: { uri: string }) => unknown };
+    return ProxyAgent ? new ProxyAgent({ uri: proxyUrl }) : undefined;
   } catch {
     return undefined;
   }

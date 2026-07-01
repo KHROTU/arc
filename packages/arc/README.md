@@ -46,7 +46,7 @@ Arc is built for speed and precision. It combines a sophisticated multi-model or
 
 Arc aims to provide a top-of-the-line agentic experience with a minimal footprint. By optimizing our dependency tree and focusing on native VS Code APIs, we keep the extension fast and portable.
 
-| Extension | VSIX Size (as of June 30th, 2026) |
+| Extension | VSIX Size (as of July 1st, 2026) |
 | :--- | :--- |
 | **Arc** | **0.23 MB** |
 | Cline | 10.18 MB |

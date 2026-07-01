@@ -4,9 +4,9 @@ import * as path from "node:path";
 import { createHash } from "node:crypto";
 import {
   ModelRegistry, Agent, CheckpointStore, LspBridge, McpAggregator,
-  makeVSCodeNotifier, setNotifier,   loadWorkspacePrompts, loadGlobalPrompts, mergePrecedence, render, injectRelevantRules,
+  makeVSCodeNotifier, setNotifier, notify, loadWorkspacePrompts, loadGlobalPrompts, mergePrecedence, render, injectRelevantRules,
   pickLogo, ChatHistory, createBrowser, getWorkspaceArcDir,
-  ModeRegistry, DEFAULT_APPROVALS, loadApprovalsMemory, saveApprovalPrefix,
+  ModeRegistry, DEFAULT_APPROVALS, loadApprovalsMemory,
   SkillRegistry,
   RuleRegistry, loadMemory, deleteMemory,
   type ChatSnapshot, type ChatMessage, type BrowserAdapter,
@@ -28,6 +28,14 @@ let skillRegistryReady: Promise<void>;
 let ruleRegistry: RuleRegistry;
 let persist: () => void;
 let persistAsync: () => Promise<void>;
+let persistTimer: ReturnType<typeof setTimeout> | undefined;
+function debouncedPersist(): void {
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    persist?.();
+    void persistAsync?.();
+  }, 5000);
+}
 let chatsFilePath: string;
 let chatHistory: ChatHistory;
 let initResolve: (() => void) | undefined;
@@ -41,11 +49,18 @@ const pendingApprovals = new Map<string, { resolve: (allowed: boolean) => void; 
 let approvalId = 0;
 let browser: BrowserAdapter | undefined;
 let browserPromise: Promise<BrowserAdapter> | undefined;
-let searchIndexer: Indexer | undefined;
-let searchProgress: IndexProgress = { filesScanned: 0, filesIndexed: 0, chunksEmbedded: 0, errors: 0 };
-let searchAbort: AbortController | undefined;
-let approvalsConfig: ApprovalsConfig = { ...DEFAULT_APPROVALS };
+let browserIdleTimer: ReturnType<typeof setTimeout> | undefined;
+const BROWSER_IDLE_MS = 5 * 60 * 1000;
+function resetBrowserIdleTimer(): void {
+  clearTimeout(browserIdleTimer);
+  browserIdleTimer = setTimeout(() => {
+    if (browser) {
+      void browser.close().then(() => { browser = undefined; browserPromise = undefined; });
+    }
+  }, BROWSER_IDLE_MS);
+}
 function getBrowser(): Promise<BrowserAdapter> {
+  resetBrowserIdleTimer();
   if (browser) return Promise.resolve(browser);
   if (!browserPromise) {
     browserPromise = createBrowser("chromium", true).then((b) => {
@@ -55,21 +70,27 @@ function getBrowser(): Promise<BrowserAdapter> {
   }
   return browserPromise;
 }
+let searchIndexer: Indexer | undefined;
+let searchProgress: IndexProgress = { filesScanned: 0, filesIndexed: 0, chunksEmbedded: 0, errors: 0 };
+let searchAbort: AbortController | undefined;
+let approvalsConfig: ApprovalsConfig = { ...DEFAULT_APPROVALS };
 export function activate(context: vscode.ExtensionContext) {
   ctxRef = context;
   log = vscode.window.createOutputChannel("Arc");
   context.subscriptions.push(log);
   modeRegistry = new ModeRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
-  void modeRegistry.load().catch((err) => {
-    log.appendLine(`[arc] Mode registry load failed: ${(err as Error)?.stack ?? err}`);
-  });
   skillRegistry = new SkillRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
-  skillRegistryReady = skillRegistry.load().catch((err) => {
-    log.appendLine(`[arc] Skill registry load failed: ${(err as Error)?.stack ?? err}`);
-  });
   ruleRegistry = new RuleRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
-  void ruleRegistry.load().catch((err) => {
-    log.appendLine(`[arc] Rule registry load failed: ${(err as Error)?.stack ?? err}`);
+  Promise.allSettled([
+    modeRegistry.load(),
+    skillRegistry.load().then(() => { skillRegistryReady = Promise.resolve(); }),
+    ruleRegistry.load(),
+  ]).then((results) => {
+    for (const r of results) {
+      if (r.status === "rejected") {
+        log.appendLine(`[arc] Registry load failed: ${(r.reason as Error)?.stack ?? r.reason}`);
+      }
+    }
   });
   try {
     registerViewsAndCommands(context);
@@ -210,11 +231,13 @@ async function initializeAsync(context: vscode.ExtensionContext) {
     }
   });
   persist();
-  void tryLoadIndex();
+  setTimeout(() => { void tryLoadIndex(); }, 2000);
   initResolve?.();
-  void hydrateMcp(mcp, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()).catch((err) => {
-    log.appendLine(`[arc] MCP hydration failed: ${(err as Error)?.stack ?? err}`);
-  });
+  setTimeout(() => {
+    void hydrateMcp(mcp, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()).catch((err) => {
+      log.appendLine(`[arc] MCP hydration failed: ${(err as Error)?.stack ?? err}`);
+    });
+  }, 3000);
 }
 async function openFullscreen(): Promise<vscode.Webview | undefined> {
   if (!ctxRef) return;
@@ -236,6 +259,7 @@ async function openFullscreen(): Promise<vscode.Webview | undefined> {
   void ensureAgent(session);
   panel.onDidDispose(() => {
     fullscreenSessions.delete(mapKey);
+    chatSessions.delete(chatId);
   });
   return panel.webview;
 }
@@ -414,12 +438,12 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
           const text = new TextDecoder().decode(raw);
           const lines = text.split("\n");
           for (let li = 0; li < lines.length && results.length < MAX_MATCHES; li++) {
-            const match = regex.exec(lines[li]);
-            if (match) {
+            const match = lines[li].match(regex);
+            if (match && match.length) {
               results.push({
                 file: vscode.workspace.asRelativePath(uri),
                 line: li + 1,
-                column: match.index + 1,
+                column: (match.index ?? 0) + 1,
                 text: lines[li].trimEnd(),
               });
             }
@@ -436,7 +460,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       const idx = searchIndexer;
       if (!idx) return [];
       const hits = await idx.search(query, k ?? 10);
-      return hits.map((h) => ({ file: h.file, start: h.start, end: h.end, score: h.score, snippet: h.text }));
+      return hits.map((h: { file: string; start: number; end: number; score: number; text: string }) => ({ file: h.file, start: h.start, end: h.end, score: h.score, snippet: h.text }));
     },
   };
   const sinkId = session.id;
@@ -480,20 +504,28 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
         pushContextStats(w, session.id);
       }
       broadcastChatListAll();
-      persist?.();
-      void persistAsync?.();
+      debouncedPersist();
     },
-    handoff: (fromModel, toModel, reason) => broadcast(session, { type: "session/handoff", fromModel, toModel, reason }),
-    todo: (items) => broadcast(session, { type: "todo/update", items }),
+    handoff: (fromModel, toModel, reason) => {
+      notify("handoff", `${fromModel} → ${toModel}: ${reason}`);
+      broadcast(session, { type: "session/handoff", fromModel, toModel, reason });
+    },
+    todo: (items) => broadcast(session, { type: "todo/update", items: items as { id: string; text: string; state: "pending" | "in_progress" | "done" | "skipped" }[] }),
     clarification: (id, question, options) => broadcast(session, { type: "session/clarification", id, question, options }),
     done: () => {
+      notify("done", "Task complete");
       if (chatHistory) chatHistory.setMessages(session.id, session.agent.getMessages());
+      clearTimeout(persistTimer);
       void persistAsync?.();
       broadcast(session, { type: "session/done" });
       reportAgentIdle();
     },
     guidance: (text) => broadcast(session, { type: "session/guidance", text }),
-    error: (message) => broadcast(session, { type: "error", message, ...(classifyError(message) ? { code: classifyError(message) } : {}) }),
+    error: (message) => {
+      const code = classifyError(message);
+      notify("error", message);
+      broadcast(session, { type: "error", message, ...(code ? { code } : {}) });
+    },
     compaction: (before, after, reason) => broadcast(session, { type: "session/compaction", before, after, reason }),
     timeline: (events) => broadcast(session, { type: "session/timeline", events }),
   };
@@ -938,7 +970,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
               if (idx < 0) idx = messages.findIndex((m) => m.role === "user" && m.content.includes(content.slice(0, 30)));
               if (idx >= 0) {
                 const editTs = messages[idx].ts;
-                messages[idx] = { ...messages[idx], content: msg.newContent, meta: { ...messages[idx].meta, editedOriginal: messages[idx].content } };
+                messages[idx] = { ...messages[idx], content: msg.newContent, meta: { ...messages[idx].meta, editedOriginal: messages[idx].content } as ChatMessage["meta"] };
                 messages.length = idx + 1;
                 const keptSteps = agent.getSteps().filter((s) => (s.ts ?? 0) <= (editTs ?? 0));
                 await agent.restore({ messages, steps: keptSteps, mode: agent.getCurrentMode(), todoItems: agent.getTodo() });

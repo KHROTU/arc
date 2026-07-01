@@ -17,7 +17,7 @@ const host = {
   platform: "node",
   target: "node18",
   outfile: resolve(__dirname, "dist/extension.js"),
-  external: ["vscode", "playwright", "playwright-core", "playwright-firefox"],
+  external: ["vscode", "playwright", "playwright-core", "playwright-firefox", "undici"],
   sourcemap: !isProd,
   minify: isProd,
   minifyIdentifiers: isProd,
@@ -26,6 +26,7 @@ const host = {
   treeShaking: true,
   legalComments: isProd ? "none" : "inline",
   logLevel: "info",
+  ...(isProd ? { drop: ["console", "debugger"], pure: ["console.log", "console.debug", "console.info"] } : {}),
   plugins: [
     {
       name: "skip-playwright",
@@ -35,10 +36,6 @@ const host = {
     },
   ],
 };
-if (isProd) {
-  host.drop = ["console", "debugger"];
-  host.pure = ["console.log", "console.debug", "console.info"];
-}
 
 const webview = {
   entryPoints: [resolve(__dirname, "webview-ui/src/entry.tsx")],
@@ -58,6 +55,7 @@ const webview = {
   treeShaking: true,
   legalComments: isProd ? "none" : "inline",
   logLevel: "info",
+  ...(isProd ? { drop: ["console", "debugger"], pure: ["console.log", "console.debug", "console.info"] } : {}),
   plugins: [
     {
       name: "css",
@@ -79,10 +77,6 @@ const webview = {
     },
   ],
 };
-if (isProd) {
-  webview.drop = ["console", "debugger"];
-  webview.pure = ["console.log", "console.debug", "console.info"];
-}
 
 const ctx1 = await esbuild.context(host);
 const ctx2 = await esbuild.context(webview);
