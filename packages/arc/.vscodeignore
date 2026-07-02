@@ -16,3 +16,4 @@ assets/arc-logo-mono-text.png
 assets/arc-logo-pride-text.png
 scripts/**
 README.md
+*.vsix

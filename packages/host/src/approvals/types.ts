@@ -89,6 +89,9 @@ export const DEFAULT_APPROVALS: ApprovalsConfig = {
   "web.search": "auto",
   mcp: { default: "auto", perServer: {} },
 };
+export interface ApproveShellMeta {
+  command?: string;
+}
 export type ApprovalCategory =
   | "read"
   | "write.local"

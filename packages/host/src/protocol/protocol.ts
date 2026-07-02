@@ -248,7 +248,7 @@ export type HostMsg =
   | { type: "chat/searchResults"; results: { id: string; title: string; matches: string[] }[] }
   | { type: "ui/showSettings" }
   | { type: "ui/showSearch" }
-  | { type: "approval/request"; id: string; description: string; kind: "shell" | "destructive" }
+  | { type: "approval/request"; id: string; description: string; kind: "shell" | "destructive"; command?: string }
   | { type: "autoApproveState"; active: boolean }
   | { type: "search/indexProgress"; filesScanned: number; filesIndexed: number; chunksEmbedded: number; errors: number }
   | { type: "mcp/testResult"; server?: string; output: string }
@@ -258,7 +258,6 @@ export type HostMsg =
   | { type: "session/loadComposer"; text: string }
   | { type: "session/replaceState"; messages: ChatMessage[]; steps: ProcessStep[]; loadComposer?: string }
   | { type: "session/guidance"; text: string }
-  | { type: "session/timeline"; events: ExecutionEvent[] }
   | { type: "error"; message: string; code?: "timeout" | "rate_limit" | "auth" | "provider" | "malformed" | "network" | "aborted"; inReplyTo?: string };
 export type WebviewMsg =
   | { type: "chat/send"; text: string; attachments?: { uri: string; preview?: string }[]; images?: string[] }

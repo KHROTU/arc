@@ -1,9 +1,5 @@
-import { useState, useEffect } from "react";
-export function useArcLogo(monoUri: string, prideUri: string, hostChoice: boolean): string {
-  const [override, setOverride] = useState<string | null>(null);
-  useEffect(() => { setOverride(null); }, [monoUri, prideUri, hostChoice]);
-  if (override) return override;
-  return hostChoice ? prideUri : monoUri;
+export function useArcLogo(_monoUri: string, prideUri: string, hostChoice: boolean): string {
+  return hostChoice ? prideUri : _monoUri;
 }
 export function swapOnError(fallback: string) {
   return (e: React.SyntheticEvent<HTMLImageElement>) => {

@@ -167,6 +167,48 @@ body {
 .arc-mode-dropdown-item-icon { display: flex; align-items: center; color: var(--vscode-descriptionForeground, #858585); flex-shrink: 0; }
 .arc-mode-dropdown-item-label { font-weight: 600; flex-shrink: 0; }
 .arc-mode-dropdown-item-desc { font-size: 11px; color: var(--vscode-descriptionForeground, #858585); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.arc-effort-picker { display: flex; align-items: center; min-width: 0; position: relative; }
+.arc-effort-trigger {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: transparent; color: var(--vscode-foreground, #ccc);
+  border: 1px solid transparent; border-radius: 5px; padding: 2px 6px;
+  font: inherit; font-size: 12px; cursor: pointer; max-width: 90px; min-width: 0;
+  transition: background var(--arc-dur) var(--arc-ease), border-color var(--arc-dur) var(--arc-ease);
+}
+.arc-effort-trigger-full { max-width: 110px; }
+.arc-shell-sidebar .arc-effort-trigger { max-width: 60px; padding: 1px 4px; font-size: 11px; }
+.arc-effort-trigger:hover { background: var(--arc-toolbar-hover); }
+.arc-effort-label { color: var(--vscode-descriptionForeground, #858585); flex-shrink: 0; font-size: inherit; }
+.arc-effort-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.arc-effort-chevron { color: var(--vscode-descriptionForeground, #858585); flex-shrink: 0; transition: transform var(--arc-dur) var(--arc-ease); }
+.arc-effort-chevron-open { transform: rotate(180deg); }
+.arc-effort-dropdown {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 100;
+  width: 170px; background: var(--vscode-dropdown-background, #2d2d2d);
+  border: 1px solid var(--vscode-dropdown-border, var(--arc-line));
+  border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.arc-shell-sidebar .arc-effort-dropdown { left: auto; right: 0; width: 150px; }
+.arc-effort-header {
+  display: flex; align-items: center; gap: 6px; padding: 6px 10px 4px;
+  font-size: 11px; color: var(--vscode-descriptionForeground, #858585);
+  border-bottom: 1px solid var(--arc-line);
+}
+.arc-info-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--vscode-descriptionForeground, #858585);
+  cursor: help;
+}
+.arc-effort-item {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 5px 10px; border: 0; border-radius: 4px;
+  background: transparent; color: var(--vscode-foreground, #ccc);
+  font: inherit; font-size: 12px; cursor: pointer; text-align: left;
+  transition: background var(--arc-dur) var(--arc-ease);
+}
+.arc-effort-item:hover { background: var(--arc-hover); }
+.arc-effort-item-active { background: var(--vscode-list-activeSelectionBackground, var(--arc-accent-soft)); }
 .arc-topbar-spacer { flex: 1; }
 .arc-topbar-cost { font-size: 12px; color: var(--vscode-foreground, #ccc); font-variant-numeric: tabular-nums; }
 .arc-topbar-sep { width: 1px; height: 14px; background: var(--arc-line); margin: 0 2px; flex-shrink: 0; }
@@ -211,8 +253,6 @@ body {
 .arc-chatlist-actions { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: flex; gap: 1px; opacity: 0; pointer-events: none; transition: opacity 0.18s ease; }
 .arc-chatlist-item:hover .arc-chatlist-actions,
 .arc-chatlist-item.is-active .arc-chatlist-actions { opacity: 1; pointer-events: auto; }
-.arc-chatlist-actions { display: flex; gap: 1px; opacity: 0; }
-.arc-chatlist-item:hover .arc-chatlist-actions { opacity: 1; }
 .arc-chatlist-action { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; background: transparent; border: 0; border-radius: 4px; color: var(--vscode-descriptionForeground, #858585); cursor: pointer; }
 .arc-chatlist-action:hover { background: var(--arc-toolbar-hover); color: var(--vscode-foreground, #ccc); }
 .arc-chatlist-empty { padding: 8px; font-size: 12px; color: var(--vscode-descriptionForeground, #858585); }
@@ -732,7 +772,7 @@ body {
 .arc-mcp-card.is-installed { border-color: var(--arc-ok); opacity: 0.8; }
 .arc-mcp-card-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .arc-mcp-card-name { font-size: 13px; font-weight: 600; color: var(--vscode-foreground, #ccc); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.arc-mcp-card-desc { font-size: 12px; color: var(--vscode-descriptionForeground, #858585); line-height: 1.4; margin: 0; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; min-height: 2.8em; }
+.arc-mcp-card-desc { font-size: 12px; color: var(--vscode-descriptionForeground, #858585); line-height: 1.4; margin: 0; display: -webkit-box; -webkit-line-clamp: 4; line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; min-height: 2.8em; }
 .arc-mcp-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; }
 .arc-mcp-card-foot code { font-size: 10.5px; background: rgba(127,127,127,0.12); padding: 1px 5px; border-radius: 3px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .arc-mcp-test { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
@@ -748,26 +788,10 @@ body {
 .arc-mcp-health-dot-ok { background: var(--arc-ok); }
 .arc-mcp-health-dot-err { background: var(--arc-err); }
 .arc-mcp-health-dot-pending { background: var(--vscode-descriptionForeground, #858585); animation: arc-pulse 1.4s var(--arc-ease) infinite; }
-.arc-memory-panel { display: flex; flex-direction: column; gap: 8px; }
-.arc-memory-item { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--arc-line); border-radius: var(--arc-radius); background: var(--vscode-editorWidget-background, transparent); }
-.arc-memory-item-head { display: flex; align-items: center; gap: 8px; }
-.arc-memory-item-category { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; padding: 1px 6px; border-radius: var(--arc-radius-pill); }
-.arc-memory-item-body { font-size: 13px; line-height: 1.5; color: var(--vscode-foreground, #ccc); }
-.arc-memory-item-foot { display: flex; align-items: center; gap: 12px; font-size: 11px; color: var(--vscode-descriptionForeground, #858585); }
-.arc-memory-cat-preferences { background: var(--arc-accent-soft); color: var(--arc-accent); }
-.arc-memory-cat-architecture { background: rgba(198, 120, 221, 0.15); color: var(--arc-purple); }
-.arc-memory-cat-gotchas { background: rgba(229, 192, 123, 0.15); color: var(--arc-syn-flag); }
 .arc-hook-panel { display: flex; flex-direction: column; gap: 8px; }
 .arc-hook-item { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--arc-line); border-radius: var(--arc-radius); }
 .arc-hook-item-head { display: flex; align-items: center; gap: 8px; }
 .arc-hook-item-event { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; padding: 1px 6px; border-radius: var(--arc-radius-pill); background: var(--arc-accent-soft); color: var(--arc-accent); }
 .arc-hook-item-cmd { font-family: var(--vscode-editor-fontFamily, monospace); font-size: 12px; color: var(--vscode-foreground, #ccc); }
-.arc-hook-item-output { font-family: var(--vscode-editor-fontFamily, monospace); font-size: 11px; line-height: 1.4; background: var(--arc-code-bg); border: 1px solid var(--arc-line); border-radius: var(--arc-radius); padding: 6px 10px; max-height: 120px; overflow: auto; white-space: pre-wrap; }
 .arc-hook-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
 .arc-hint-text { font-size: 12px; color: var(--vscode-descriptionForeground, #858585); line-height: 1.45; }
-.arc-search-scope { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-.arc-search-scope-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border: 1px solid var(--arc-line); border-radius: var(--arc-radius-pill); background: transparent; color: var(--vscode-descriptionForeground, #858585); font: inherit; font-size: 11.5px; cursor: pointer; transition: all var(--arc-dur) var(--arc-ease); }
-.arc-search-scope-chip:hover { border-color: var(--arc-accent); color: var(--vscode-foreground, #ccc); }
-.arc-search-scope-chip.is-active { background: var(--arc-accent-soft); border-color: var(--arc-accent); color: var(--arc-accent); }
-.arc-search-freshness { font-size: 11px; color: var(--vscode-descriptionForeground, #858585); display: inline-flex; align-items: center; gap: 4px; }
-.arc-search-freshness-stale { color: var(--arc-syn-flag); }

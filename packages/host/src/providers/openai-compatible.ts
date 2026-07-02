@@ -1,6 +1,9 @@
 import { AsyncEventQueue, readableToAsyncIterable } from "../util/stream.js";
 import { makeProxyDispatcher } from "../util/proxy.js";
 import { fromApiToolName, toApiToolName, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
+import { caps } from "./capability-tracker.js";
+const UNSUPPORTED_PARAM_RE = /does not support|unsupported.*param(?:eter)?|unknown.*param(?:eter)?|invalid.*param(?:eter)?/i;
+const RETRY_DELAYS = [1000, 3000, 7000];
 export const openAICompatibleTransport: Transport & { withBase: (base: string) => Transport } = {
   kind: "openai",
   withBase(base) {
@@ -13,23 +16,38 @@ export const openAICompatibleTransport: Transport & { withBase: (base: string) =
 async function streamWithBase(req: StreamRequest, baseOverride: string): Promise<StreamHandle> {
   const base = baseOverride || req.provider.baseUrl || "https://api.openai.com/v1";
   const remoteModel = req.model.providers.find((p) => p.id === req.provider.id)?.remoteModel ?? req.model.id;
+  const modelKey = `${req.provider.id}:${remoteModel}`;
   const hasThinking = req.messages.some((m) => m.role === "assistant" && m.thinking);
-  const body: Record<string, unknown> = {
-    model: remoteModel,
-    stream: true,
-    temperature: req.temperature ?? 0.2,
-    messages: req.messages.map((m) => toOpenAIMessage(m)),
+  const effortLevels: Record<string, string> = { none: "none", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh" };
+  const eff = req.reasoningEffort ? effortLevels[req.reasoningEffort] : undefined;
+  const buildBody = (skipReasoning: boolean): Record<string, unknown> => {
+    const wantsThink = hasThinking && !skipReasoning && caps.isSupported(modelKey, "thinking");
+    const wantsEffort = !skipReasoning && eff && caps.isSupported(modelKey, "reasoning_effort");
+    const body: Record<string, unknown> = {
+      model: remoteModel,
+      stream: true,
+      temperature: req.temperature ?? 0.2,
+      messages: req.messages.map((m) => toOpenAIMessage(m, wantsThink)),
+    };
+    if (req.tools?.length) {
+      body.tools = req.tools.map((t) => ({
+        type: "function",
+        function: { name: toApiToolName(t.name), description: t.description, parameters: t.parameters },
+      }));
+    }
+    if (wantsEffort) {
+      if (req.provider.kind === "google") {
+        body.thinking_level = eff;
+      } else {
+        body.reasoning_effort = eff;
+      }
+      body.thinking = { type: "enabled" };
+    } else if (wantsThink) {
+      body.reasoning_effort = "high";
+      body.thinking = { type: "enabled" };
+    }
+    return body;
   };
-  if (req.tools?.length) {
-    body.tools = req.tools.map((t) => ({
-      type: "function",
-      function: { name: toApiToolName(t.name), description: t.description, parameters: t.parameters },
-    }));
-  }
-  if (hasThinking) {
-    body.reasoning_effort = "high";
-    body.thinking = { type: "enabled" };
-  }
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (req.provider.apiKey) headers.authorization = `Bearer ${req.provider.apiKey}`;
   if (req.provider.kind === "openrouter") {
@@ -38,16 +56,49 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
   } else {
     headers["x-title"] = "Arc";
   }
-  const res = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000),
-    ...(req.proxyUrl ? { dispatcher: makeProxyDispatcher(req.proxyUrl) } : {}),
-  });
-  if (!res.ok || !res.body) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Provider ${req.provider.kind} returned ${res.status}: ${text.slice(0, 200)}`);
+  const MAX_ATTEMPTS = 2;
+  const RATE_LIMIT_RETRIES = 3;
+  let res!: Response;
+  let lastText = "";
+  let skipReasoning = false;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const body = buildBody(skipReasoning);
+    for (let rlAttempt = 0; rlAttempt <= RATE_LIMIT_RETRIES; rlAttempt++) {
+      res = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000),
+        ...(req.proxyUrl ? { dispatcher: makeProxyDispatcher(req.proxyUrl) } : {}),
+      });
+      if (res.ok && res.body) break;
+      lastText = await res.text().catch(() => "");
+      if (res.status === 429 && rlAttempt < RATE_LIMIT_RETRIES) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS[rlAttempt] ?? 5000));
+        continue;
+      }
+      break;
+    }
+    if (res.ok && res.body) break;
+    if (res.status === 400 && UNSUPPORTED_PARAM_RE.test(lastText)) {
+      if (eff && lastText.includes("reasoning_effort")) {
+        caps.markUnsupported(modelKey, "reasoning_effort");
+        skipReasoning = true;
+        continue;
+      }
+      if (lastText.includes("thinking_level")) {
+        caps.markUnsupported(modelKey, "reasoning_effort");
+        skipReasoning = true;
+        continue;
+      }
+      caps.markUnsupported(modelKey, "thinking");
+      skipReasoning = true;
+      continue;
+    }
+    if (!res.ok) throw new Error(`Provider ${req.provider.kind} returned ${res.status}: ${lastText.slice(0, 200)}`);
+  }
+  if (!res!.ok || !res!.body) {
+    throw new Error(`Provider ${req.provider.kind} returned ${res!.status}: ${lastText.slice(0, 200)}`);
   }
   const q = new AsyncEventQueue<StreamEvent>();
   let aborted = false;
@@ -172,13 +223,13 @@ function safeParseArgs(s: string | undefined): Record<string, unknown> | undefin
     return undefined;
   }
 }
-function toOpenAIMessage(m: import("../protocol/protocol.js").ChatMessage) {
+function toOpenAIMessage(m: import("../protocol/protocol.js").ChatMessage, supportsThinking: boolean) {
   if (m.role === "tool") {
     return { role: "tool", tool_call_id: m.toolCallId, content: m.content };
   }
   if (m.role === "assistant" && m.toolCalls?.length) {
     const msg: Record<string, unknown> = { role: "assistant" };
-    msg.reasoning_content = m.thinking || "";
+    if (supportsThinking && m.thinking) msg.reasoning_content = m.thinking;
     msg.content = m.content;
     msg.tool_calls = m.toolCalls.map((t) => ({
       id: t.id,
@@ -188,7 +239,8 @@ function toOpenAIMessage(m: import("../protocol/protocol.js").ChatMessage) {
     return msg;
   }
   if (m.role === "assistant" && m.thinking) {
-    return { role: "assistant", reasoning_content: m.thinking, content: m.content };
+    if (supportsThinking) return { role: "assistant", reasoning_content: m.thinking, content: m.content };
+    return { role: "assistant", content: m.content };
   }
   const images = (m as any).images as { type: string; image_url: { url: string } }[] | undefined;
   if (m.role === "user" && images?.length) {

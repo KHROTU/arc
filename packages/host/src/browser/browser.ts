@@ -118,7 +118,7 @@ export async function createBrowser(kind: BrowserKind = "chromium", headless = t
     async evaluate(script) {
       try {
         const result = await page.evaluate(script);
-        return { ok: true, output: typeof result === "string" ? result : JSON.stringify(result, null, 2) };
+        return { ok: true, output: typeof result === "string" ? result : JSON.stringify(result, null, 2) ?? String(result) };
       } catch (e) { return { ok: false, output: `Eval failed: ${(e as Error).message}` }; }
     },
     async readDom() {

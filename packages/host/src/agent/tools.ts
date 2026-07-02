@@ -93,14 +93,14 @@ async function runSingleCommand(
     });
   });
 }
-import type { ApprovalsConfig, SessionApprovals } from "../approvals/index.js";
+import type { ApprovalsConfig, SessionApprovals, ApproveShellMeta } from "../approvals/index.js";
 import type { SkillRegistry } from "../skills/index.js";
 import type { RuleRegistry } from "../rules/index.js";
 export interface ToolContext {
   root: string;
   approvalsConfig: ApprovalsConfig;
   sessionApprovals: SessionApprovals;
-  requestApproval?: (description: string) => Promise<boolean>;
+  requestApproval?: (description: string, meta?: ApproveShellMeta) => Promise<boolean>;
   addSessionCommand?: (command: string) => void;
   skillRegistry?: SkillRegistry;
   ruleRegistry?: RuleRegistry;
@@ -607,7 +607,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     fn: async (a, ctx) => {
       if (!ctx.mcp) return { ok: false, output: "MCP not available." };
       const r = await ctx.mcp.readResource(String(a.server), String(a.uri));
-      return { ok: r.ok, output: typeof r.output === "string" ? r.output : JSON.stringify(r.output, null, 2) };
+      return { ok: r.ok, output: typeof r.output === "string" ? r.output : JSON.stringify(r.output, null, 2) ?? String(r.output) };
     },
   },
   "mcp.prompts/list": {
@@ -625,7 +625,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     fn: async (a, ctx) => {
       if (!ctx.mcp) return { ok: false, output: "MCP not available." };
       const r = await ctx.mcp.getPrompt(String(a.server), String(a.name), (a.args as Record<string, unknown>) ?? undefined);
-      return { ok: r.ok, output: typeof r.output === "string" ? r.output : JSON.stringify(r.output, null, 2) };
+      return { ok: r.ok, output: typeof r.output === "string" ? r.output : JSON.stringify(r.output, null, 2) ?? String(r.output) };
     },
   },
   "skill.read": {

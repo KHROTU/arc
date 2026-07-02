@@ -1,22 +1,22 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Plus, Trash2, Plug, Braces, Cpu, KeyRound, X, Check, Info, FileText, History, ListChecks, Play, ShieldCheck, RefreshCw, CircleDot, AlertTriangle } from "lucide-react";
+import { Plus, Trash2, Plug, Braces, Cpu, KeyRound, X, Check, Info, ListChecks, Play, ShieldCheck, RefreshCw, CircleDot, AlertTriangle } from "lucide-react";
 import type { RpcClient, HostEvent } from "../rpc";
 import type { ModelDescriptor, ModelTier, ProviderConfig, ProviderKind } from "@arc/host/protocol";
 import { PROVIDERS } from "@arc/host/catalog";
 import { useArcLogo } from "../hooks/useArcLogo";
-type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderConfig[]; monoLogo: string; prideLogo: string; monoLogoText: string; prideLogoText: string; version: string };
+type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderConfig[]; monoLogoText: string; prideLogoText: string; version: string };
 const TIERS: ModelTier[] = ["heavy", "default", "light", "free"];
 const TIER_ORDER: Record<ModelTier, number> = { heavy: 0, default: 1, light: 2, free: 3 };
-type Tab = "models" | "providers" | "mcp" | "general" | "search" | "custom";
+type Tab = "models" | "providers" | "mcp" | "general" | "search" | "customize";
 const TABS: { value: Tab; label: string; icon: React.ReactNode }[] = [
   { value: "models", label: "Models", icon: <Cpu size={15} /> },
   { value: "providers", label: "Providers", icon: <KeyRound size={15} /> },
   { value: "mcp", label: "MCP", icon: <Plug size={15} /> },
   { value: "general", label: "General", icon: <Braces size={15} /> },
   { value: "search", label: "Search", icon: <Play size={15} /> },
-  { value: "custom", label: "Custom", icon: <ListChecks size={15} /> },
+  { value: "customize", label: "Customize", icon: <ListChecks size={15} /> },
 ];
-export default function SettingsModal({ client, onClose, models, providers, monoLogo, prideLogo, monoLogoText, prideLogoText, version }: Props) {
+export default function SettingsModal({ client, onClose, models, providers, monoLogoText, prideLogoText, version }: Props) {
   const [tab, setTab] = useState<Tab>("models");
   const logoTextUri = useArcLogo(monoLogoText, prideLogoText, false);
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
@@ -63,7 +63,7 @@ export default function SettingsModal({ client, onClose, models, providers, mono
             {tab === "mcp" && <McpTab client={client} />}
             {tab === "general" && <GeneralTab client={client} />}
             {tab === "search" && <SearchTab client={client} />}
-            {tab === "custom" && <CustomTab client={client} />}
+            {tab === "customize" && <CustomTab client={client} />}
             <AboutSection logoTextUri={logoTextUri} version={version} />
           </div>
         </main>
@@ -703,13 +703,6 @@ function SearchTab({ client }: { client: RpcClient }) {
     </Section>
   );
 }
-function ImagesTab({ client }: { client: RpcClient }) {
-  return (
-    <Section title="Image processing" description="How attached images are handled when the active model is not multimodal.">
-      <ImageProcessingSection client={client} />
-    </Section>
-  );
-}
 function CustomTab({ client }: { client: RpcClient }) {
   const PROMPTS = [
     { name: "Global default", meta: "built into the extension", action: null as React.ReactNode },
@@ -720,6 +713,8 @@ function CustomTab({ client }: { client: RpcClient }) {
   const [memories, setMemories] = useState<{ index: number; category: string; content: string; createdAt: string }[]>([]);
   const [memLoading, setMemLoading] = useState(true);
   const [hooks, setHooks] = useState<{ event: string; matcher: string; command: string; enabled: boolean; tools?: string[] }[]>([]);
+  const [prideLogo, setPrideLogo] = useState<"always" | "june" | "never">("june");
+  const [toolTree, setToolTree] = useState<"auto" | "collapsed">("auto");
   useEffect(() => {
     const offMem = client.on((e: any) => {
       if (e.type === "memory/list") { setMemories(e.memories); setMemLoading(false); }
@@ -729,6 +724,8 @@ function CustomTab({ client }: { client: RpcClient }) {
       if (e.type === "hooks/list") setHooks(Array.isArray(e.hooks) ? e.hooks : []);
     });
     client.send({ type: "hooks/list" });
+    void client.request("arc.appearance.prideLogo").then((v) => setPrideLogo(v === "always" || v === "never" ? v as typeof prideLogo : "june"));
+    void client.request("arc.appearance.toolTree").then((v) => setToolTree(v === "auto" ? "auto" : "collapsed"));
     return () => { offMem(); offHooks(); };
   }, [client]);
   return (
@@ -745,6 +742,29 @@ function CustomTab({ client }: { client: RpcClient }) {
               </div>
             </li>
           ))}
+        </ul>
+      </Section>
+      <Section title="Appearance" description="Visual preferences for the chat interface.">
+        <ul className="arc-rows">
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Pride logo</span>
+            <span className="arc-row-meta">When to show the pride variant in the welcome text and sidebar</span>
+            <span className="arc-spacer" />
+            <select className="arc-input arc-input-sm" value={prideLogo} onChange={(e) => { const v = e.target.value as typeof prideLogo; setPrideLogo(v); client.send({ type: "config/set", key: "arc.appearance.prideLogo", value: v }); }}>
+              <option value="june">june</option>
+              <option value="always">always</option>
+              <option value="never">never</option>
+            </select>
+          </div></li>
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Tool call tree</span>
+            <span className="arc-row-meta">How tool call trees expand and collapse</span>
+            <span className="arc-spacer" />
+            <select className="arc-input arc-input-sm" value={toolTree} onChange={(e) => { const v = e.target.value as typeof toolTree; setToolTree(v); client.send({ type: "config/set", key: "arc.appearance.toolTree", value: v }); }}>
+              <option value="auto">auto</option>
+              <option value="collapsed">collapsed</option>
+            </select>
+          </div></li>
         </ul>
       </Section>
       <Section title="Memories" description="Persistent facts, preferences, and gotchas saved across sessions.">

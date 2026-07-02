@@ -7,9 +7,7 @@
     "rootDir": "src",
     "lib": ["ES2022", "DOM"],
     "types": ["node"],
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true
+    "declaration": true
   },
   "include": ["src"]
 }

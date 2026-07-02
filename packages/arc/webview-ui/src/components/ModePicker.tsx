@@ -1,17 +1,17 @@
 import { useState, useRef, useEffect } from "react";
-import { ChevronDown, Wrench, FileSearch, BugPlay, ShieldCheck } from "lucide-react";
+import { ChevronDown, Wrench, FileSearch, BugPlay, SearchCheck } from "lucide-react";
 type ModeDef = { slug: string; description: string };
 const MODE_ICONS: Record<string, React.ReactNode> = {
   plan: <FileSearch size={12} />,
   code: <Wrench size={12} />,
   debug: <BugPlay size={12} />,
-  review: <ShieldCheck size={12} />,
+  audit: <SearchCheck size={12} />,
 };
 const MODE_LABELS: Record<string, string> = {
   plan: "Plan",
   code: "Code",
   debug: "Debug",
-  review: "Review",
+  audit: "Audit",
 };
 type Props = {
   modes: ModeDef[];

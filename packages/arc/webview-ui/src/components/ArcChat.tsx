@@ -6,6 +6,7 @@ import ArcProcessUI, { type ProcessStep } from "./AgentProcess";
 import Composer from "./Composer";
 import ModelPicker from "./ModelPicker";
 import ModePicker from "./ModePicker";
+import EffortPicker, { type Effort } from "./EffortPicker";
 import ConversationSearch from "./ConversationSearch";
 import SettingsModal from "./SettingsView";
 import type { ModelDescriptor, TurnUsage, ChatMessage, ProviderConfig } from "@arc/host/protocol";
@@ -20,6 +21,7 @@ type Props = {
   monoLogoText: string;
   prideLogoText: string;
   prideActive: boolean;
+  toolTreeMode: "auto" | "collapsed";
   variant: "sidebar" | "fullscreen";
   version: string;
 };
@@ -50,7 +52,7 @@ function RippleSpinner() {
     </svg>
   );
 }
-export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, prideLogoText, prideActive, variant, version }: Props) {
+export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, prideLogoText, prideActive, toolTreeMode, variant, version }: Props) {
   const logoUri = useArcLogo(monoLogo, prideLogo, prideActive);
   const [chats, setChats] = useState<ChatMeta[]>([]);
   const [activeId, setActiveId] = useState<string>("");
@@ -77,10 +79,11 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [showSettings, setShowSettings] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
-  const [approval, setApproval] = useState<{ id: string; description: string; kind: string } | null>(null);
+  const [approval, setApproval] = useState<{ id: string; description: string; kind: string; command?: string } | null>(null);
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
   const [prefillText, setPrefillText] = useState<string | null>(null);
   const [autoApproveActive, setAutoApproveActive] = useState(false);
+  const [reasoningEffort, setReasoningEffort] = useState<Effort>("high");
   const transcriptRef = useRef<HTMLDivElement>(null);
   const pendingTextRef = useRef<{ id: string; text: string } | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -98,6 +101,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           setCurrentModel(e.currentModelId);
           if (e.modes) setModes(e.modes);
           if (e.currentMode) setCurrentMode(e.currentMode);
+          if (e.reasoningEffort) setReasoningEffort(e.reasoningEffort);
           break;
         case "chat/list": setChats(e.chats); break;
         case "chat/current":
@@ -185,7 +189,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         case "ui/showSearch": setShowSearch(true); break;
         case "autoApproveState": setAutoApproveActive(e.active); break;
         case "approval/request":
-          setApproval({ id: e.id, description: e.description, kind: e.kind });
+          setApproval({ id: e.id, description: e.description, kind: e.kind, command: e.command });
           break;
         case "error":
           setError({ message: e.message, code: e.code });
@@ -247,6 +251,10 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const openFile = (path: string) => { console.log("[arc] openFile", path); client.send({ type: "ui/openFile", path }); };
   const openFullscreen = () => client.send({ type: "ui/openFullscreen" });
   const selectModel = (id: string) => client.send({ type: "model/select", modelId: id });
+  const selectEffort = (e: Effort) => {
+    setReasoningEffort(e);
+    client.send({ type: "config/set", key: "arc.reasoning.effort", value: e });
+  };
   const selectMode = (mode: string) => {
     setCurrentMode(mode);
     client.send({ type: "mode/select", mode });
@@ -258,11 +266,12 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     setApproval(null);
   };
   const getApprovalCommand = (desc: string): string | undefined => {
+    if (approval?.command) return approval.command;
     const lines = desc.split("\n\n");
     return lines.length > 1 ? lines[1].trim() : undefined;
   };
   const getApprovalPrefix = (desc: string): string | undefined => {
-    const cmd = getApprovalCommand(desc);
+    const cmd = approval?.command ?? getApprovalCommand(desc);
     if (!cmd) return undefined;
     return cmd.trim().split(/\s+/)[0] || undefined;
   };
@@ -330,7 +339,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     let run: ProcessStep[] = [];
     const flush = () => {
       if (run.length) {
-        out.push(<ArcProcessUI key={`steps-${run[0].id}`} steps={run} onOpenFile={openFile} />);
+        out.push(<ArcProcessUI key={`steps-${run[0].id}`} steps={run} onOpenFile={openFile} toolTreeMode={toolTreeMode} />);
         run = [];
       }
     };
@@ -371,13 +380,13 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
               activeId={activeId}
               onSelect={(id) => { switchChat(id); setShowSidebarList(false); }}
               onNew={newChat}
-              onSearch={() => client.send({ type: "ui/openFullscreen", show: "search" })}
+              onSearch={() => client.send({ type: "ui/openFullscreen", show: "search" } as any)}
               onRename={(id) => setRenaming({ id, value: chats.find((x) => x.id === id)?.title ?? "" })}
               onDelete={deleteChat}
               renaming={renaming}
               setRenaming={setRenaming}
               onCommitRename={(id, value) => { renameChat(id, value); setRenaming(null); }}
-              todos={latestTodos}
+              todos={latestTodos as any}
             />
           </div>
         </div>
@@ -393,6 +402,11 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           models={models}
           currentModelId={currentModel}
           onSelect={selectModel}
+          variant={variant}
+        />
+        <EffortPicker
+          effort={reasoningEffort}
+          onSelect={selectEffort}
           variant={variant}
         />
         {modes.length > 0 && (
@@ -418,7 +432,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         <button className={`arc-iconbtn ${autoApproveActive ? "arc-iconbtn-active" : ""}`} title={autoApproveActive ? "Disable auto-approve" : "Enable auto-approve (approve all tool calls)"} onClick={toggleAutoApprove}>
           {autoApproveActive ? <ShieldCheck size={15} /> : <ShieldOff size={15} />}
         </button>
-        <button className="arc-iconbtn" title="Settings" onClick={() => { if (variant === "sidebar") client.send({ type: "ui/openFullscreen", show: "settings" }); else openSettings(); }}>
+        <button className="arc-iconbtn" title="Settings" onClick={() => { if (variant === "sidebar") client.send({ type: "ui/openFullscreen", show: "settings" } as any); else openSettings(); }}>
           <Settings size={15} />
         </button>
       </header>
@@ -443,7 +457,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
             renaming={renaming}
             setRenaming={setRenaming}
             onCommitRename={(id, value) => { renameChat(id, value); setRenaming(null); }}
-            todos={latestTodos}
+            todos={latestTodos as any}
           />
         )}
         <main className="arc-main">
@@ -600,8 +614,6 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           onClose={() => setShowSettings(false)}
           models={models}
           providers={providers}
-          monoLogo={monoLogo}
-          prideLogo={prideLogo}
           monoLogoText={monoLogoText}
           prideLogoText={prideLogoText}
           version={version}

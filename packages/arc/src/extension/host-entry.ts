@@ -4,17 +4,19 @@ import * as path from "node:path";
 import { createHash } from "node:crypto";
 import {
   ModelRegistry, Agent, CheckpointStore, LspBridge, McpAggregator,
-  makeVSCodeNotifier, setNotifier,   loadWorkspacePrompts, loadGlobalPrompts, mergePrecedence, render, injectRelevantRules,
+  makeVSCodeNotifier, setNotifier, notify, loadWorkspacePrompts, loadGlobalPrompts, mergePrecedence, render, injectRelevantRules,
   pickLogo, ChatHistory, createBrowser, getWorkspaceArcDir,
+  type PrideMode,
   ModeRegistry, DEFAULT_APPROVALS, loadApprovalsMemory, saveApprovalPrefix,
   SkillRegistry,
+  generateDependencyGraph, formatDepGraph,
   RuleRegistry, loadMemory, deleteMemory,
   type ChatSnapshot, type ChatMessage, type BrowserAdapter,
   type HostMsg, type WebviewMsg, type ModelDescriptor, type ProviderConfig, type ProcessStep, type ApprovalsConfig,
   Indexer, HashEmbeddingBackend, OllamaEmbeddingBackend, DEFAULT_EMBEDDING_MODELS,
   type IndexProgress, type EmbeddingBackend,
 } from "@arc/host";
-import { initDiscordRpcSpof, reportAgentActivity, reportAgentIdle } from "./discord-rpc.js";
+import { initDiscordRpcSpoof, reportAgentActivity, reportAgentIdle } from "./discord-rpc.js";
 const SECRET_PREFIX = "arc.apiKey.";
 let log: vscode.OutputChannel;
 let ctxRef: vscode.ExtensionContext;
@@ -28,6 +30,14 @@ let skillRegistryReady: Promise<void>;
 let ruleRegistry: RuleRegistry;
 let persist: () => void;
 let persistAsync: () => Promise<void>;
+let persistTimer: ReturnType<typeof setTimeout> | undefined;
+function debouncedPersist(): void {
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    persist?.();
+    void persistAsync?.();
+  }, 5000);
+}
 let chatsFilePath: string;
 let chatHistory: ChatHistory;
 let initResolve: (() => void) | undefined;
@@ -41,11 +51,18 @@ const pendingApprovals = new Map<string, { resolve: (allowed: boolean) => void; 
 let approvalId = 0;
 let browser: BrowserAdapter | undefined;
 let browserPromise: Promise<BrowserAdapter> | undefined;
-let searchIndexer: Indexer | undefined;
-let searchProgress: IndexProgress = { filesScanned: 0, filesIndexed: 0, chunksEmbedded: 0, errors: 0 };
-let searchAbort: AbortController | undefined;
-let approvalsConfig: ApprovalsConfig = { ...DEFAULT_APPROVALS };
+let browserIdleTimer: ReturnType<typeof setTimeout> | undefined;
+const BROWSER_IDLE_MS = 5 * 60 * 1000;
+function resetBrowserIdleTimer(): void {
+  clearTimeout(browserIdleTimer);
+  browserIdleTimer = setTimeout(() => {
+    if (browser) {
+      void browser.close().then(() => { browser = undefined; browserPromise = undefined; });
+    }
+  }, BROWSER_IDLE_MS);
+}
 function getBrowser(): Promise<BrowserAdapter> {
+  resetBrowserIdleTimer();
   if (browser) return Promise.resolve(browser);
   if (!browserPromise) {
     browserPromise = createBrowser("chromium", true).then((b) => {
@@ -55,21 +72,27 @@ function getBrowser(): Promise<BrowserAdapter> {
   }
   return browserPromise;
 }
+let searchIndexer: Indexer | undefined;
+let searchProgress: IndexProgress = { filesScanned: 0, filesIndexed: 0, chunksEmbedded: 0, errors: 0 };
+let searchAbort: AbortController | undefined;
+let approvalsConfig: ApprovalsConfig = { ...DEFAULT_APPROVALS };
 export function activate(context: vscode.ExtensionContext) {
   ctxRef = context;
   log = vscode.window.createOutputChannel("Arc");
   context.subscriptions.push(log);
   modeRegistry = new ModeRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
-  void modeRegistry.load().catch((err) => {
-    log.appendLine(`[arc] Mode registry load failed: ${(err as Error)?.stack ?? err}`);
-  });
   skillRegistry = new SkillRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
-  skillRegistryReady = skillRegistry.load().catch((err) => {
-    log.appendLine(`[arc] Skill registry load failed: ${(err as Error)?.stack ?? err}`);
-  });
   ruleRegistry = new RuleRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
-  void ruleRegistry.load().catch((err) => {
-    log.appendLine(`[arc] Rule registry load failed: ${(err as Error)?.stack ?? err}`);
+  Promise.allSettled([
+    modeRegistry.load(),
+    skillRegistry.load().then(() => { skillRegistryReady = Promise.resolve(); }),
+    ruleRegistry.load(),
+  ]).then((results) => {
+    for (const r of results) {
+      if (r.status === "rejected") {
+        log.appendLine(`[arc] Registry load failed: ${(r.reason as Error)?.stack ?? r.reason}`);
+      }
+    }
   });
   try {
     registerViewsAndCommands(context);
@@ -84,7 +107,8 @@ export function activate(context: vscode.ExtensionContext) {
   });
 }
 function registerViewsAndCommands(context: vscode.ExtensionContext) {
-  const logo = pickLogo();
+  const prideMode: PrideMode = vscode.workspace.getConfiguration().get<PrideMode>("arc.appearance.prideLogo", "june") ?? "june";
+  const logo = pickLogo(prideMode);
   void vscode.commands.executeCommand("setContext", "arc.isPrideMonth", logo.kind === "pride");
   const sidebarProvider: vscode.WebviewViewProvider = {
     async resolveWebviewView(webviewView: vscode.WebviewView) {
@@ -185,6 +209,11 @@ async function initializeAsync(context: vscode.ExtensionContext) {
     }
   };
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
+    if (e.affectsConfiguration("arc.appearance.prideLogo")) {
+      const prideMode: PrideMode = vscode.workspace.getConfiguration().get<PrideMode>("arc.appearance.prideLogo", "june") ?? "june";
+      const logo = pickLogo(prideMode);
+      void vscode.commands.executeCommand("setContext", "arc.isPrideMonth", logo.kind === "pride");
+    }
     if (e.affectsConfiguration("arc")) persist();
   }));
   store = new CheckpointStore({ dir: context.globalStorageUri.fsPath });
@@ -198,7 +227,7 @@ async function initializeAsync(context: vscode.ExtensionContext) {
     }
   });
   setNotifier(makeVSCodeNotifier());
-  initDiscordRpcSpof(context);
+  initDiscordRpcSpoof(context);
   const savedState = context.globalState.get<{ messages: unknown[]; steps: unknown[]; mode: string; todoItems: unknown[] }>("arc.agentState");
   const currentChat = chatHistory.ensure(chatHistory.current());
   sidebarSession.id = currentChat.id;
@@ -210,11 +239,13 @@ async function initializeAsync(context: vscode.ExtensionContext) {
     }
   });
   persist();
-  void tryLoadIndex();
+  setTimeout(() => { void tryLoadIndex(); }, 2000);
   initResolve?.();
-  void hydrateMcp(mcp, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()).catch((err) => {
-    log.appendLine(`[arc] MCP hydration failed: ${(err as Error)?.stack ?? err}`);
-  });
+  setTimeout(() => {
+    void hydrateMcp(mcp, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()).catch((err) => {
+      log.appendLine(`[arc] MCP hydration failed: ${(err as Error)?.stack ?? err}`);
+    });
+  }, 3000);
 }
 async function openFullscreen(): Promise<vscode.Webview | undefined> {
   if (!ctxRef) return;
@@ -226,7 +257,9 @@ async function openFullscreen(): Promise<vscode.Webview | undefined> {
     retainContextWhenHidden: true,
     localResourceRoots: [vscode.Uri.file(ctxRef.extensionPath)],
   });
-  panel.iconPath = vscode.Uri.file(ctxRef.asAbsolutePath("assets/arc-logo-mono.svg"));
+  const prideMode: PrideMode = vscode.workspace.getConfiguration().get<PrideMode>("arc.appearance.prideLogo", "june") ?? "june";
+  const logoFile = pickLogo(prideMode).file;
+  panel.iconPath = vscode.Uri.file(ctxRef.asAbsolutePath(`assets/${logoFile}`));
   panel.webview.html = getWebviewHtml(panel.webview, ctxRef.extensionUri, "fullscreen");
   const mapKey = `fullscreen-${Date.now()}`;
   const chatId = chatHistory.ensure(chatHistory.current()).id;
@@ -236,6 +269,7 @@ async function openFullscreen(): Promise<vscode.Webview | undefined> {
   void ensureAgent(session);
   panel.onDidDispose(() => {
     fullscreenSessions.delete(mapKey);
+    chatSessions.delete(chatId);
   });
   return panel.webview;
 }
@@ -269,6 +303,7 @@ function newTask() {
       sessionId: sidebarSession.id,
       models: registry?.list() ?? [],
       currentModelId: registry?.getCurrent()?.id ?? "",
+      reasoningEffort: vscode.workspace.getConfiguration().get<string>("arc.reasoning.effort", "high") ?? "high",
     });
   }
 }
@@ -316,50 +351,56 @@ const buildSystemPrompt = async (mcpAggregator?: McpAggregator): Promise<string>
 Working dir: ${root} | OS: ${process.platform} | Date: ${new Date().toISOString().slice(0, 10)}
 
 ## Communication
-- Drop articles, filler, hedging, and pleasantries where meaning stays clear. Short synonyms and fragments OK for routine feedback.
-- Technical terms, code, API names, CLI commands, and error strings are always verbatim. Code blocks unchanged.
-- No emojis, no em dashes. Lists flat — no nested bullets. No tool-call narration.
-- EXCEPTIONS (revert to full sentences): security warnings, destructive operation confirmations, multi-step sequences where fragment order risks misread, compression creates ambiguity, user asks to clarify.
-- Default to action: assume the user wants implementation, not a plan. Stay with the work until handled — don't stop at analysis or half-finished fixes.
+- STRICTLY FORBIDDEN from starting messages with "Great", "Certainly", "Okay", "Sure". Drop articles, filler, hedging, and pleasantries. Fragments OK.
+- Technical terms, code, API names, CLI commands, and error strings are always verbatim.
+- No emojis, no em dashes. Lists flat — no nested bullets. No tool-call narration. No "I'll now…" or "Let me…" filler. Do not refer to tool names when speaking to the user.
+- EXCEPTIONS (revert to full sentences): security warnings, destructive op confirmations, multi-step sequences where fragment order risks misread, compression creates ambiguity, user asks to clarify.
+- Default to action: assume the user wants implementation, not analysis. Stay with the work until handled — don't stop at halfway.
 
 ## Rules
-- Respect existing conventions, libraries, and patterns. Do NOT refactor or modify unrelated code. Let the codebase teach you how to move.
-- Make precise, surgical changes that fully address the request. Do NOT describe code you haven't written — implement it completely.
-- Discover bugs caused by or tightly coupled to your changes — fix those too. Skip unrelated pre-existing issues.
-- Add abstraction only when it removes real complexity, reduces meaningful duplication, or clearly matches an established local pattern.
-- If a request is ambiguous, ask before acting. Reserve questions for decisions the codebase cannot answer; for everything else pick a sensible default and proceed.
-- Write diagnostic-as-code: no comments unless the WHY is non-obvious. The code should explain itself.
-- Never revert changes you did not make. If there are unrelated changes in files you touch, work with them. Ignore changes in unrelated files.
+- Respect existing conventions, libraries, and patterns. Let the codebase teach you how to move.
+- Make precise, surgical changes that fully address the request. Implement completely — don't describe undone code.
+- Discover bugs caused by your changes — fix those. Skip unrelated pre-existing issues.
+- Add abstraction only when it removes real complexity, reduces meaningful duplication, or matches a local pattern.
+- If a request is ambiguous, ask before acting. Reserve questions for decisions the codebase cannot answer; pick a sensible default for the rest.
+- Write diagnostic-as-code: no comments unless the WHY is non-obvious.
+- Never revert changes you did not make. Work with unrelated changes in files you touch.
 - Never use destructive commands (git reset --hard, git checkout --) unless explicitly asked.
 
 ## Tool efficiency
-- Prefer dedicated tools over shell.run when one fits: file.grep over rg/grep, file.glob over ls/find, file.read over cat/head/tail, web.fetch over curl.
-- When reading a large file, use offset/limit on file.read to target just the lines you need.
-- For file.edit, pass the SEARCH/REPLACE block format in \`search\` — it is unambiguous and survives whitespace drift. Format:\n\npath/to/file.ts\n<<<<<<< SEARCH\nexact lines to replace (include enough context to be unique)\n=======\nreplacement lines\n>>>>>>> REPLACE\n\nInclude enough surrounding lines for a unique match. Fall back to plain search+replace only for trivial one-line changes.
-- After a successful file.edit or file.write, do NOT re-read the file to verify — the tool would have errored if the change failed. LSP diagnostics run automatically.
-- Launch independent Read or Glob calls in parallel — one response, multiple tool calls.
-- Reflect on command output before proceeding to the next step.
+- Prefer dedicated tools over shell.run: file.grep over rg/grep, file.glob over ls/find, file.read over cat/head/tail, web.fetch over curl.
+- Use offset/limit on file.read to target just the lines you need.
+- SEARCH/REPLACE block format for file.edit:\n\npath/to/file.ts\n<<<<<<< SEARCH\nexact lines (include enough context for uniqueness)\n=======\nreplacement lines\n>>>>>>> REPLACE
+- After successful file.edit or file.write, do NOT re-read to verify — the tool errors on failure. Trust the result. LSP diagnostics run automatically.
+- Launch independent Read/Glob calls in parallel. Batch tool calls in one response.
+- Reflect on command output before proceeding.
 
 ## Shell
-- Use shell.run for short-lived commands, shell.backgroundRun for long-running processes (builds, servers, watchers).
-- Poll background processes with shell.check; send stdin with shell.write.
-- Chain commands with && instead of separate shell.run calls. Suppress pagers (git --no-pager, append | cat).
-- Commit or push only when the user asks. If on the default branch, branch first.
+- shell.run for short-lived commands, shell.backgroundRun for long-running processes (builds, servers, watchers).
+- Poll with shell.check; send stdin with shell.write.
+- Chain commands (&& on Unix, ; on PowerShell) instead of separate shell.run calls. Suppress pagers (git --no-pager, append | cat).
+- Commit or push only when explicitly asked. If on the default branch, branch first.
 
 ## Tools
 file.read, file.edit, file.write, file.grep, file.glob, shell.run, shell.backgroundRun, shell.check, shell.write, web.fetch, web.search, lsp.problems, lsp.problemsFor, todo.write, browser.*, mcp.call, checkpoint.revert, checkpoint.list, subagent.spawn, handoff, clarification.askUser, skill.read, skill.use, mode.switch, memory.add, memory.list, memory.edit, memory.delete, rule.list, rule.read, rule.create
 
+## Memory & Rules
+- Use memory.add to persist key facts, decisions, and patterns the user establishes. Retrieve with memory.list before starting work.
+- Use rule.read and rule.list to recall workspace conventions and constraints before making changes.
+- Rules are source code, not prose — write them as actionable constraints the agent must follow.
+
 ## Workflow
 1. Understand the task. Use file.grep and file.glob to locate relevant code. Read files with file.read (use offset/limit for large files).
-2. **Plan-first for complex work:** When the task spans multiple files, involves architectural decisions, or has ambiguous scope, pause and use \`clarification.askUser\` to ask: "Plan first? I can outline a todo list for your review before making changes." If the user approves, produce a full todo list via \`todo.write\` and wait for sign-off (the user will say "proceed" or similar) before executing. Update the plan dynamically as you discover new information — add, remove, or reorder items as needed. Mark the current item \`in_progress\`, and mark items \`done\` after verifying them.
-3. **For straightforward tasks:** proceed directly. Keep exactly one todo item in_progress at a time. After file.edit/write, fix any diagnostics in the same turn.
-4. Delegate grunt work to subagents — they are cheap. For independent parallel investigations, launch multiple subagents in one turn.
-5. If a task exceeds your capability, call handoff with a clear reason.
-6. Do not create markdown files for planning, notes, or tracking — use todo.write instead.
+2. Plan-first for complex work: spans multiple files, architectural decisions, ambiguous scope — pause and ask "Plan first?" via clarification.askUser. If approved, produce a todo list, wait for sign-off, then execute. Update the plan dynamically — add, remove, reorder items as you learn. Mark items done after verifying.
+3. For straightforward tasks: proceed directly. Keep exactly one todo item in_progress. Fix diagnostics in the same turn after edits.
+4. Delegate grunt work to subagents — they are cheap. For independent investigations, launch multiple in one turn.
+5. Self-check before finishing: if your last paragraph is a plan, analysis, or list of what remains, you are not done. Do the work now.
+6. Do not create markdown files for planning — use todo.write.
 
 ## Output
-- Report outcomes faithfully: if something fails, state what happened with the output. If something succeeds, state it plainly without hedging. If a step was skipped, say so.
-- Reference code as \`file_path:line_number\` — it's clickable in the UI.`;
+- Lead with the outcome: your first sentence after tool work should answer what happened.
+- Report outcomes directly: success stated plainly, failure stated with what went wrong. No hedging, no praise, no summary if nothing changed.
+- Reference code as \`file_path:line_number\` — clickable in the UI.`;
   let mcpBlock = "";
   if (mcpAggregator) {
     const tools = mcpAggregator.listTools();
@@ -414,12 +455,12 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
           const text = new TextDecoder().decode(raw);
           const lines = text.split("\n");
           for (let li = 0; li < lines.length && results.length < MAX_MATCHES; li++) {
-            const match = regex.exec(lines[li]);
-            if (match) {
+            const match = lines[li].match(regex);
+            if (match && match.length) {
               results.push({
                 file: vscode.workspace.asRelativePath(uri),
                 line: li + 1,
-                column: match.index + 1,
+                column: (match.index ?? 0) + 1,
                 text: lines[li].trimEnd(),
               });
             }
@@ -436,7 +477,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       const idx = searchIndexer;
       if (!idx) return [];
       const hits = await idx.search(query, k ?? 10);
-      return hits.map((h) => ({ file: h.file, start: h.start, end: h.end, score: h.score, snippet: h.text }));
+      return hits.map((h: { file: string; start: number; end: number; score: number; text: string }) => ({ file: h.file, start: h.start, end: h.end, score: h.score, snippet: h.text }));
     },
   };
   const sinkId = session.id;
@@ -480,22 +521,29 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
         pushContextStats(w, session.id);
       }
       broadcastChatListAll();
-      persist?.();
-      void persistAsync?.();
+      debouncedPersist();
     },
-    handoff: (fromModel, toModel, reason) => broadcast(session, { type: "session/handoff", fromModel, toModel, reason }),
-    todo: (items) => broadcast(session, { type: "todo/update", items }),
+    handoff: (fromModel, toModel, reason) => {
+      notify("handoff", `${fromModel} → ${toModel}: ${reason}`);
+      broadcast(session, { type: "session/handoff", fromModel, toModel, reason });
+    },
+    todo: (items) => broadcast(session, { type: "todo/update", items: items as { id: string; text: string; state: "pending" | "in_progress" | "done" | "skipped" }[] }),
     clarification: (id, question, options) => broadcast(session, { type: "session/clarification", id, question, options }),
     done: () => {
+      notify("done", "Task complete");
       if (chatHistory) chatHistory.setMessages(session.id, session.agent.getMessages());
+      clearTimeout(persistTimer);
       void persistAsync?.();
       broadcast(session, { type: "session/done" });
       reportAgentIdle();
     },
     guidance: (text) => broadcast(session, { type: "session/guidance", text }),
-    error: (message) => broadcast(session, { type: "error", message, ...(classifyError(message) ? { code: classifyError(message) } : {}) }),
+    error: (message) => {
+      const code = classifyError(message);
+      notify("error", message);
+      broadcast(session, { type: "error", message, ...(code ? { code } : {}) });
+    },
     compaction: (before, after, reason) => broadcast(session, { type: "session/compaction", before, after, reason }),
-    timeline: (events) => broadcast(session, { type: "session/timeline", events }),
   };
   session.agent = new Agent(registry, store, sink, {
     systemPrompt,
@@ -522,11 +570,12 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     mode: "code",
     modeRegistry,
     approvalsConfig,
+    reasoningEffort: (vscode.workspace.getConfiguration().get<string>("arc.reasoning.effort", "high") ?? "high") as "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
     isMain: true,
     proxyUrl: resolveProxy("url"),
     proxyProvider: resolveProxy("providerUrl"),
     toolContext,
-    approveShell: async (description) => {
+    approveShell: async (description, meta) => {
       const id = String(++approvalId);
       const promise = new Promise<boolean>((resolve) => {
         pendingApprovals.set(id, { resolve, session });
@@ -537,8 +586,10 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
           }
         }, 120_000);
       });
-      if (session.view) session.view.webview.postMessage({ type: "approval/request", id, description, kind: "shell" });
-      if (session.panel) session.panel.webview.postMessage({ type: "approval/request", id, description, kind: "shell" });
+      const msg: any = { type: "approval/request", id, description, kind: "shell" };
+      if (meta?.command) msg.command = meta.command;
+      if (session.view) session.view.webview.postMessage(msg);
+      if (session.panel) session.panel.webview.postMessage(msg);
       return promise;
     },
     askUser: async (question, options) => {
@@ -792,6 +843,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             currentModelId: registry?.getCurrent()?.id ?? "",
             modes: modeRegistry ? modeRegistry.list().map((m) => ({ slug: m.slug, description: m.description })) : [],
             currentMode: session.agent?.getCurrentMode?.() ?? "code",
+            reasoningEffort: vscode.workspace.getConfiguration().get<string>("arc.reasoning.effort", "high") ?? "high",
           });
           if (registry) webview.postMessage({ type: "model/list", models: registry.list(), currentModelId: registry.getCurrent()?.id ?? "" });
           if (registry) webview.postMessage({ type: "provider/list", providers: registry.listProviders() });
@@ -933,12 +985,13 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             const agent = await awaitAgent(session);
             if (agent) {
               const messages = agent.getMessages();
-              const content = msg.content ?? msg.messageId;
-              let idx = messages.findIndex((m) => m.role === "user" && m.content.trim() === content.trim());
-              if (idx < 0) idx = messages.findIndex((m) => m.role === "user" && m.content.includes(content.slice(0, 30)));
+              const editId = msg.messageId;
+              const editContent = msg.content ?? msg.messageId;
+              let idx = messages.findIndex((m) => m.id === editId);
+              if (idx < 0) idx = messages.findIndex((m) => m.role === "user" && m.content === editContent);
               if (idx >= 0) {
                 const editTs = messages[idx].ts;
-                messages[idx] = { ...messages[idx], content: msg.newContent, meta: { ...messages[idx].meta, editedOriginal: messages[idx].content } };
+                messages[idx] = { ...messages[idx], content: msg.newContent, meta: { ...messages[idx].meta, editedOriginal: messages[idx].content } as ChatMessage["meta"] };
                 messages.length = idx + 1;
                 const keptSteps = agent.getSteps().filter((s) => (s.ts ?? 0) <= (editTs ?? 0));
                 await agent.restore({ messages, steps: keptSteps, mode: agent.getCurrentMode(), todoItems: agent.getTodo() });
@@ -978,6 +1031,12 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           const agent = await ensureAgent(session);
           if (agent && modeRegistry) {
             agent.switchMode(msg.mode);
+            if (msg.mode === "audit") {
+              const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+              generateDependencyGraph(root).then((nodes) => {
+                agent.addContextMessage(formatDepGraph(nodes, root));
+              }).catch(() => {});
+            }
             const modeDef = modeRegistry.get(msg.mode);
             if (modeDef) {
               broadcast(session, { type: "session/message", message: { id: `mode-${Date.now()}`, role: "system", content: `Switched to **${msg.mode}** mode — ${modeDef.description}`, ts: Date.now() }, sessionId: session.id });
@@ -987,7 +1046,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
         }
         case "provider/add": {
           if (registry) {
-            registry.upsertProvider({ ...msg.provider, enabled: msg.provider.enabled ?? true });
+            registry.upsertProvider({ ...msg.provider, apiKey: msg.apiKey, enabled: msg.provider.enabled ?? true });
             if (msg.apiKey) await ctxRef.secrets.store(`${SECRET_PREFIX}${msg.provider.id}`, msg.apiKey);
             persist?.();
             webview.postMessage({ type: "provider/list", providers: registry.listProviders() });
@@ -1248,7 +1307,11 @@ Prompts: ${server.prompts?.length ?? 0}`;
           const p = pendingApprovals.get(msg.id);
           if (p) {
             pendingApprovals.delete(msg.id);
-            if (msg.rememberPrefix) p.session.agent?.addCommandPrefix(msg.rememberPrefix);
+            if (msg.rememberPrefix) {
+              p.session.agent?.addCommandPrefix(msg.rememberPrefix);
+              const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+              saveApprovalPrefix(root, msg.rememberPrefix);
+            }
             if (msg.rememberCommand) p.session.agent?.addSessionCommand(msg.rememberCommand);
             p.resolve(msg.allowed);
           }
@@ -1301,6 +1364,7 @@ Prompts: ${server.prompts?.length ?? 0}`;
                 currentModelId: registry?.getCurrent()?.id ?? "",
                 modes: modeRegistry ? modeRegistry.list().map((m: any) => ({ slug: m.slug, description: m.description })) : [],
                 currentMode: session.agent?.getCurrentMode?.() ?? "code",
+                reasoningEffort: vscode.workspace.getConfiguration().get<string>("arc.reasoning.effort", "high") ?? "high",
               });
               for (const m of (msgs ?? []) as ChatMessage[]) {
                 webview.postMessage({ type: "session/message", message: m, sessionId: session.id });
@@ -1327,7 +1391,12 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
   const monoLogoText = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "assets", "arc-logo-mono-text.svg"));
   const prideLogoText = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "assets", "arc-logo-pride-text.svg"));
   const extVersion = ctxRef?.extension?.packageJSON?.version ?? "0.0.0";
-  const isPride = new Date().getUTCMonth() === 5;
+  const prideMode: PrideMode = vscode.workspace.getConfiguration().get<PrideMode>("arc.appearance.prideLogo", "june") ?? "june";
+  let isPride: boolean;
+  if (prideMode === "never") isPride = false;
+  else if (prideMode === "always") isPride = true;
+  else isPride = new Date().getUTCMonth() === 5;
+  const toolTree = vscode.workspace.getConfiguration().get<string>("arc.appearance.toolTree", "auto") ?? "auto";
   const favicon = isPride ? prideLogo : monoLogo;
   const nonce = String(Math.random()).slice(2);
   return `<!doctype html>
@@ -1339,7 +1408,7 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
   <link rel="stylesheet" href="${styleUri}" />
 </head>
 <body>
-  <div id="root" data-mode="${mode}" data-mono="${monoLogo}" data-pride="${prideLogo}" data-mono-text="${monoLogoText}" data-pride-text="${prideLogoText}" data-pride-active="${isPride}" data-version="${extVersion}"></div>
+  <div id="root" data-mode="${mode}" data-mono="${monoLogo}" data-pride="${prideLogo}" data-mono-text="${monoLogoText}" data-pride-text="${prideLogoText}" data-pride-active="${isPride}" data-tool-tree="${toolTree}" data-version="${extVersion}"></div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

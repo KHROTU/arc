@@ -34,7 +34,7 @@ export class SubagentRunner {
   async run(
     spec: SubagentSpec,
     parent: ModelDescriptor,
-    ctx: AgentOptions["toolContext"] & { root: string; shell?: { policy: "always" | "allowlist" | "off"; allowlist: string[] }; requestApproval?: (description: string) => Promise<boolean> },
+    ctx: AgentOptions["toolContext"] & { root: string; shell?: { policy: "always" | "allowlist" | "off"; allowlist: string[] }; requestApproval?: (description: string, meta?: import("../approvals/index.js").ApproveShellMeta) => Promise<boolean> },
     askParent?: (question: string, options: string[]) => Promise<string>,
     onStep?: (steps: ProcessStep[]) => void,
     onApprovalRequest?: (description: string) => void,
@@ -74,10 +74,12 @@ export class SubagentRunner {
     const needsApproval = rules.requireApproval ?? false;
     const toolContext = {
       ...ctx,
-      requestApproval: async (description: string): Promise<boolean> => {
+      requestApproval: async (description: string, meta?: import("../approvals/index.js").ApproveShellMeta): Promise<boolean> => {
         onApprovalRequest?.(description);
         if (!askParent) return false;
-        const baseCmd = description.split("\n\n")[1]?.trim().split(/\s+/)[0] ?? "";
+        const baseCmd = meta?.command?.trim().split(/\s+/)[0]
+          ?? description.split("\n\n")[1]?.trim().split(/\s+/)[0]
+          ?? "";
         if (blockedCommands.has(baseCmd)) {
           return false;
         }
@@ -117,7 +119,7 @@ export class SubagentRunner {
   async runBatch(
     specs: SubagentSpec[],
     parent: ModelDescriptor,
-    ctx: AgentOptions["toolContext"] & { root: string; shell?: { policy: "always" | "allowlist" | "off"; allowlist: string[] }; requestApproval?: (description: string) => Promise<boolean> },
+    ctx: AgentOptions["toolContext"] & { root: string; shell?: { policy: "always" | "allowlist" | "off"; allowlist: string[] }; requestApproval?: (description: string, meta?: import("../approvals/index.js").ApproveShellMeta) => Promise<boolean> },
     askParent?: (question: string, options: string[]) => Promise<string>,
     onStep?: (steps: ProcessStep[]) => void,
     onApprovalRequest?: (description: string) => void,

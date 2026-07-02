@@ -1,6 +1,15 @@
 import { AsyncEventQueue, readableToAsyncIterable } from "../util/stream.js";
 import { makeProxyDispatcher } from "../util/proxy.js";
 import { fromApiToolName, toApiToolName, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
+const ANTHROPIC_EFFORT: Record<string, string | undefined> = {
+  none: undefined,
+  minimal: "low",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+  max: "max",
+};
 export const anthropicTransport: Transport = {
   kind: "anthropic",
   async stream(req: StreamRequest): Promise<StreamHandle> {
@@ -49,18 +58,37 @@ export const anthropicTransport: Transport = {
         input_schema: t.parameters,
       }));
     }
-    const res = await fetch(`${base}/v1/messages`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": req.provider.apiKey ?? "",
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true",
-      },
-      body: JSON.stringify(body),
-      signal: req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000),
-      ...(req.proxyUrl ? { dispatcher: makeProxyDispatcher(req.proxyUrl) } : {}),
-    });
+    if (req.reasoningEffort) {
+      const anthropicEff = ANTHROPIC_EFFORT[req.reasoningEffort];
+      if (anthropicEff) {
+        body.output_config = { effort: anthropicEff };
+      } else {
+        body.thinking = { type: "disabled" };
+      }
+    }
+    const RATE_LIMIT_RETRIES = 3;
+    const DELAYS = [1000, 3000, 7000];
+    let res!: Response;
+    for (let rl = 0; rl <= RATE_LIMIT_RETRIES; rl++) {
+      res = await fetch(`${base}/v1/messages`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": req.provider.apiKey ?? "",
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify(body),
+        signal: req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000),
+        ...(req.proxyUrl ? { dispatcher: makeProxyDispatcher(req.proxyUrl) } : {}),
+      });
+      if (res.ok && res.body) break;
+      if (res.status === 429 && rl < RATE_LIMIT_RETRIES) {
+        await new Promise((r) => setTimeout(r, DELAYS[rl] ?? 5000));
+        continue;
+      }
+      break;
+    }
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => "");
       throw new Error(`Anthropic returned ${res.status}: ${text.slice(0, 200)}`);
