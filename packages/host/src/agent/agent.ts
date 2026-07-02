@@ -8,6 +8,7 @@ import { transportFor } from "../providers/transport.js";
 import { CheckpointStore } from "../checkpoint/store.js";
 import { compactAsync, decideCompaction, CompactionTracker } from "../compaction/compaction.js";
 import { defaultPolicy, nextModelForHandoff, type HandoffRecord } from "../routing/handoff.js";
+import { generateDependencyGraph, formatDepGraph } from "../util/dep-graph.js";
 import { tools as builtinTools, type ToolContext, killActiveProcesses, checkWriteGlob } from "./tools.js";
 import { buildToolSpecs, isMcpToolSpec, parseMcpToolSpec } from "./tool-specs.js";
 import { SubagentRunner } from "./subagent.js";
@@ -870,6 +871,11 @@ export class Agent {
       const output = `Switched from '${oldMode}' to '${slug}' mode.\n\n## ${slug} mode\n\n${targetMode.roleDefinition}`;
       this.appendToolOutput(tc.id, `Switched to ${slug} mode.`, true);
       this.messages.push({ id: randomUUID(), role: "tool", content: output, toolCallId: tc.id, ts: Date.now() });
+      if (slug === "audit") {
+        generateDependencyGraph(this.opts.workspaceRoot).then((nodes) => {
+          this.addContextMessage(formatDepGraph(nodes, this.opts.workspaceRoot));
+        }).catch(() => {});
+      }
       return;
     }
     if (tc.name === "session.exportTrace") {

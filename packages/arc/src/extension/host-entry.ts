@@ -9,6 +9,7 @@ import {
   type PrideMode,
   ModeRegistry, DEFAULT_APPROVALS, loadApprovalsMemory, saveApprovalPrefix,
   SkillRegistry,
+  generateDependencyGraph, formatDepGraph,
   RuleRegistry, loadMemory, deleteMemory,
   type ChatSnapshot, type ChatMessage, type BrowserAdapter,
   type HostMsg, type WebviewMsg, type ModelDescriptor, type ProviderConfig, type ProcessStep, type ApprovalsConfig,
@@ -1030,6 +1031,12 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           const agent = await ensureAgent(session);
           if (agent && modeRegistry) {
             agent.switchMode(msg.mode);
+            if (msg.mode === "audit") {
+              const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+              generateDependencyGraph(root).then((nodes) => {
+                agent.addContextMessage(formatDepGraph(nodes, root));
+              }).catch(() => {});
+            }
             const modeDef = modeRegistry.get(msg.mode);
             if (modeDef) {
               broadcast(session, { type: "session/message", message: { id: `mode-${Date.now()}`, role: "system", content: `Switched to **${msg.mode}** mode — ${modeDef.description}`, ts: Date.now() }, sessionId: session.id });

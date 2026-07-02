@@ -44,7 +44,7 @@ export const DEFAULT_MODES: Mode[] = [
       "git.diffStaged", "git.diffUnstaged", "git.changedFiles", "git.branchDiff", "git.commitMessage",
       "session.exportTrace",
     ],
-    description: "Plan and design before writing code",
+    description: "Plan, then code",
     whenToUse: "Use Plan mode when you need to understand a codebase, design an architecture, or plan a multi-step implementation before writing code. Skip Plan mode for simple bug fixes, trivial one-liner changes, or when the user gives very specific, detailed instructions.",
   },
   {
@@ -88,7 +88,7 @@ export const DEFAULT_MODES: Mode[] = [
       "git.diffStaged", "git.diffUnstaged", "git.changedFiles", "git.branchDiff", "git.commitMessage",
       "session.exportTrace",
     ],
-    description: "Write, edit, run commands; full tool access",
+    description: "Full tool access",
     whenToUse: "Use Code mode for implementing features, fixing bugs, refactoring, and any task that requires modifying files or running commands. This is the default mode.",
   },
   {
@@ -135,56 +135,66 @@ export const DEFAULT_MODES: Mode[] = [
       "git.diffStaged", "git.diffUnstaged", "git.changedFiles", "git.branchDiff", "git.commitMessage",
       "session.exportTrace",
     ],
-    description: "Systematically diagnose and fix bugs",
+    description: "Diagnose and fix bugs",
     whenToUse: "Use Debug mode to investigate bugs, analyze test failures, inspect runtime behavior, trace performance issues, and systematically fix problems. Switch from Code mode when you encounter an error that needs systematic diagnosis.",
   },
   {
-    slug: "review",
+    slug: "audit",
     roleDefinition:
-      "You are in **Review mode** — an expert code reviewer specializing in systematic analysis for correctness, security, performance, maintainability, and architecture.\n\n" +
-      "## Output format\n" +
-      "Produce a structured review with findings. Each finding must include:\n" +
-      "- **Severity**: critical | high | medium | low | info\n" +
-      "- **Confidence**: high | medium | low\n" +
-      "- **File**: workspace-relative path\n" +
-      "- **Lines**: line range or single line\n" +
-      "- **Category**: correctness | security | performance | maintainability | test-coverage | architecture-drift\n" +
-      "- **Finding**: clear, actionable description of the issue\n" +
-      "- **Rationale**: why this matters, with code references\n" +
-      "- **Suggestion**: concrete fix or improvement, optionally with a SEARCH/REPLACE patch\n\n" +
-      "## Workflow\n" +
-      "1. **Scope** — Determine the review scope from the user's request or default to current changed files (use `git.diffStaged`, `git.diffUnstaged`, `git.changedFiles`).\n" +
-      "2. **Read** — Read all files in scope using `file.read`. Understand the context fully.\n" +
-      "3. **Search** — Use `file.grep`, `file.glob`, and `file.semanticSearch` to find related code, callers, and patterns.\n" +
-      "4. **Analyze** — Check diagnostics with `lsp.problems` and `lsp.problemsFor`. Apply review category presets as directed.\n" +
-      "5. **Report** — Write findings to a `.arc/review-{sessionId}.md` file using `file.write`. Present a summary with severity counts and top findings inline.\n" +
-      "6. **Suggest** — For each high/critical finding, provide a concrete fix in SEARCH/REPLACE format. Let the user choose which to apply.\n\n" +
-      "## Review presets\n" +
-      "The user may scope the review to specific categories. If unspecified, review all applicable categories:\n" +
-      "- **correctness**: logic errors, edge cases, null/undefined handling, type safety, race conditions\n" +
-      "- **security**: injection risks, auth/authz bypass, secrets exposure, input validation, supply chain\n" +
-      "- **performance**: N+1 queries, unnecessary allocations, blocking I/O, render loops, bundle size\n" +
-      "- **maintainability**: duplicated code, unclear naming, missing abstractions, coupling, comments vs code drift\n" +
-      "- **test-coverage**: untested paths, missing edge case tests, brittle assertions, test isolation\n" +
-      "- **architecture-drift**: pattern violations, layer bleed, circular dependencies, convention breaks\n\n" +
-      "## Mode constraints\n" +
-      "You CAN read, search, analyze, check diagnostics, and write review artifacts. You CANNOT edit source files, run shell commands, or use the browser. If a finding requires implementation, note it and suggest switching to Code mode.",
+      "You are in **Audit mode** — a systematic codebase auditor. Your job: investigate, identify root causes with evidence, and produce a verified remediation plan before any code changes.\n\n" +
+      "A file dependency graph is injected into context below. Use it to trace imports, call chains, and affected modules.\n\n" +
+      "## Process (5 phases)\n\n" +
+      "### Phase 1 — Map the territory\n" +
+      "- Study the dep graph first. Check `lsp.problems`, `lsp.problemsFor`, `git.diffStaged`, `git.diffUnstaged`, `git.changedFiles`.\n" +
+      "- Trace patterns with `file.grep` and `file.glob`. Read key files. Resolve every codebase fact before asking the user.\n\n" +
+      "### Phase 2 — Diagnose\n" +
+      "- Generate **5-7 hypotheses** for the root cause. For each, state what you'd expect to observe if true.\n" +
+      "- **Falsify**: use `file.grep`, read-only `shell.run`, and `browser.evaluate` to disprove each hypothesis.\n" +
+      "- Distill to **1-2 most likely** causes. If evidence is ambiguous, state uncertainty and rank by confidence.\n\n" +
+      "### Phase 3 — Plan remediation\n" +
+      "Present via `todo.write`:\n" +
+      "1. **Root cause** — definitive identification with `file:line` evidence.\n" +
+      "2. **Impact** — affected files and modules, cross-referenced against the dep graph.\n" +
+      "3. **Fix steps** — each a `todo.write` item, ordered leaf-first (most depended-on last).\n" +
+      "4. **Verification** — exact commands or tests to confirm the fix.\n" +
+      "5. **Risks** — edge cases, what could regress, rollback strategy.\n\n" +
+      "### Phase 4 — Get approval\n" +
+      "- Call `clarification.askUser` with [\"Proceed with fixes\", \"Revise plan\"].\n" +
+      "- Do NOT apply any fixes without explicit approval.\n\n" +
+      "### Phase 5 — Execute\n" +
+      "- Apply fixes in dependency order. Run `lsp.problemsFor` after each edit. Update todos as you go.\n\n" +
+      "## Scope\n" +
+      "- **Audit**: bugs, regressions, data flow errors, race conditions, security issues, build/test failures, performance regressions, architectural drift.\n" +
+      "- **Skip**: code style, formatting, naming preferences, trivial refactors, lint-only issues. Stay focused on correctness and impact.\n\n" +
+      "## Anti-patterns\n" +
+      "- Do NOT apply fixes before Phase 4 approval.\n" +
+      "- Do NOT refactor unrelated code while auditing.\n" +
+      "- Do NOT skip reproduction — confirm you can trigger the issue.\n" +
+      "- The dep graph is a navigation aid, not runtime truth — verify with actual code.",
     allowedTools: [
-      "file.read", "file.write", "file.grep", "file.glob", "file.semanticSearch",
-      "lsp.problems", "lsp.problemsFor",
+      "file.read", "file.edit", "file.write", "file.grep", "file.glob",
+      "shell.run", "shell.backgroundRun", "shell.check", "shell.write",
+      "shell.customRun", "shell.editCustomRun", "shell.runCustomRun",
+      "test.run",
       "web.fetch", "web.search",
+      "lsp.problems", "lsp.problemsFor",
       "todo.write",
-      "clarification.askUser",
+      "browser.navigate", "browser.click", "browser.type", "browser.screenshot",
+      "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor",
+      "browser.console", "browser.network", "browser.domSnapshot",
+      "mcp.call", "mcp.create", "mcp.remove", "mcp.toggle",
+      "mcp.resources/list", "mcp.resources/read", "mcp.prompts/list", "mcp.prompts/get",
+      "subagent.spawn", "handoff", "clarification.askUser",
+      "checkpoint.revert", "checkpoint.list", "checkpoint.compare",
+      "file.semanticSearch",
       "mode.switch",
       "memory.list", "memory.edit", "memory.delete", "memory.add",
       "rule.list", "rule.read", "rule.create",
       "skill.read", "skill.use",
-      "checkpoint.revert", "checkpoint.list", "checkpoint.compare",
-      "git.diffStaged", "git.diffUnstaged", "git.changedFiles", "git.branchDiff",
+      "git.diffStaged", "git.diffUnstaged", "git.changedFiles", "git.branchDiff", "git.commitMessage",
       "session.exportTrace",
     ],
-    writeGlob: "\\.arc\\/review-.*\\.md$",
-    description: "Review code for correctness, security, and maintainability",
-    whenToUse: "Use Review mode to audit code for bugs, security vulnerabilities, performance issues, or architecture problems. Can review current file, selection, changed files, or the whole workspace. Produces structured findings with severity and suggested fixes.",
+    description: "Audit and debug",
+    whenToUse: "Use Audit mode to systematically investigate bugs, audit codebase health, trace issues across the full dependency graph, or perform root cause analysis. Produces a structured remediation plan before applying fixes. Ideal for complex cross-module issues, architectural drift, and codebase-wide health checks.",
   },
 ];
