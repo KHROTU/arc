@@ -248,7 +248,7 @@ export type HostMsg =
   | { type: "chat/searchResults"; results: { id: string; title: string; matches: string[] }[] }
   | { type: "ui/showSettings" }
   | { type: "ui/showSearch" }
-  | { type: "approval/request"; id: string; description: string; kind: "shell" | "destructive" }
+  | { type: "approval/request"; id: string; description: string; kind: "shell" | "destructive"; command?: string }
   | { type: "autoApproveState"; active: boolean }
   | { type: "search/indexProgress"; filesScanned: number; filesIndexed: number; chunksEmbedded: number; errors: number }
   | { type: "mcp/testResult"; server?: string; output: string }

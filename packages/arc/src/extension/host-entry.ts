@@ -7,7 +7,7 @@ import {
   makeVSCodeNotifier, setNotifier, notify, loadWorkspacePrompts, loadGlobalPrompts, mergePrecedence, render, injectRelevantRules,
   pickLogo, ChatHistory, createBrowser, getWorkspaceArcDir,
   type PrideMode,
-  ModeRegistry, DEFAULT_APPROVALS, loadApprovalsMemory,
+  ModeRegistry, DEFAULT_APPROVALS, loadApprovalsMemory, saveApprovalPrefix,
   SkillRegistry,
   RuleRegistry, loadMemory, deleteMemory,
   type ChatSnapshot, type ChatMessage, type BrowserAdapter,
@@ -574,7 +574,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     proxyUrl: resolveProxy("url"),
     proxyProvider: resolveProxy("providerUrl"),
     toolContext,
-    approveShell: async (description) => {
+    approveShell: async (description, meta) => {
       const id = String(++approvalId);
       const promise = new Promise<boolean>((resolve) => {
         pendingApprovals.set(id, { resolve, session });
@@ -585,8 +585,10 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
           }
         }, 120_000);
       });
-      if (session.view) session.view.webview.postMessage({ type: "approval/request", id, description, kind: "shell" });
-      if (session.panel) session.panel.webview.postMessage({ type: "approval/request", id, description, kind: "shell" });
+      const msg: any = { type: "approval/request", id, description, kind: "shell" };
+      if (meta?.command) msg.command = meta.command;
+      if (session.view) session.view.webview.postMessage(msg);
+      if (session.panel) session.panel.webview.postMessage(msg);
       return promise;
     },
     askUser: async (question, options) => {
@@ -1298,7 +1300,11 @@ Prompts: ${server.prompts?.length ?? 0}`;
           const p = pendingApprovals.get(msg.id);
           if (p) {
             pendingApprovals.delete(msg.id);
-            if (msg.rememberPrefix) p.session.agent?.addCommandPrefix(msg.rememberPrefix);
+            if (msg.rememberPrefix) {
+              p.session.agent?.addCommandPrefix(msg.rememberPrefix);
+              const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+              saveApprovalPrefix(root, msg.rememberPrefix);
+            }
             if (msg.rememberCommand) p.session.agent?.addSessionCommand(msg.rememberCommand);
             p.resolve(msg.allowed);
           }

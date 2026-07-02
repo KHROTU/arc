@@ -13,7 +13,7 @@ import { buildToolSpecs, isMcpToolSpec, parseMcpToolSpec } from "./tool-specs.js
 import { SubagentRunner } from "./subagent.js";
 import { runHooks } from "../hooks/hooks.js";
 import type { ModeRegistry } from "../modes/index.js";
-import { type ApprovalsConfig, type SessionApprovals, DEFAULT_APPROVALS, initSession, resolveApproval } from "../approvals/index.js";
+import { type ApprovalsConfig, type SessionApprovals, type ApproveShellMeta, DEFAULT_APPROVALS, initSession, resolveApproval } from "../approvals/index.js";
 import type { ChatMessage, ModelDescriptor, ToolCall, TurnUsage, ExecutionEvent } from "../protocol/protocol.js";
 import type { ProcessStep, TodoItem } from "../protocol/process.js";
 const PSEUDO_TOOLS = new Set(["handoff", "subagent.spawn", "subagent.askParent", "clarification.askUser", "checkpoint.revert", "checkpoint.list", "checkpoint.compare", "mode.switch", "skill.use", "memory.add", "session.exportTrace"]);
@@ -44,7 +44,7 @@ export interface AgentOptions {
   approvalsConfig?: ApprovalsConfig;
   reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   askUser?: (question: string, options: string[]) => Promise<string>;
-  approveShell?: (description: string) => Promise<boolean>;
+  approveShell?: (description: string, meta?: ApproveShellMeta) => Promise<boolean>;
   toolContext: Omit<ToolContext, "shell" | "requestApproval" | "root" | "workspacePath" | "approvalsConfig" | "sessionApprovals" | "addSessionCommand" | "onChunk" | "skillRegistry">;
   isMain: boolean;
   ownerTier?: import("../protocol/protocol.js").ModelTier;
@@ -1016,7 +1016,8 @@ export class Agent {
           this.messages.push({ id: randomUUID(), role: "tool", content: `Approval required but no handler available.`, toolCallId: tc.id, ts: Date.now() });
           return;
         }
-        const approved = await approvalHandler(`Run ${tc.name}?\n\n${prettyToolSummary(tc.name, tc.args)}`);
+        const rawCommand = extra?.command || String(tc.args.command ?? "");
+        const approved = await approvalHandler(`Run ${tc.name}?\n\n${prettyToolSummary(tc.name, tc.args)}`, rawCommand ? { command: rawCommand } : undefined);
         this.pushTimeline({ type: "approval", turnId, toolName: tc.name, category: approvalCategory, allowed: approved, ts: Date.now() });
         if (!approved) {
           this.appendToolOutput(tc.id, `Tool '${tc.name}' denied by user.`, false);

@@ -93,14 +93,14 @@ async function runSingleCommand(
     });
   });
 }
-import type { ApprovalsConfig, SessionApprovals } from "../approvals/index.js";
+import type { ApprovalsConfig, SessionApprovals, ApproveShellMeta } from "../approvals/index.js";
 import type { SkillRegistry } from "../skills/index.js";
 import type { RuleRegistry } from "../rules/index.js";
 export interface ToolContext {
   root: string;
   approvalsConfig: ApprovalsConfig;
   sessionApprovals: SessionApprovals;
-  requestApproval?: (description: string) => Promise<boolean>;
+  requestApproval?: (description: string, meta?: ApproveShellMeta) => Promise<boolean>;
   addSessionCommand?: (command: string) => void;
   skillRegistry?: SkillRegistry;
   ruleRegistry?: RuleRegistry;

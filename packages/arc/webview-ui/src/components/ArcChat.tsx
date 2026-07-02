@@ -79,7 +79,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [showSettings, setShowSettings] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
-  const [approval, setApproval] = useState<{ id: string; description: string; kind: string } | null>(null);
+  const [approval, setApproval] = useState<{ id: string; description: string; kind: string; command?: string } | null>(null);
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
   const [prefillText, setPrefillText] = useState<string | null>(null);
   const [autoApproveActive, setAutoApproveActive] = useState(false);
@@ -189,7 +189,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         case "ui/showSearch": setShowSearch(true); break;
         case "autoApproveState": setAutoApproveActive(e.active); break;
         case "approval/request":
-          setApproval({ id: e.id, description: e.description, kind: e.kind });
+          setApproval({ id: e.id, description: e.description, kind: e.kind, command: e.command });
           break;
         case "error":
           setError({ message: e.message, code: e.code });
@@ -266,11 +266,12 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     setApproval(null);
   };
   const getApprovalCommand = (desc: string): string | undefined => {
+    if (approval?.command) return approval.command;
     const lines = desc.split("\n\n");
     return lines.length > 1 ? lines[1].trim() : undefined;
   };
   const getApprovalPrefix = (desc: string): string | undefined => {
-    const cmd = getApprovalCommand(desc);
+    const cmd = approval?.command ?? getApprovalCommand(desc);
     if (!cmd) return undefined;
     return cmd.trim().split(/\s+/)[0] || undefined;
   };
