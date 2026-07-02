@@ -1,8 +1,8 @@
 {
   "name": "arc-code",
   "displayName": "Arc",
-  "description": "Agentic coding extension with tiered model routing, subagents, handoff, and per-file change snapshots.",
-  "version": "0.4.10",
+  "description": "0.23 MB agentic coding assistant. 150+ providers with tiered model routing, failover, and multi-model subagents.",
+  "version": "0.4.11",
   "publisher": "khrotu",
   "license": "Apache-2.0",
   "repository": {
@@ -14,9 +14,46 @@
     "node": ">=18.18.0"
   },
   "main": "dist/extension.js",
-  "categories": ["Programming Languages", "Other"],
-  "keywords": ["ai", "agent", "coding", "mcp", "playwright"],
+  "extensionKind": [
+    "ui",
+    "workspace"
+  ],
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages",
+    "Education",
+    "Snippets",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "ai",
+    "agent",
+    "coding",
+    "autonomous",
+    "pair programming",
+    "code assistant",
+    "ai agent",
+    "ai coding agent",
+    "copilot",
+    "mcp",
+    "playwright",
+    "claude",
+    "openai",
+    "anthropic",
+    "gpt",
+    "model router",
+    "multi-model",
+    "subagent",
+    "handoff",
+    "arc",
+    "open source"
+  ],
   "icon": "assets/arc-logo-mono.png",
+  "galleryBanner": {
+    "color": "#0d1117",
+    "theme": "dark"
+  },
   "activationEvents": [
     "onStartupFinished",
     "onView:arc-sidebar",
@@ -73,38 +110,131 @@
       ]
     },
     "commands": [
-      { "command": "arc.openSidebar", "title": "Open Sidebar Chat", "category": "Arc" },
-      { "command": "arc.openFullscreen", "title": "Open Full-Screen Chat", "category": "Arc" },
-      { "command": "arc.openSettings", "title": "Open Settings", "category": "Arc" },
-      { "command": "arc.newTask", "title": "New Task", "category": "Arc" },
-      { "command": "arc.stop", "title": "Stop Current Task", "category": "Arc" },
-      { "command": "arc.continue", "title": "Continue Last Task", "category": "Arc" },
-      { "command": "arc.toggleProblems", "title": "Toggle Problems Panel", "category": "Arc" },
-      { "command": "arc.manageModels", "title": "Manage Models", "category": "Arc" },
-      { "command": "arc.manageMcp", "title": "Manage MCP Servers", "category": "Arc" },
-      { "command": "arc.managePrompts", "title": "Manage System Prompts", "category": "Arc" },
-      { "command": "arc.openPlayground", "title": "Open Component Playground", "category": "Arc" }
+      {
+        "command": "arc.openSidebar",
+        "title": "Open Sidebar Chat",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.openFullscreen",
+        "title": "Open Full-Screen Chat",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.openSettings",
+        "title": "Open Settings",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.newTask",
+        "title": "New Task",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.stop",
+        "title": "Stop Current Task",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.continue",
+        "title": "Continue Last Task",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.toggleProblems",
+        "title": "Toggle Problems Panel",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.manageModels",
+        "title": "Manage Models",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.manageMcp",
+        "title": "Manage MCP Servers",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.managePrompts",
+        "title": "Manage System Prompts",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.openPlayground",
+        "title": "Open Component Playground",
+        "category": "Arc"
+      }
     ],
     "menus": {
       "commandPalette": [
-        { "command": "arc.openSidebar", "when": "true" },
-        { "command": "arc.openFullscreen", "when": "true" },
-        { "command": "arc.openSettings", "when": "true" },
-        { "command": "arc.openPlayground", "when": "true" },
-        { "command": "arc.newTask", "when": "true" },
-        { "command": "arc.stop", "when": "true" },
-        { "command": "arc.continue", "when": "true" },
-        { "command": "arc.toggleProblems", "when": "true" },
-        { "command": "arc.manageModels", "when": "true" },
-        { "command": "arc.manageMcp", "when": "true" },
-        { "command": "arc.managePrompts", "when": "true" }
+        {
+          "command": "arc.openSidebar",
+          "when": "true"
+        },
+        {
+          "command": "arc.openFullscreen",
+          "when": "true"
+        },
+        {
+          "command": "arc.openSettings",
+          "when": "true"
+        },
+        {
+          "command": "arc.openPlayground",
+          "when": "true"
+        },
+        {
+          "command": "arc.newTask",
+          "when": "true"
+        },
+        {
+          "command": "arc.stop",
+          "when": "true"
+        },
+        {
+          "command": "arc.continue",
+          "when": "true"
+        },
+        {
+          "command": "arc.toggleProblems",
+          "when": "true"
+        },
+        {
+          "command": "arc.manageModels",
+          "when": "true"
+        },
+        {
+          "command": "arc.manageMcp",
+          "when": "true"
+        },
+        {
+          "command": "arc.managePrompts",
+          "when": "true"
+        }
       ]
     },
     "keybindings": [
-      { "command": "arc.openSidebar", "key": "ctrl+shift+a", "mac": "cmd+shift+a" },
-      { "command": "arc.openFullscreen", "key": "ctrl+shift+alt+a", "mac": "cmd+shift+alt+a" },
-      { "command": "arc.openSettings", "key": "ctrl+shift+,", "mac": "cmd+shift+," },
-      { "command": "arc.newTask", "key": "ctrl+shift+n", "mac": "cmd+shift+n" }
+      {
+        "command": "arc.openSidebar",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a"
+      },
+      {
+        "command": "arc.openFullscreen",
+        "key": "ctrl+shift+alt+a",
+        "mac": "cmd+shift+alt+a"
+      },
+      {
+        "command": "arc.openSettings",
+        "key": "ctrl+shift+,",
+        "mac": "cmd+shift+,"
+      },
+      {
+        "command": "arc.newTask",
+        "key": "ctrl+shift+n",
+        "mac": "cmd+shift+n"
+      }
     ],
     "configuration": {
       "title": "Arc",
@@ -116,19 +246,98 @@
         },
         "arc.shell.approval": {
           "type": "string",
-          "enum": ["always", "allowlist", "off"],
+          "enum": [
+            "always",
+            "allowlist",
+            "off"
+          ],
           "default": "allowlist",
           "description": "Shell command approval policy."
         },
         "arc.shell.allowlist": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["ls", "dir", "cat", "type", "cp", "copy", "mv", "move", "rm", "del", "mkdir", "rmdir", "grep", "rg", "find", "findstr", "sed", "awk", "diff", "git", "gh", "pnpm", "npm", "yarn", "npx", "node", "python", "pip", "go", "cargo", "rustc", "make", "gcc", "g++", "curl", "wget", "tar", "zip", "unzip", "ssh", "docker", "kubectl", "tsc", "eslint", "prettier", "jest", "vitest", "esbuild", "vite", "pwsh", "powershell", "Get-ChildItem", "Get-Content", "Set-Content", "New-Item", "Remove-Item", "Copy-Item", "Move-Item", "Test-Path", "Select-String", "Invoke-WebRequest", "echo", "cd", "tasklist", "taskkill", "netstat", "ping", "ipconfig", "whoami"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "ls",
+            "dir",
+            "cat",
+            "type",
+            "cp",
+            "copy",
+            "mv",
+            "move",
+            "rm",
+            "del",
+            "mkdir",
+            "rmdir",
+            "grep",
+            "rg",
+            "find",
+            "findstr",
+            "sed",
+            "awk",
+            "diff",
+            "git",
+            "gh",
+            "pnpm",
+            "npm",
+            "yarn",
+            "npx",
+            "node",
+            "python",
+            "pip",
+            "go",
+            "cargo",
+            "rustc",
+            "make",
+            "gcc",
+            "g++",
+            "curl",
+            "wget",
+            "tar",
+            "zip",
+            "unzip",
+            "ssh",
+            "docker",
+            "kubectl",
+            "tsc",
+            "eslint",
+            "prettier",
+            "jest",
+            "vitest",
+            "esbuild",
+            "vite",
+            "pwsh",
+            "powershell",
+            "Get-ChildItem",
+            "Get-Content",
+            "Set-Content",
+            "New-Item",
+            "Remove-Item",
+            "Copy-Item",
+            "Move-Item",
+            "Test-Path",
+            "Select-String",
+            "Invoke-WebRequest",
+            "echo",
+            "cd",
+            "tasklist",
+            "taskkill",
+            "netstat",
+            "ping",
+            "ipconfig",
+            "whoami"
+          ],
           "description": "Commands that can run without explicit approval when shell.approval is 'allowlist'."
         },
         "arc.compaction.strategy": {
           "type": "string",
-          "enum": ["model-aware", "fixed"],
+          "enum": [
+            "model-aware",
+            "fixed"
+          ],
           "default": "model-aware",
           "description": "Context compaction strategy. 'model-aware' uses the model's observed average thinking+response length."
         },
@@ -144,13 +353,20 @@
         },
         "arc.search.backend": {
           "type": "string",
-          "enum": ["hash-based", "semantic"],
+          "enum": [
+            "hash-based",
+            "semantic"
+          ],
           "default": "hash-based",
           "description": "Embedding backend. 'hash-based' works offline with no model. 'semantic' uses Ollama with a local model."
         },
         "arc.search.modelTier": {
           "type": "string",
-          "enum": ["low", "mid", "high"],
+          "enum": [
+            "low",
+            "mid",
+            "high"
+          ],
           "default": "low",
           "description": "Embedding model quality tier. low = nomic-embed-text:v1.5, mid = qwen3-embedding:0.6b, high = qwen3-embedding:8b."
         },
@@ -161,19 +377,29 @@
         },
         "arc.titleGeneration.method": {
           "type": "string",
-          "enum": ["first-words", "ollama"],
+          "enum": [
+            "first-words",
+            "ollama"
+          ],
           "default": "first-words",
           "description": "Method for generating chat titles. 'first-words' uses the first 40 chars of the first message. 'ollama' uses the titlegemma model via Ollama."
         },
         "arc.model.multimodalIds": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "List of model IDs that support multimodal (vision) input."
         },
         "arc.image.describeModel": {
           "type": "string",
-          "enum": ["none", "minicpm-v:1b", "ministral-3:8b-cloud", "gemma4:31b-cloud"],
+          "enum": [
+            "none",
+            "minicpm-v:1b",
+            "ministral-3:8b-cloud",
+            "gemma4:31b-cloud"
+          ],
           "default": "none",
           "description": "Model to describe attached images when the active model isn't multimodal. Uses local Ollama or Ollama Cloud."
         },
@@ -199,13 +425,20 @@
         },
         "arc.appearance.prideLogo": {
           "type": "string",
-          "enum": ["always", "june", "never"],
+          "enum": [
+            "always",
+            "june",
+            "never"
+          ],
           "default": "june",
           "description": "When to show the pride logo in the welcome text and sidebar icon."
         },
         "arc.appearance.toolTree": {
           "type": "string",
-          "enum": ["auto", "collapsed"],
+          "enum": [
+            "auto",
+            "collapsed"
+          ],
           "default": "auto",
           "description": "How tool call trees display. 'auto' expands the tree and last call (closes earlier calls) and closes when the chain ends. 'collapsed' keeps all trees collapsed."
         },
@@ -222,9 +455,23 @@
         "title": "Arc",
         "description": "Get Arc set up: add a model, pick a tier, run your first task.",
         "steps": [
-          { "id": "arc.welcome.open", "title": "Open Arc", "description": "Click the Arc icon in the activity bar.", "command": "arc.openSidebar" },
-          { "id": "arc.welcome.model", "title": "Add a model", "description": "Open Arc settings to add at least one model and provider.", "command": "arc.manageModels" },
-          { "id": "arc.welcome.run", "title": "Run a task", "description": "Ask Arc to do something in the chat." }
+          {
+            "id": "arc.welcome.open",
+            "title": "Open Arc",
+            "description": "Click the Arc icon in the activity bar.",
+            "command": "arc.openSidebar"
+          },
+          {
+            "id": "arc.welcome.model",
+            "title": "Add a model",
+            "description": "Open Arc settings to add at least one model and provider.",
+            "command": "arc.manageModels"
+          },
+          {
+            "id": "arc.welcome.run",
+            "title": "Run a task",
+            "description": "Ask Arc to do something in the chat."
+          }
         ]
       }
     ]

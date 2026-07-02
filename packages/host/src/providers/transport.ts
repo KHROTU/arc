@@ -24,6 +24,7 @@ export interface StreamRequest {
   maxTokens?: number;
   signal?: AbortSignal;
   proxyUrl?: string;
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 }
 export interface StreamHandle {
   events: AsyncIterable<StreamEvent>;

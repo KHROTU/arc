@@ -6,6 +6,7 @@ import ArcProcessUI, { type ProcessStep } from "./AgentProcess";
 import Composer from "./Composer";
 import ModelPicker from "./ModelPicker";
 import ModePicker from "./ModePicker";
+import EffortPicker, { type Effort } from "./EffortPicker";
 import ConversationSearch from "./ConversationSearch";
 import SettingsModal from "./SettingsView";
 import type { ModelDescriptor, TurnUsage, ChatMessage, ProviderConfig } from "@arc/host/protocol";
@@ -82,6 +83,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
   const [prefillText, setPrefillText] = useState<string | null>(null);
   const [autoApproveActive, setAutoApproveActive] = useState(false);
+  const [reasoningEffort, setReasoningEffort] = useState<Effort>("high");
   const transcriptRef = useRef<HTMLDivElement>(null);
   const pendingTextRef = useRef<{ id: string; text: string } | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -99,6 +101,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           setCurrentModel(e.currentModelId);
           if (e.modes) setModes(e.modes);
           if (e.currentMode) setCurrentMode(e.currentMode);
+          if (e.reasoningEffort) setReasoningEffort(e.reasoningEffort);
           break;
         case "chat/list": setChats(e.chats); break;
         case "chat/current":
@@ -248,6 +251,10 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const openFile = (path: string) => { console.log("[arc] openFile", path); client.send({ type: "ui/openFile", path }); };
   const openFullscreen = () => client.send({ type: "ui/openFullscreen" });
   const selectModel = (id: string) => client.send({ type: "model/select", modelId: id });
+  const selectEffort = (e: Effort) => {
+    setReasoningEffort(e);
+    client.send({ type: "config/set", key: "arc.reasoning.effort", value: e });
+  };
   const selectMode = (mode: string) => {
     setCurrentMode(mode);
     client.send({ type: "mode/select", mode });
@@ -394,6 +401,11 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           models={models}
           currentModelId={currentModel}
           onSelect={selectModel}
+          variant={variant}
+        />
+        <EffortPicker
+          effort={reasoningEffort}
+          onSelect={selectEffort}
           variant={variant}
         />
         {modes.length > 0 && (

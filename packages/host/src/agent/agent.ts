@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getWorkspaceArcDir } from "../arc-dir.js";
 import { ModelRegistry } from "../routing/registry.js";
-import { pickProvider, recordSuccess, estimateCost } from "../routing/router.js";
+import { pickProvider, routeWithFailover, recordSuccess, estimateCost } from "../routing/router.js";
 import { transportFor } from "../providers/transport.js";
 import { CheckpointStore } from "../checkpoint/store.js";
 import { compactAsync, decideCompaction, CompactionTracker } from "../compaction/compaction.js";
@@ -42,6 +42,7 @@ export interface AgentOptions {
   modeRegistry: ModeRegistry;
   userRequestedMode?: string;
   approvalsConfig?: ApprovalsConfig;
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   askUser?: (question: string, options: string[]) => Promise<string>;
   approveShell?: (description: string) => Promise<boolean>;
   toolContext: Omit<ToolContext, "shell" | "requestApproval" | "root" | "workspacePath" | "approvalsConfig" | "sessionApprovals" | "addSessionCommand" | "onChunk" | "skillRegistry">;
@@ -373,16 +374,20 @@ export class Agent {
         this.active = false;
         return;
       }
-      const decision = pickProvider(this.registry, model);
-      if (!decision) {
-        const msg: ChatMessage = { id: randomUUID(), role: "assistant", content: `No enabled provider for model ${model.label}. Add one in Arc settings.`, ts: Date.now() };
-        this.messages.push(msg);
-        this.sink.message(msg);
-        this.sink.turnEnd(turnId, false, "no-provider");
-        this.active = false;
-        return;
-      }
-      const transport = transportFor(decision.provider);
+      let usedProvider: import("../providers/transport.js").StreamRequest["provider"] | undefined;
+      const stream = await routeWithFailover(this.registry, model, (decision) => {
+        usedProvider = decision.provider;
+        const t = transportFor(decision.provider);
+        return t.stream({
+          model: decision.model,
+          provider: decision.provider,
+          messages: this.messages,
+          tools: toolSpecs.length ? toolSpecs : undefined,
+          signal: this.abortController!.signal,
+          proxyUrl: this.resolveProviderProxy(),
+          reasoningEffort: this.opts.reasoningEffort,
+        });
+      });
       let text = "";
       let thinking = "";
       const toolCalls: ToolCall[] = [];
@@ -390,14 +395,6 @@ export class Agent {
       const turnTs = Date.now();
       let firstTextTs = 0;
       let thoughtStart = 0;
-      const stream = await transport.stream({
-        model,
-        provider: decision.provider,
-        messages: this.messages,
-        tools: toolSpecs.length ? toolSpecs : undefined,
-        signal: this.abortController.signal,
-        proxyUrl: this.resolveProviderProxy(),
-      });
       for await (const ev of stream.events) {
         if (this.abortController.signal.aborted) break;
         switch (ev.type) {
@@ -441,7 +438,7 @@ export class Agent {
               this.lastPromptTokens = Math.max(this.lastPromptTokens, ev.usage.prompt);
             }
             this.sink.usage(this.usageByModel[model.id], this.usageByModel);
-            recordSuccess(model.id, decision.provider.id);
+            recordSuccess(model.id, usedProvider!.id);
             break;
           }
           case "error": {
@@ -454,7 +451,7 @@ export class Agent {
         }
       }
       if (thoughtStart) this.finalizeThought(assistantId, thoughtStart);
-      this.pushTimeline({ type: "model_call", turnId, modelId: model.id, providerId: decision.provider.id, tier: model.tier, ts: Date.now(), durationMs: Date.now() - turnTs, usage: this.usageByModel[model.id] });
+      this.pushTimeline({ type: "model_call", turnId, modelId: model.id, providerId: usedProvider!.id, tier: model.tier, ts: Date.now(), durationMs: Date.now() - turnTs, usage: this.usageByModel[model.id] });
       const finalAssistant: ChatMessage = {
         id: assistantId,
         role: "assistant",
@@ -462,7 +459,7 @@ export class Agent {
         thinking: thinking || undefined,
         toolCalls: toolCalls.length ? toolCalls : undefined,
         ts: firstTextTs || turnTs,
-        meta: { modelId: model.id, providerId: decision.provider.id, tier: model.tier },
+        meta: { modelId: model.id, providerId: usedProvider!.id, tier: model.tier },
       };
       this.messages.push(finalAssistant);
       this.sink.message(finalAssistant);

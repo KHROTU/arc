@@ -3,6 +3,7 @@ import { makeProxyDispatcher } from "../util/proxy.js";
 import { fromApiToolName, toApiToolName, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
 import { caps } from "./capability-tracker.js";
 const UNSUPPORTED_PARAM_RE = /does not support|unsupported.*param(?:eter)?|unknown.*param(?:eter)?|invalid.*param(?:eter)?/i;
+const RETRY_DELAYS = [1000, 3000, 7000];
 export const openAICompatibleTransport: Transport & { withBase: (base: string) => Transport } = {
   kind: "openai",
   withBase(base) {
@@ -17,8 +18,11 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
   const remoteModel = req.model.providers.find((p) => p.id === req.provider.id)?.remoteModel ?? req.model.id;
   const modelKey = `${req.provider.id}:${remoteModel}`;
   const hasThinking = req.messages.some((m) => m.role === "assistant" && m.thinking);
-  const buildBody = (skipThinking: boolean): Record<string, unknown> => {
-    const wantsThink = hasThinking && !skipThinking && caps.isSupported(modelKey, "thinking");
+  const effortLevels: Record<string, string> = { none: "none", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh" };
+  const eff = req.reasoningEffort ? effortLevels[req.reasoningEffort] : undefined;
+  const buildBody = (skipReasoning: boolean): Record<string, unknown> => {
+    const wantsThink = hasThinking && !skipReasoning && caps.isSupported(modelKey, "thinking");
+    const wantsEffort = !skipReasoning && eff && caps.isSupported(modelKey, "reasoning_effort");
     const body: Record<string, unknown> = {
       model: remoteModel,
       stream: true,
@@ -31,7 +35,14 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
         function: { name: toApiToolName(t.name), description: t.description, parameters: t.parameters },
       }));
     }
-    if (wantsThink) {
+    if (wantsEffort) {
+      if (req.provider.kind === "google") {
+        body.thinking_level = eff;
+      } else {
+        body.reasoning_effort = eff;
+      }
+      body.thinking = { type: "enabled" };
+    } else if (wantsThink) {
       body.reasoning_effort = "high";
       body.thinking = { type: "enabled" };
     }
@@ -46,24 +57,45 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
     headers["x-title"] = "Arc";
   }
   const MAX_ATTEMPTS = 2;
+  const RATE_LIMIT_RETRIES = 3;
   let res!: Response;
   let lastText = "";
+  let skipReasoning = false;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    const body = buildBody(attempt > 0);
-    res = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000),
-      ...(req.proxyUrl ? { dispatcher: makeProxyDispatcher(req.proxyUrl) } : {}),
-    });
+    const body = buildBody(skipReasoning);
+    for (let rlAttempt = 0; rlAttempt <= RATE_LIMIT_RETRIES; rlAttempt++) {
+      res = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000),
+        ...(req.proxyUrl ? { dispatcher: makeProxyDispatcher(req.proxyUrl) } : {}),
+      });
+      if (res.ok && res.body) break;
+      lastText = await res.text().catch(() => "");
+      if (res.status === 429 && rlAttempt < RATE_LIMIT_RETRIES) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS[rlAttempt] ?? 5000));
+        continue;
+      }
+      break;
+    }
     if (res.ok && res.body) break;
-    lastText = await res.text().catch(() => "");
     if (res.status === 400 && UNSUPPORTED_PARAM_RE.test(lastText)) {
+      if (eff && lastText.includes("reasoning_effort")) {
+        caps.markUnsupported(modelKey, "reasoning_effort");
+        skipReasoning = true;
+        continue;
+      }
+      if (lastText.includes("thinking_level")) {
+        caps.markUnsupported(modelKey, "reasoning_effort");
+        skipReasoning = true;
+        continue;
+      }
       caps.markUnsupported(modelKey, "thinking");
+      skipReasoning = true;
       continue;
     }
-    throw new Error(`Provider ${req.provider.kind} returned ${res.status}: ${lastText.slice(0, 200)}`);
+    if (!res.ok) throw new Error(`Provider ${req.provider.kind} returned ${res.status}: ${lastText.slice(0, 200)}`);
   }
   if (!res!.ok || !res!.body) {
     throw new Error(`Provider ${req.provider.kind} returned ${res!.status}: ${lastText.slice(0, 200)}`);

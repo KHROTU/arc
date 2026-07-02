@@ -167,6 +167,48 @@ body {
 .arc-mode-dropdown-item-icon { display: flex; align-items: center; color: var(--vscode-descriptionForeground, #858585); flex-shrink: 0; }
 .arc-mode-dropdown-item-label { font-weight: 600; flex-shrink: 0; }
 .arc-mode-dropdown-item-desc { font-size: 11px; color: var(--vscode-descriptionForeground, #858585); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.arc-effort-picker { display: flex; align-items: center; min-width: 0; position: relative; }
+.arc-effort-trigger {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: transparent; color: var(--vscode-foreground, #ccc);
+  border: 1px solid transparent; border-radius: 5px; padding: 2px 6px;
+  font: inherit; font-size: 12px; cursor: pointer; max-width: 90px; min-width: 0;
+  transition: background var(--arc-dur) var(--arc-ease), border-color var(--arc-dur) var(--arc-ease);
+}
+.arc-effort-trigger-full { max-width: 110px; }
+.arc-shell-sidebar .arc-effort-trigger { max-width: 60px; padding: 1px 4px; font-size: 11px; }
+.arc-effort-trigger:hover { background: var(--arc-toolbar-hover); }
+.arc-effort-label { color: var(--vscode-descriptionForeground, #858585); flex-shrink: 0; font-size: inherit; }
+.arc-effort-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.arc-effort-chevron { color: var(--vscode-descriptionForeground, #858585); flex-shrink: 0; transition: transform var(--arc-dur) var(--arc-ease); }
+.arc-effort-chevron-open { transform: rotate(180deg); }
+.arc-effort-dropdown {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 100;
+  width: 170px; background: var(--vscode-dropdown-background, #2d2d2d);
+  border: 1px solid var(--vscode-dropdown-border, var(--arc-line));
+  border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.arc-shell-sidebar .arc-effort-dropdown { left: auto; right: 0; width: 150px; }
+.arc-effort-header {
+  display: flex; align-items: center; gap: 6px; padding: 6px 10px 4px;
+  font-size: 11px; color: var(--vscode-descriptionForeground, #858585);
+  border-bottom: 1px solid var(--arc-line);
+}
+.arc-info-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--vscode-descriptionForeground, #858585);
+  cursor: help;
+}
+.arc-effort-item {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 5px 10px; border: 0; border-radius: 4px;
+  background: transparent; color: var(--vscode-foreground, #ccc);
+  font: inherit; font-size: 12px; cursor: pointer; text-align: left;
+  transition: background var(--arc-dur) var(--arc-ease);
+}
+.arc-effort-item:hover { background: var(--arc-hover); }
+.arc-effort-item-active { background: var(--vscode-list-activeSelectionBackground, var(--arc-accent-soft)); }
 .arc-topbar-spacer { flex: 1; }
 .arc-topbar-cost { font-size: 12px; color: var(--vscode-foreground, #ccc); font-variant-numeric: tabular-nums; }
 .arc-topbar-sep { width: 1px; height: 14px; background: var(--arc-line); margin: 0 2px; flex-shrink: 0; }

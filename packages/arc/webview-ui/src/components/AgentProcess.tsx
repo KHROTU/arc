@@ -378,7 +378,7 @@ const StepList = memo(({ steps, onOpenFile, toolTreeMode }: { steps: ProcessStep
       return;
     }
     if (steps.length > prevLen && steps.length > 0) {
-      setOpenIds((cur) => {
+      setOpenIds(() => {
         const next = new Set<string>();
         for (const s of steps) if (s.children?.length) next.add(s.id);
         next.add(steps[steps.length - 1].id);

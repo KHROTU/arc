@@ -302,6 +302,7 @@ function newTask() {
       sessionId: sidebarSession.id,
       models: registry?.list() ?? [],
       currentModelId: registry?.getCurrent()?.id ?? "",
+      reasoningEffort: vscode.workspace.getConfiguration().get<string>("arc.reasoning.effort", "high") ?? "high",
     });
   }
 }
@@ -568,6 +569,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     mode: "code",
     modeRegistry,
     approvalsConfig,
+    reasoningEffort: (vscode.workspace.getConfiguration().get<string>("arc.reasoning.effort", "high") ?? "high") as "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
     isMain: true,
     proxyUrl: resolveProxy("url"),
     proxyProvider: resolveProxy("providerUrl"),
@@ -838,6 +840,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             currentModelId: registry?.getCurrent()?.id ?? "",
             modes: modeRegistry ? modeRegistry.list().map((m) => ({ slug: m.slug, description: m.description })) : [],
             currentMode: session.agent?.getCurrentMode?.() ?? "code",
+            reasoningEffort: vscode.workspace.getConfiguration().get<string>("arc.reasoning.effort", "high") ?? "high",
           });
           if (registry) webview.postMessage({ type: "model/list", models: registry.list(), currentModelId: registry.getCurrent()?.id ?? "" });
           if (registry) webview.postMessage({ type: "provider/list", providers: registry.listProviders() });
@@ -1348,6 +1351,7 @@ Prompts: ${server.prompts?.length ?? 0}`;
                 currentModelId: registry?.getCurrent()?.id ?? "",
                 modes: modeRegistry ? modeRegistry.list().map((m: any) => ({ slug: m.slug, description: m.description })) : [],
                 currentMode: session.agent?.getCurrentMode?.() ?? "code",
+                reasoningEffort: vscode.workspace.getConfiguration().get<string>("arc.reasoning.effort", "high") ?? "high",
               });
               for (const m of (msgs ?? []) as ChatMessage[]) {
                 webview.postMessage({ type: "session/message", message: m, sessionId: session.id });
