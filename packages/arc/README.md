@@ -69,7 +69,7 @@ Arc aims to provide a top-of-the-line agentic experience with a minimal footprin
 Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=khrotu.arc-code) or directly via the VS Code CLI:
 
 ```bash
-code --install-extension packages/arc/arc-code-0.4.11.vsix
+code --install-extension packages/arc/arc-code-0.4.12.vsix
 ```
 
 ### Development

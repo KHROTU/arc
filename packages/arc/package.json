@@ -2,7 +2,7 @@
   "name": "arc-code",
   "displayName": "Arc",
   "description": "0.23 MB agentic coding assistant. 150+ providers with tiered model routing, failover, and multi-model subagents.",
-  "version": "0.4.11",
+  "version": "0.4.12",
   "publisher": "khrotu",
   "license": "Apache-2.0",
   "repository": {
