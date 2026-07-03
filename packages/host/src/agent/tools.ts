@@ -830,6 +830,34 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       return { ok: true, output: b.domSnapshot() || "(empty snapshot)" };
     },
   },
+  "browser.drag": {
+    description: "Drag an element onto another element. Args: { from, to }",
+    fn: async (a, ctx) => {
+      const b = await resolveBrowser(ctx.browser);
+      return b ? b.drag(String(a.from), String(a.to)) : { ok: false, output: "Browser not available." };
+    },
+  },
+  "browser.dialog": {
+    description: "Set how the next browser dialog (alert/confirm/prompt) is handled. Args: { accept, promptText? }",
+    fn: async (a, ctx) => {
+      const b = await resolveBrowser(ctx.browser);
+      return b ? b.dialog(a.accept !== false, a.promptText ? String(a.promptText) : undefined) : { ok: false, output: "Browser not available." };
+    },
+  },
+  "browser.runCode": {
+    description: "Run a Playwright code snippet against the page. The code receives the `page` object. Args: { code }",
+    fn: async (a, ctx) => {
+      const b = await resolveBrowser(ctx.browser);
+      return b ? b.runCode(String(a.code)) : { ok: false, output: "Browser not available." };
+    },
+  },
+  "browser.readPage": {
+    description: "Read the plain text content of the current page. Args: {}",
+    fn: async (_a, ctx) => {
+      const b = await resolveBrowser(ctx.browser);
+      return b ? b.readPage() : { ok: false, output: "Browser not available." };
+    },
+  },
 };
 interface SearchResult { title: string; snippet: string; url: string; }
 const STEALTH_HEADERS: Record<string, string> = {

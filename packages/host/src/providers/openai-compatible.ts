@@ -27,7 +27,7 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
       model: remoteModel,
       stream: true,
       temperature: req.temperature ?? 0.2,
-      messages: req.messages.map((m) => toOpenAIMessage(m, wantsThink)),
+      messages: req.messages.map((m) => toOpenAIMessage(m, wantsThink, req.provider.kind)),
     };
     if (req.tools?.length) {
       body.tools = req.tools.map((t) => ({
@@ -35,7 +35,13 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
         function: { name: toApiToolName(t.name), description: t.description, parameters: t.parameters },
       }));
     }
-    if (wantsEffort) {
+    if (req.provider.kind === "openrouter" && (wantsEffort || wantsThink)) {
+      body.reasoning = {
+        ...(wantsEffort && eff ? { effort: eff } : {}),
+        enabled: true,
+        exclude: false,
+      };
+    } else if (wantsEffort) {
       if (req.provider.kind === "google") {
         body.thinking_level = eff;
       } else {
@@ -120,6 +126,7 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
     let buffer = "";
     let inThink = false;
     let thinkingBuf = "";
+    const reasoningDetailTextById = new Map<string, string>();
     try {
       for await (const chunk of readableToAsyncIterable(res.body as ReadableStream<Uint8Array>)) {
         if (aborted) break;
@@ -142,6 +149,42 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
             const choice = json.choices?.[0];
             if (!choice) continue;
             const delta = choice.delta ?? {};
+            const emitReasoningFromDetails = (): string => {
+              if (!Array.isArray(delta.reasoning_details)) return "";
+              let out = "";
+              for (let i = 0; i < delta.reasoning_details.length; i++) {
+                const d = delta.reasoning_details[i];
+                if (typeof d === "string") {
+                  out += d;
+                  continue;
+                }
+                const text = typeof d?.text === "string"
+                  ? d.text
+                  : typeof d?.reasoning === "string"
+                    ? d.reasoning
+                    : "";
+                if (!text) continue;
+                const baseId = typeof d?.id === "string" && d.id
+                  ? d.id
+                  : `${d?.index ?? i}`;
+                const id = baseId;
+                const prev = reasoningDetailTextById.get(id) ?? "";
+                let deltaText = text;
+                if (prev && text.startsWith(prev)) {
+                  deltaText = text.slice(prev.length);
+                } else if (prev && prev.startsWith(text)) {
+                  deltaText = "";
+                }
+                reasoningDetailTextById.set(id, text);
+                if (deltaText) out += deltaText;
+              }
+              return out;
+            };
+            const detailsThinking = emitReasoningFromDetails();
+            const contentThinking = typeof delta.reasoning_content === "string" ? delta.reasoning_content : "";
+            const plainThinking = typeof delta.reasoning === "string" ? delta.reasoning : "";
+            const structuredThinking = detailsThinking || contentThinking || plainThinking;
+            if (structuredThinking) q.push({ type: "thinking", delta: structuredThinking });
             if (delta.content) {
               //nodel if you're one of these fuckwit providers that use think tags then truly go fuck yourself
               const text = delta.content as string;
@@ -152,7 +195,7 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
                   if (ei >= 0) {
                     thinkingBuf += s.slice(0, ei);
                     const trimmed = thinkingBuf.trim();
-                    if (trimmed) q.push({ type: "thinking", delta: trimmed });
+                    if (trimmed && !structuredThinking) q.push({ type: "thinking", delta: trimmed });
                     thinkingBuf = "";
                     s = s.slice(ei + 8).trimStart();
                     inThink = false;
@@ -173,7 +216,6 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
                 }
               }
             }
-            if (delta.reasoning_content) q.push({ type: "thinking", delta: delta.reasoning_content });
             if (Array.isArray(delta.tool_calls)) {
               for (const tc of delta.tool_calls) {
                 const key = typeof tc.index === "number" ? tc.index : 0;
@@ -223,9 +265,18 @@ function safeParseArgs(s: string | undefined): Record<string, unknown> | undefin
     return undefined;
   }
 }
-function toOpenAIMessage(m: import("../protocol/protocol.js").ChatMessage, supportsThinking: boolean) {
+function toOpenAIMessage(m: import("../protocol/protocol.js").ChatMessage, supportsThinking: boolean, providerKind?: import("../protocol/protocol.js").ProviderKind) {
   if (m.role === "tool") {
-    return { role: "tool", tool_call_id: m.toolCallId, content: m.content };
+    const toolCallId = (m.toolCallId ?? "").trim();
+    if (!toolCallId) {
+      return {
+        role: "user",
+        content: providerKind === "openrouter"
+          ? `Tool output (without tool_call_id):\n${m.content}`
+          : m.content,
+      };
+    }
+    return { role: "tool", tool_call_id: toolCallId, content: m.content };
   }
   if (m.role === "assistant" && m.toolCalls?.length) {
     const msg: Record<string, unknown> = { role: "assistant" };

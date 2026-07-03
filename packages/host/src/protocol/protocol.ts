@@ -1,4 +1,4 @@
-import type { ProcessStep } from "./process.js";
+import type { DiffHunk, ProcessStep } from "./process.js";
 export type Role = "system" | "user" | "assistant" | "tool" | "developer";
 export type ModelTier = "free" | "light" | "default" | "heavy";
 export interface ModelDescriptor {
@@ -287,6 +287,7 @@ export type WebviewMsg =
   | { type: "ui/openFullscreen" }
   | { type: "ui/openSettings" }
   | { type: "ui/openFile"; path: string }
+  | { type: "ui/openFileDiff"; path: string; hunks: DiffHunk[] }
   | { type: "ui/openPrompt" }
   | { type: "ui/newTask" }
   | { type: "ready" }

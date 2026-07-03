@@ -14,6 +14,7 @@ tsconfig.*.json
 THIRD_PARTY.md
 assets/arc-logo-mono-text.png
 assets/arc-logo-pride-text.png
+assets/arc-logo-pride-text.svg
 assets/arc-logo-pride.png
 scripts/**
 README.md
