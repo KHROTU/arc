@@ -1,4 +1,4 @@
-import type { ProcessStep } from "./process.js";
+import type { DiffHunk, ProcessStep } from "./process.js";
 export type Role = "system" | "user" | "assistant" | "tool" | "developer";
 export type ModelTier = "free" | "light" | "default" | "heavy";
 export interface ModelDescriptor {
@@ -40,6 +40,7 @@ export type ProviderKind =
   | "kimi-cn"
   | "z-ai"
   | "z-ai-cn"
+  | "z-ai-coding"
   | "vscode-lm"
   | "openai-compatible"
   | "siliconflow"
@@ -72,6 +73,7 @@ export type ProviderKind =
   | "byteplus"
   | "tencent-cloud"
   | "tencent-tokenhub"
+  | "tencent-tokenhub-intl"
   | "baidu-qianfan"
   | "baidu-qianfan-ai"
   | "aiml-api"
@@ -285,6 +287,7 @@ export type WebviewMsg =
   | { type: "ui/openFullscreen" }
   | { type: "ui/openSettings" }
   | { type: "ui/openFile"; path: string }
+  | { type: "ui/openFileDiff"; path: string; hunks: DiffHunk[] }
   | { type: "ui/openPrompt" }
   | { type: "ui/newTask" }
   | { type: "ready" }

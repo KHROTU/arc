@@ -113,6 +113,114 @@ describe("transports end the stream cleanly", () => {
       globalThis.fetch = real;
     }
   });
+  it("openrouter: streams reasoning_details as thinking deltas", async () => {
+    const real = globalThis.fetch;
+    const sse = [
+      'data: {"choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.text","text":"step 1"}]}}]}',
+      '',
+      'data: {"choices":[{"index":0,"delta":{"content":"answer"}}]}',
+      '',
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    globalThis.fetch = mockFetchOk(sse) as typeof fetch;
+    try {
+      const req: any = { ...mkReq(), provider: { id: "p1", kind: "openrouter", label: "p1", enabled: true, baseUrl: "https://openrouter.ai/api/v1" } };
+      const handle = await openAICompatibleTransport.stream(req);
+      const events: any[] = [];
+      const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error("for-await did not terminate")), 1000));
+      await Promise.race([
+        (async () => { for await (const ev of handle.events) events.push(ev); })(),
+        timeout,
+      ]);
+      expect(events.filter((e) => e.type === "thinking").map((e) => e.delta).join("")).toContain("step 1");
+      expect(events.filter((e) => e.type === "text").map((e) => e.delta).join("")).toBe("answer");
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+  it("openrouter: avoids duplicate thinking when multiple reasoning fields are present", async () => {
+    const real = globalThis.fetch;
+    const sse = [
+      'data: {"choices":[{"index":0,"delta":{"reasoning":"alpha","reasoning_details":[{"id":"r1","index":0,"text":"alpha"}]}}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    globalThis.fetch = mockFetchOk(sse) as typeof fetch;
+    try {
+      const req: any = { ...mkReq(), provider: { id: "p1", kind: "openrouter", label: "p1", enabled: true, baseUrl: "https://openrouter.ai/api/v1" } };
+      const handle = await openAICompatibleTransport.stream(req);
+      const events: any[] = [];
+      for await (const ev of handle.events) events.push(ev);
+      expect(events.filter((e) => e.type === "thinking").map((e) => e.delta).join("")).toBe("alpha");
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+  it("openrouter: emits incremental deltas for cumulative reasoning_details text", async () => {
+    const real = globalThis.fetch;
+    const sse = [
+      'data: {"choices":[{"index":0,"delta":{"reasoning_details":[{"id":"r1","index":0,"text":"hello"}]}}]}',
+      "",
+      'data: {"choices":[{"index":0,"delta":{"reasoning_details":[{"id":"r1","index":0,"text":"hello world"}]}}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    globalThis.fetch = mockFetchOk(sse) as typeof fetch;
+    try {
+      const req: any = { ...mkReq(), provider: { id: "p1", kind: "openrouter", label: "p1", enabled: true, baseUrl: "https://openrouter.ai/api/v1" } };
+      const handle = await openAICompatibleTransport.stream(req);
+      const events: any[] = [];
+      for await (const ev of handle.events) events.push(ev);
+      expect(events.filter((e) => e.type === "thinking").map((e) => e.delta).join("")).toBe("hello world");
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+  it("openrouter: sends reasoning object instead of reasoning_effort", async () => {
+    const real = globalThis.fetch;
+    let sentBody: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (typeof init?.body === "string") sentBody = JSON.parse(init.body);
+      return new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+    try {
+      const req: any = { ...mkReq(), provider: { id: "p1", kind: "openrouter", label: "p1", enabled: true, baseUrl: "https://openrouter.ai/api/v1" }, reasoningEffort: "high" };
+      const handle = await openAICompatibleTransport.stream(req);
+      for await (const _ev of handle.events) { }
+      expect(sentBody?.reasoning).toMatchObject({ effort: "high", enabled: true, exclude: false });
+      expect(sentBody?.reasoning_effort).toBeUndefined();
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+  it("openrouter: degrades tool messages without tool_call_id to user content", async () => {
+    const real = globalThis.fetch;
+    let sentBody: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (typeof init?.body === "string") sentBody = JSON.parse(init.body);
+      return new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+    try {
+      const req: any = {
+        ...mkReq(),
+        provider: { id: "p1", kind: "openrouter", label: "p1", enabled: true, baseUrl: "https://openrouter.ai/api/v1" },
+        messages: [
+          { id: "u1", role: "user", content: "run a tool", ts: 0 },
+          { id: "t1", role: "tool", content: "{\"ok\":true}", ts: 1 },
+        ],
+      };
+      const handle = await openAICompatibleTransport.stream(req);
+      for await (const _ev of handle.events) { }
+      const sentMessages = (sentBody?.messages ?? []) as Array<Record<string, unknown>>;
+      expect(sentMessages[1]?.role).toBe("user");
+      expect(sentMessages[1]?.tool_call_id).toBeUndefined();
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
   it("anthropic: terminates the for-await after message_stop", async () => {
     const real = globalThis.fetch;
     const sse = [

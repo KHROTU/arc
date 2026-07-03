@@ -1032,7 +1032,7 @@ export class Agent {
         }
       }
     }
-    const hookTools = new Set(["shell.run", "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "web.fetch", "web.search", "mcp.call", "file.edit", "file.write", "file.read", "subagent.spawn", "handoff"]);
+    const hookTools = new Set(["shell.run", "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage", "web.fetch", "web.search", "mcp.call", "file.edit", "file.write", "file.read", "subagent.spawn", "handoff"]);
     if (hookTools.has(tc.name)) {
       const decisions = await runHooks({
         event: "pre.tool",
@@ -1360,6 +1360,10 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
       case "browser.screenshot": return "Failed to take screenshot";
       case "browser.evaluate": return "Failed to evaluate script";
       case "browser.readDom": return "Failed to read page DOM";
+      case "browser.drag": return `Failed to drag ${clip(String(args.from ?? ""))}`;
+      case "browser.dialog": return "Failed to handle dialog";
+      case "browser.runCode": return "Failed to run Playwright code";
+      case "browser.readPage": return "Failed to read page content";
       case "browser.close": return "Failed to close browser";
       case "browser.hover": return `Failed to hover ${clip(String(args.selector ?? ""))}`;
       case "browser.scroll": return `Failed to scroll ${args.selector ? "to " + String(args.selector) : ""}`;
@@ -1430,6 +1434,10 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
     case "browser.screenshot": return "Took screenshot";
     case "browser.evaluate": return "Evaluated script";
     case "browser.readDom": return "Read page DOM";
+    case "browser.drag": return `Dragged ${clip(String(args.from ?? ""))}`;
+    case "browser.dialog": return "Handled dialog";
+    case "browser.runCode": return "Ran Playwright code";
+    case "browser.readPage": return "Read page content";
     case "browser.close": return "Closed browser";
     case "browser.hover": return `Hovered ${clip(String(args.selector ?? ""))}`;
     case "browser.scroll": return `Scrolled ${args.selector ? "to " + String(args.selector) : ""}`;
@@ -1478,7 +1486,7 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
 const READ_TOOLS = new Set(["file.read", "file.grep", "file.glob", "file.semanticSearch"]);
 const WRITE_TOOLS = new Set(["file.edit", "file.write"]);
 const SHELL_TOOLS = new Set(["shell.run", "shell.backgroundRun", "shell.check", "shell.write", "shell.customRun", "shell.editCustomRun", "shell.runCustomRun"]);
-const BROWSER_TOOLS = new Set(["browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor"]);
+const BROWSER_TOOLS = new Set(["browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor", "browser.console", "browser.network", "browser.domSnapshot", "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage"]);
 const MCP_TOOLS = new Set(["mcp.call", "mcp.create", "mcp.remove", "mcp.toggle", "mcp.resources/list", "mcp.resources/read", "mcp.prompts/list", "mcp.prompts/get"]);
 const GIT_TOOLS = new Set(["git.diffStaged", "git.diffUnstaged", "git.changedFiles", "git.branchDiff", "git.commitMessage"]);
 function categoryForTool(name: string): string | undefined {
@@ -1516,6 +1524,10 @@ function prettyToolSummary(name: string, args: Record<string, unknown>): string 
     case "browser.screenshot": return "Take screenshot";
     case "browser.evaluate": return `Evaluate: ${clip(String(args.script ?? ""), 60)}`;
     case "browser.readDom": return "Read page DOM";
+    case "browser.drag": return `Drag ${clip(String(args.from ?? ""))}`;
+    case "browser.dialog": return "Handle dialog";
+    case "browser.runCode": return "Run Playwright code";
+    case "browser.readPage": return "Read page content";
     case "browser.close": return "Close browser";
     case "web.fetch": return `Fetch ${clip(String(args.url ?? ""))}`;
     case "web.search": return `Search for ${clip(String(args.query ?? ""), 40)}`;

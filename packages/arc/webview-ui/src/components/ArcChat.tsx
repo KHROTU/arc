@@ -19,7 +19,6 @@ type Props = {
   monoLogo: string;
   prideLogo: string;
   monoLogoText: string;
-  prideLogoText: string;
   prideActive: boolean;
   toolTreeMode: "auto" | "collapsed";
   variant: "sidebar" | "fullscreen";
@@ -52,7 +51,7 @@ function RippleSpinner() {
     </svg>
   );
 }
-export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, prideLogoText, prideActive, toolTreeMode, variant, version }: Props) {
+export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, prideActive, toolTreeMode, variant, version }: Props) {
   const logoUri = useArcLogo(monoLogo, prideLogo, prideActive);
   const [chats, setChats] = useState<ChatMeta[]>([]);
   const [activeId, setActiveId] = useState<string>("");
@@ -88,6 +87,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const pendingTextRef = useRef<{ id: string; text: string } | null>(null);
   const rafRef = useRef<number | null>(null);
   const sessionIdRef = useRef<string>("");
+  const openedStreamingDiffRef = useRef<string>("");
   const cancelStreamFlush = () => {
     if (rafRef.current != null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
     pendingTextRef.current = null;
@@ -170,6 +170,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           if (e.loadComposer) setPrefillText(e.loadComposer);
           break;
         case "session/turnStart":
+          openedStreamingDiffRef.current = "";
           if (e.sessionId && sessionIdRef.current !== e.sessionId) sessionIdRef.current = e.sessionId;
           setStreaming({ id: "pending", text: "" }); setShowOnboarding(false); setLastTurnError(null); break;
         case "session/turnEnd": cancelStreamFlush(); setStreaming(null); break;
@@ -339,7 +340,18 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     let run: ProcessStep[] = [];
     const flush = () => {
       if (run.length) {
-        out.push(<ArcProcessUI key={`steps-${run[0].id}`} steps={run} onOpenFile={openFile} toolTreeMode={toolTreeMode} />);
+        out.push(
+          <ArcProcessUI
+            key={`steps-${run[0].id}`}
+            steps={run}
+            onOpenFile={openFile}
+            onOpenFullscreenDiff={(payload) => {
+              if (!payload.filePath) return;
+              client.send({ type: "ui/openFileDiff", path: payload.filePath, hunks: payload.hunks });
+            }}
+            toolTreeMode={toolTreeMode}
+          />,
+        );
         run = [];
       }
     };
@@ -356,13 +368,32 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     }
     flush();
     return out;
-  }, [timeline]);
+  }, [timeline, toolTreeMode, variant]);
   const latestTodos = useMemo(() => {
     for (let i = steps.length - 1; i >= 0; i--) {
       if (steps[i].type === "todo_list" && steps[i].todos?.length) return steps[i].todos ?? null;
     }
     return null;
   }, [steps]);
+  const latestStreamingDiff = useMemo(() => {
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const step = steps[i];
+      if (step.type !== "tool") continue;
+      if (step.toolName !== "file.edit" && step.toolName !== "file.write") continue;
+      if (!step.diffHunks || !step.diffHunks.length) continue;
+      return { signature: step.id, filePath: step.filePath, hunks: step.diffHunks };
+    }
+    return null;
+  }, [steps]);
+  useEffect(() => {
+    if (variant !== "sidebar") return;
+    if (!streaming) return;
+    if (!latestStreamingDiff) return;
+    if (!latestStreamingDiff.filePath) return;
+    if (openedStreamingDiffRef.current === latestStreamingDiff.signature) return;
+    openedStreamingDiffRef.current = latestStreamingDiff.signature;
+    client.send({ type: "ui/openFileDiff", path: latestStreamingDiff.filePath, hunks: latestStreamingDiff.hunks });
+  }, [variant, streaming, latestStreamingDiff, client]);
   const activeTitle = chats.find((c) => c.id === activeId)?.title ?? "Chat";
   return (
     <div className={`arc-shell arc-shell-${variant}`}>
@@ -615,7 +646,6 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           models={models}
           providers={providers}
           monoLogoText={monoLogoText}
-          prideLogoText={prideLogoText}
           version={version}
         />
       )}

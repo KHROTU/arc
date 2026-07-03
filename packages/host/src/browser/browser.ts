@@ -6,9 +6,13 @@ export interface BrowserAdapter {
   screenshot(outPath?: string): Promise<{ ok: boolean; output: string }>;
   evaluate(script: string): Promise<{ ok: boolean; output: string }>;
   readDom(): Promise<{ ok: boolean; output: string }>;
+  readPage(): Promise<{ ok: boolean; output: string }>;
   hover(selector: string): Promise<{ ok: boolean; output: string }>;
   scroll(pixels?: number, selector?: string): Promise<{ ok: boolean; output: string }>;
   waitFor(selector?: string, urlPattern?: string, state?: "networkidle" | "load" | "domcontentloaded"): Promise<{ ok: boolean; output: string }>;
+  drag(fromSelector: string, toSelector: string): Promise<{ ok: boolean; output: string }>;
+  dialog(accept: boolean, promptText?: string): Promise<{ ok: boolean; output: string }>;
+  runCode(code: string): Promise<{ ok: boolean; output: string }>;
   close(): Promise<void>;
   consoleLog(): string[];
   networkLog(): string[];
@@ -30,12 +34,14 @@ interface PlaywrightPage {
   click(selector: string, opts: { timeout: number }): Promise<unknown>;
   fill(selector: string, text: string, opts: { timeout: number }): Promise<unknown>;
   hover(selector: string, opts: { timeout: number }): Promise<unknown>;
+  dragAndDrop(selector: string, targetSelector: string, opts: { timeout: number }): Promise<unknown>;
   waitForSelector(selector: string, opts: { state: string; timeout: number }): Promise<unknown>;
   waitForURL(url: string | RegExp, opts: { timeout: number }): Promise<unknown>;
   waitForLoadState(state: string): Promise<unknown>;
   evaluate(script: string): Promise<unknown>;
   screenshot(opts: { path: string }): Promise<unknown>;
   accessibility: { snapshot(): Promise<unknown> };
+  content(): Promise<string>;
   on(event: string, fn: (...args: unknown[]) => void): void;
 }
 const MAX_LOG_ENTRIES = 50;
@@ -53,6 +59,17 @@ export async function createBrowser(kind: BrowserKind = "chromium", headless = t
   const page = await ctx.newPage();
   const consoleLog: ConsoleEntry[] = [];
   const networkLog: NetworkEntry[] = [];
+  let dialogAction: { accept: boolean; promptText?: string } | null = null;
+  page.on("dialog", (d: any) => {
+    const action = dialogAction ?? { accept: false };
+    dialogAction = null;
+    if (action.accept) {
+      if (action.promptText !== undefined) d.accept(action.promptText);
+      else d.accept();
+    } else {
+      d.dismiss();
+    }
+  });
   page.on("console", (msg: any) => {
     if (consoleLog.length >= MAX_LOG_ENTRIES) consoleLog.shift();
     consoleLog.push({
@@ -157,6 +174,30 @@ export async function createBrowser(kind: BrowserKind = "chromium", headless = t
         return { ok: true, output: `Page reached state "${state ?? "networkidle"}"` };
       } catch (e) { return { ok: false, output: `Wait failed: ${(e as Error).message}` }; }
     },
+    async drag(fromSelector, toSelector) {
+      try {
+        await page.dragAndDrop(fromSelector, toSelector, { timeout: 10_000 });
+        return { ok: true, output: `Dragged ${fromSelector} onto ${toSelector}` };
+      } catch (e) { return { ok: false, output: `Drag failed: ${(e as Error).message}` }; }
+    },
+    async dialog(accept, promptText) {
+      dialogAction = { accept, promptText };
+      return { ok: true, output: accept ? (promptText !== undefined ? `Dialog will be accepted with "${promptText}".` : "Dialog will be accepted.") : "Dialog will be dismissed." };
+    },
+    async runCode(code) {
+      try {
+        const fn = new Function("page", code) as (page: unknown) => Promise<unknown>;
+        const result = await fn(page);
+        return { ok: true, output: typeof result === "string" ? result : JSON.stringify(result, null, 2) ?? String(result) };
+      } catch (e) { return { ok: false, output: `Playwright code failed: ${(e as Error).message}` }; }
+    },
+    async readPage() {
+      try {
+        const html = await page.content() as string;
+        const text = (await page.evaluate("document.body?.innerText ?? ''")) as string;
+        return { ok: true, output: (text || html).slice(0, 4000) };
+      } catch (e) { return { ok: false, output: `Read page failed: ${(e as Error).message}` }; }
+    },
     async close() { await browser.close().catch(() => undefined); },
     consoleLog() { return consoleLog.map((c) => `[${c.level}] ${c.text}`); },
     networkLog() { return networkLog.map((n) => `${n.method} ${n.status} ${n.url} ${n.timing}ms`); },
@@ -172,9 +213,13 @@ function stubAdapter(message: string): BrowserAdapter {
     async screenshot() { return { ok: false, output: message }; },
     async evaluate() { return { ok: false, output: message }; },
     async readDom() { return { ok: false, output: message }; },
+    async readPage() { return { ok: false, output: message }; },
     async hover() { return { ok: false, output: message }; },
     async scroll() { return { ok: false, output: message }; },
     async waitFor() { return { ok: false, output: message }; },
+    async drag() { return { ok: false, output: message }; },
+    async dialog() { return { ok: false, output: message }; },
+    async runCode() { return { ok: false, output: message }; },
     async close() {},
     consoleLog() { return []; },
     networkLog() { return []; },

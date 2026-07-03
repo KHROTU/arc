@@ -3,8 +3,7 @@ import { Plus, Trash2, Plug, Braces, Cpu, KeyRound, X, Check, Info, ListChecks, 
 import type { RpcClient, HostEvent } from "../rpc";
 import type { ModelDescriptor, ModelTier, ProviderConfig, ProviderKind } from "@arc/host/protocol";
 import { PROVIDERS } from "@arc/host/catalog";
-import { useArcLogo } from "../hooks/useArcLogo";
-type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderConfig[]; monoLogoText: string; prideLogoText: string; version: string };
+type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderConfig[]; monoLogoText: string; version: string };
 const TIERS: ModelTier[] = ["heavy", "default", "light", "free"];
 const TIER_ORDER: Record<ModelTier, number> = { heavy: 0, default: 1, light: 2, free: 3 };
 type Tab = "models" | "providers" | "mcp" | "general" | "search" | "customize";
@@ -16,9 +15,9 @@ const TABS: { value: Tab; label: string; icon: React.ReactNode }[] = [
   { value: "search", label: "Search", icon: <Play size={15} /> },
   { value: "customize", label: "Customize", icon: <ListChecks size={15} /> },
 ];
-export default function SettingsModal({ client, onClose, models, providers, monoLogoText, prideLogoText, version }: Props) {
+export default function SettingsModal({ client, onClose, models, providers, monoLogoText, version }: Props) {
   const [tab, setTab] = useState<Tab>("models");
-  const logoTextUri = useArcLogo(monoLogoText, prideLogoText, false);
+  const logoTextUri = monoLogoText;
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const navRef = useRef<HTMLElement>(null);
   const [indicator, setIndicator] = useState({ left: 0, width: 0 });

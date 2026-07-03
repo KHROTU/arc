@@ -2,7 +2,7 @@ import { useState, useEffect, memo, useCallback, useMemo } from "react";
 import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
 import {
   ChevronRight, Bot, ArrowRight, Check, Circle, CircleDot,
-  HelpCircle, CornerDownLeft, Sparkles, AlertTriangle, Terminal, ExternalLink, StopCircle,
+  HelpCircle, CornerDownLeft, Sparkles, AlertTriangle, Terminal, ExternalLink, StopCircle, Maximize2,
 } from "lucide-react";
 type StepType =
   | "tool_group" | "tool" | "subagent" | "handoff"
@@ -13,7 +13,7 @@ interface TodoItem {
   state: "pending" | "in_progress" | "done" | "skipped" | "blocked" | "failed";
   children?: TodoItem[];
 }
-interface DiffHunk {
+export interface DiffHunk {
   added: boolean;
   removed: boolean;
   value: string;
@@ -79,7 +79,7 @@ const Code = memo(({ text, isOutput }: { text: string; isOutput?: boolean }) => 
   return <span className="arc-code-text" dangerouslySetInnerHTML={{ __html: highlight(text, isOutput) }} />;
 });
 Code.displayName = "Code";
-const DiffView = memo(({ hunks, filePath, onOpenFile }: { hunks: DiffHunk[]; filePath?: string; onOpenFile?: (path: string) => void }) => {
+const DiffView = memo(({ hunks, filePath, onOpenFile, onOpenFullscreenDiff }: { hunks: DiffHunk[]; filePath?: string; onOpenFile?: (path: string) => void; onOpenFullscreenDiff?: (payload: { filePath?: string; hunks: DiffHunk[] }) => void }) => {
   let oldLine = 1;
   let newLine = 1;
   return (
@@ -94,6 +94,11 @@ const DiffView = memo(({ hunks, filePath, onOpenFile }: { hunks: DiffHunk[]; fil
             </button>
           )}
           <span className="arc-diff-file-spacer" />
+          {onOpenFullscreenDiff && (
+            <button className="arc-diff-file-open" title="Open fullscreen diff" onClick={(e) => { e.stopPropagation(); onOpenFullscreenDiff({ filePath, hunks }); }}>
+              <Maximize2 size={12} />
+            </button>
+          )}
         </div>
       )}
       <div className="arc-diff-body">
@@ -190,7 +195,7 @@ const ClarificationBlock = memo(({ question, options }: { question?: string; opt
 ));
 ClarificationBlock.displayName = "ClarificationBlock";
 export type ToolTreeMode = "auto" | "collapsed";
-const GroupNode = memo(({ step, onOpenFile, toolTreeMode }: { step: ProcessStep; onOpenFile?: (path: string) => void; toolTreeMode: ToolTreeMode }) => {
+const GroupNode = memo(({ step, onOpenFile, onOpenFullscreenDiff, toolTreeMode }: { step: ProcessStep; onOpenFile?: (path: string) => void; onOpenFullscreenDiff?: (payload: { filePath?: string; hunks: DiffHunk[] }) => void; toolTreeMode: ToolTreeMode }) => {
   const initialOpen = step.type === "subagent" || toolTreeMode === "auto";
   const [open, setOpen] = useState(initialOpen);
   const childCount = step.children?.length || 0;
@@ -219,7 +224,7 @@ const GroupNode = memo(({ step, onOpenFile, toolTreeMode }: { step: ProcessStep;
           >
             <div className="arc-proc-children">
               <span className="arc-proc-treeline" />
-              <StepList steps={step.children} onOpenFile={onOpenFile} toolTreeMode={toolTreeMode} />
+              <StepList steps={step.children} onOpenFile={onOpenFile} onOpenFullscreenDiff={onOpenFullscreenDiff} toolTreeMode={toolTreeMode} />
             </div>
           </motion.div>
         )}
@@ -265,9 +270,9 @@ const ThoughtNode = memo(({ step }: { step: ProcessStep }) => {
   );
 });
 ThoughtNode.displayName = "ThoughtNode";
-const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, toolTreeMode }: { step: ProcessStep; isActive: boolean; onToggle: () => void; onOpenFile?: (path: string) => void; toolTreeMode: ToolTreeMode }) => {
-  if (step.type === "tool_group") return <GroupNode step={step} onOpenFile={onOpenFile} toolTreeMode={toolTreeMode} />;
-  if (step.type === "subagent") return <GroupNode step={step} onOpenFile={onOpenFile} toolTreeMode={toolTreeMode} />;
+const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, onOpenFullscreenDiff, toolTreeMode }: { step: ProcessStep; isActive: boolean; onToggle: () => void; onOpenFile?: (path: string) => void; onOpenFullscreenDiff?: (payload: { filePath?: string; hunks: DiffHunk[] }) => void; toolTreeMode: ToolTreeMode }) => {
+  if (step.type === "tool_group") return <GroupNode step={step} onOpenFile={onOpenFile} onOpenFullscreenDiff={onOpenFullscreenDiff} toolTreeMode={toolTreeMode} />;
+  if (step.type === "subagent") return <GroupNode step={step} onOpenFile={onOpenFile} onOpenFullscreenDiff={onOpenFullscreenDiff} toolTreeMode={toolTreeMode} />;
   if (step.type === "thought") return <ThoughtNode step={step} />;
   const isReadTool = step.toolName === "file.read";
   const isNoDetail = isReadTool || step.toolName === "web.fetch";
@@ -316,7 +321,7 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, toolTreeMode }
               {hasDiff && step.diffHunks && step.diffHunks.length > 0 && (
                 <div className="arc-proc-block">
                   <span className="arc-proc-block-label">Diff</span>
-                   <DiffView hunks={step.diffHunks} filePath={step.filePath} onOpenFile={onOpenFile} />
+                  <DiffView hunks={step.diffHunks} filePath={step.filePath} onOpenFile={onOpenFile} onOpenFullscreenDiff={onOpenFullscreenDiff} />
                 </div>
               )}
               {!hasDiff && step.output && (
@@ -348,7 +353,7 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, toolTreeMode }
                   <span className="arc-proc-block-label">Process</span>
                   <div className="arc-proc-children" style={{ marginLeft: 0, paddingLeft: 16 }}>
                     <span className="arc-proc-treeline" />
-                    <StepList steps={step.children} onOpenFile={onOpenFile} toolTreeMode={toolTreeMode} />
+                    <StepList steps={step.children} onOpenFile={onOpenFile} onOpenFullscreenDiff={onOpenFullscreenDiff} toolTreeMode={toolTreeMode} />
                   </div>
                 </div>
               )}
@@ -360,7 +365,7 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, toolTreeMode }
   );
 });
 ProcessNode.displayName = "ProcessNode";
-const StepList = memo(({ steps, onOpenFile, toolTreeMode }: { steps: ProcessStep[]; onOpenFile?: (path: string) => void; toolTreeMode: ToolTreeMode }) => {
+const StepList = memo(({ steps, onOpenFile, onOpenFullscreenDiff, toolTreeMode }: { steps: ProcessStep[]; onOpenFile?: (path: string) => void; onOpenFullscreenDiff?: (payload: { filePath?: string; hunks: DiffHunk[] }) => void; toolTreeMode: ToolTreeMode }) => {
   const isEnded = useMemo(() => steps.length > 0 && steps.every((s) => s.pending === false), [steps]);
   const [openIds, setOpenIds] = useState<Set<string>>(() => {
     if (toolTreeMode === "collapsed") return new Set<string>();
@@ -403,6 +408,7 @@ const StepList = memo(({ steps, onOpenFile, toolTreeMode }: { steps: ProcessStep
           isActive={openIds.has(step.id)}
           onToggle={() => handleToggle(step.id)}
           onOpenFile={onOpenFile}
+          onOpenFullscreenDiff={onOpenFullscreenDiff}
           toolTreeMode={toolTreeMode}
         />
       ))}
@@ -410,7 +416,7 @@ const StepList = memo(({ steps, onOpenFile, toolTreeMode }: { steps: ProcessStep
   );
 });
 StepList.displayName = "StepList";
-export default function ArcProcessUI({ steps = [], onOpenFile, toolTreeMode = "auto" }: { steps: ProcessStep[]; onOpenFile?: (path: string) => void; toolTreeMode?: ToolTreeMode }) {
+export default function ArcProcessUI({ steps = [], onOpenFile, onOpenFullscreenDiff, toolTreeMode = "auto" }: { steps: ProcessStep[]; onOpenFile?: (path: string) => void; onOpenFullscreenDiff?: (payload: { filePath?: string; hunks: DiffHunk[] }) => void; toolTreeMode?: ToolTreeMode }) {
   if (!steps.length) return null;
   const rendered: ProcessStep[] = steps.length > 1
     ? [{ id: `called-${steps[0].id}`, type: "tool_group", title: "Called", children: steps }]
@@ -418,7 +424,7 @@ export default function ArcProcessUI({ steps = [], onOpenFile, toolTreeMode = "a
   return (
     <div className="arc-proc">
       <LayoutGroup>
-        <StepList steps={rendered} onOpenFile={onOpenFile} toolTreeMode={toolTreeMode} />
+        <StepList steps={rendered} onOpenFile={onOpenFile} onOpenFullscreenDiff={onOpenFullscreenDiff} toolTreeMode={toolTreeMode} />
       </LayoutGroup>
     </div>
   );

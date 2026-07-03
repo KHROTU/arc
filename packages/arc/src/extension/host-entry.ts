@@ -49,6 +49,8 @@ const chatSessions = new Map<string, Session>();
 const chatTotals = new Map<string, { cost: number; promptTokens: number; completionTokens: number; window: number }>();
 const pendingApprovals = new Map<string, { resolve: (allowed: boolean) => void; session: Session }>();
 let approvalId = 0;
+const DIFF_PREVIEW_SCHEME = "arc-diff-preview";
+const diffPreviewContents = new Map<string, string>();
 let browser: BrowserAdapter | undefined;
 let browserPromise: Promise<BrowserAdapter> | undefined;
 let browserIdleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -160,6 +162,15 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
     openPrompt();
   });
   void vscode.commands.executeCommand("setContext", "arc.showProblems", false);
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(DIFF_PREVIEW_SCHEME, {
+      provideTextDocumentContent(uri: vscode.Uri): string {
+        const id = new URLSearchParams(uri.query).get("id");
+        if (!id) return "";
+        return diffPreviewContents.get(id) ?? "";
+      },
+    }),
+  );
 }
 async function initializeAsync(context: vscode.ExtensionContext) {
   registry = new ModelRegistry();
@@ -322,6 +333,35 @@ async function openPrompt() {
     );
   }
   await vscode.window.showTextDocument(target);
+}
+function resolveWorkspaceFileUri(filePath: string): vscode.Uri | undefined {
+  if (!filePath) return undefined;
+  if (path.isAbsolute(filePath)) return vscode.Uri.file(path.normalize(filePath));
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+  if (!root) return undefined;
+  return vscode.Uri.joinPath(root, filePath);
+}
+function buildBeforeContentFromHunks(hunks: { added: boolean; removed: boolean; value: string }[]): string {
+  let before = "";
+  for (const h of hunks) {
+    if (h.added && !h.removed) continue;
+    before += h.value ?? "";
+  }
+  return before;
+}
+function createDiffPreviewUri(filePath: string, content: string): vscode.Uri {
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  diffPreviewContents.set(id, content);
+  while (diffPreviewContents.size > 64) {
+    const oldest = diffPreviewContents.keys().next().value as string | undefined;
+    if (!oldest) break;
+    diffPreviewContents.delete(oldest);
+  }
+  return vscode.Uri.from({
+    scheme: DIFF_PREVIEW_SCHEME,
+    path: `/${path.basename(filePath)}`,
+    query: `id=${encodeURIComponent(id)}`,
+  });
 }
 function classifyError(message: string): "timeout" | "rate_limit" | "auth" | "provider" | "malformed" | "network" | "aborted" | undefined {
   const m = message.toLowerCase();
@@ -554,6 +594,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       "todo.write",
       "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor",
       "browser.console", "browser.network", "browser.domSnapshot",
+      "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage",
       "mcp.call", "mcp.create", "mcp.remove", "mcp.toggle",
       "mcp.resources/list", "mcp.resources/read", "mcp.prompts/list", "mcp.prompts/get",
       "subagent.spawn", "handoff", "clarification.askUser",
@@ -1121,11 +1162,20 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           webview.postMessage({ type: "ui/showSettings" });
           break;
         case "ui/openFile": {
-          const root = vscode.workspace.workspaceFolders?.[0]?.uri;
-          if (root) {
-            const fileUri = vscode.Uri.joinPath(root, msg.path);
+          const fileUri = resolveWorkspaceFileUri(msg.path);
+          if (fileUri) {
             try { await vscode.window.showTextDocument(fileUri); } catch {  }
           }
+          break;
+        }
+        case "ui/openFileDiff": {
+          const fileUri = resolveWorkspaceFileUri(msg.path);
+          if (!fileUri) break;
+          try {
+            const beforeContent = buildBeforeContentFromHunks(msg.hunks);
+            const beforeUri = createDiffPreviewUri(msg.path, beforeContent);
+            await vscode.commands.executeCommand("vscode.diff", beforeUri, fileUri, path.basename(msg.path));
+          } catch {  }
           break;
         }
         case "ui/openPrompt":
@@ -1389,7 +1439,6 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
   const monoLogo = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "assets", "arc-logo-mono.svg"));
   const prideLogo = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "assets", "arc-logo-pride.svg"));
   const monoLogoText = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "assets", "arc-logo-mono-text.svg"));
-  const prideLogoText = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "assets", "arc-logo-pride-text.svg"));
   const extVersion = ctxRef?.extension?.packageJSON?.version ?? "0.0.0";
   const prideMode: PrideMode = vscode.workspace.getConfiguration().get<PrideMode>("arc.appearance.prideLogo", "june") ?? "june";
   let isPride: boolean;
@@ -1408,7 +1457,7 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
   <link rel="stylesheet" href="${styleUri}" />
 </head>
 <body>
-  <div id="root" data-mode="${mode}" data-mono="${monoLogo}" data-pride="${prideLogo}" data-mono-text="${monoLogoText}" data-pride-text="${prideLogoText}" data-pride-active="${isPride}" data-tool-tree="${toolTree}" data-version="${extVersion}"></div>
+  <div id="root" data-mode="${mode}" data-mono="${monoLogo}" data-pride="${prideLogo}" data-mono-text="${monoLogoText}" data-pride-active="${isPride}" data-tool-tree="${toolTree}" data-version="${extVersion}"></div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
