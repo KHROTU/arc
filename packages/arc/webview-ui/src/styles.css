@@ -8,6 +8,7 @@
   --arc-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --arc-line: var(--vscode-panel-border, var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.22)));
   --arc-line-faint: rgba(127, 127, 127, 0.18);
+  --arc-line-tree: rgba(127, 127, 127, 0.28);
   --arc-hover: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.09));
   --arc-toolbar-hover: var(--vscode-toolbar-hoverBackground, rgba(127, 127, 127, 0.13));
   --arc-code-bg: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.1));
@@ -519,12 +520,32 @@ body {
 .arc-proc-count > span { display: inline-block; }
 .arc-proc-children-wrap { overflow: hidden; }
 .arc-proc-children { position: relative; margin-left: 8px; padding-left: 16px; display: flex; flex-direction: column; gap: 1px; }
-.arc-proc-treeline { position: absolute; left: 0; top: 0; bottom: 2px; width: 1px; background: var(--arc-line-faint); }
+.arc-proc-treeline { display: none; }
 .arc-proc-children > .arc-proc-node, .arc-proc-children > .arc-proc-group { position: relative; }
 .arc-proc-children > .arc-proc-node::before,
 .arc-proc-children > .arc-proc-group::before {
-  content: ""; position: absolute; left: -16px; top: 4px; width: 17px; height: 12px;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='17' height='12'%3E%3Cpath d='M17,12 L5,12 Q0,12 0,7 L0,1' fill='none' stroke='rgba(127,127,127,0.18)' stroke-width='1'/%3E%3C/svg%3E") no-repeat;
+  content: "";
+  position: absolute;
+  left: -16px;
+  top: 4px;
+  width: 16px;
+  height: 12px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='12'%3E%3Cpath d='M16,11.5 L8,11.5 Q0.5,11.5 0.5,3' fill='none' stroke='rgba(127,127,127,0.28)' stroke-width='1'/%3E%3C/svg%3E") no-repeat;
+}
+.arc-proc-children > .arc-proc-node::after,
+.arc-proc-children > .arc-proc-group::after {
+  content: "";
+  position: absolute;
+  left: -16px;
+  top: 0;
+  height: 7px;
+  width: 1px;
+  background: var(--arc-line-tree);
+}
+.arc-proc-children > .arc-proc-node:not(:last-child)::after,
+.arc-proc-children > .arc-proc-group:not(:last-child)::after {
+  height: auto;
+  bottom: -2px;
 }
 .arc-proc-node { position: relative; }
 .arc-proc-row {
