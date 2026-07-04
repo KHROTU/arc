@@ -54,21 +54,15 @@
     "color": "#0d1117",
     "theme": "dark"
   },
-  "activationEvents": [
-    "onStartupFinished",
-    "onView:arc-sidebar",
-    "onView:arc-sidebar-pride",
-    "onCommand:arc.openSidebar",
-    "onCommand:arc.openFullscreen",
-    "onCommand:arc.openSettings",
-    "onCommand:arc.newTask",
-    "onCommand:arc.stop",
-    "onCommand:arc.continue",
-    "onCommand:arc.toggleProblems",
-    "onCommand:arc.manageModels",
-    "onCommand:arc.manageMcp",
-    "onCommand:arc.managePrompts",
-    "onCommand:arc.openPlayground"
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.css",
+    "assets/arc-logo-mono.png",
+    "assets/arc-logo-mono.svg",
+    "assets/arc-logo-pride.svg",
+    "assets/arc-logo-mono-text.svg",
+    "LICENSE*",
+    "package.json"
   ],
   "contributes": {
     "viewsContainers": {

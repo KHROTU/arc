@@ -78,6 +78,13 @@ let searchIndexer: Indexer | undefined;
 let searchProgress: IndexProgress = { filesScanned: 0, filesIndexed: 0, chunksEmbedded: 0, errors: 0 };
 let searchAbort: AbortController | undefined;
 let approvalsConfig: ApprovalsConfig = { ...DEFAULT_APPROVALS };
+let pendingAgentState: { messages: unknown[]; steps: unknown[]; mode: string; todoItems: unknown[] } | undefined;
+function webviewResourceRoots(context: vscode.ExtensionContext): vscode.Uri[] {
+  return [
+    vscode.Uri.joinPath(context.extensionUri, "dist"),
+    vscode.Uri.joinPath(context.extensionUri, "assets"),
+  ];
+}
 export function activate(context: vscode.ExtensionContext) {
   ctxRef = context;
   log = vscode.window.createOutputChannel("Arc");
@@ -118,11 +125,10 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
         sidebarSession.view = webviewView;
         webviewView.webview.options = {
           enableScripts: true,
-          localResourceRoots: [vscode.Uri.file(context.extensionPath)],
+          localResourceRoots: webviewResourceRoots(context),
         };
         webviewView.webview.html = getWebviewHtml(webviewView.webview, context.extensionUri, "sidebar");
         wireWebview(webviewView.webview, sidebarSession);
-        void ensureAgent(sidebarSession);
       } catch (err) {
         log.appendLine(`[arc] view resolve failed: ${(err as Error)?.stack ?? err}`);
       }
@@ -240,15 +246,10 @@ async function initializeAsync(context: vscode.ExtensionContext) {
   setNotifier(makeVSCodeNotifier());
   initDiscordRpcSpoof(context);
   const savedState = context.globalState.get<{ messages: unknown[]; steps: unknown[]; mode: string; todoItems: unknown[] }>("arc.agentState");
+  pendingAgentState = savedState;
   const currentChat = chatHistory.ensure(chatHistory.current());
   sidebarSession.id = currentChat.id;
   chatSessions.set(currentChat.id, sidebarSession);
-  void ensureAgent(sidebarSession).then(async (agent) => {
-    if (agent && savedState?.messages?.length) {
-      agent.restore(savedState as any).catch(() => {});
-      context.globalState.update("arc.agentState", undefined);
-    }
-  });
   persist();
   setTimeout(() => { void tryLoadIndex(); }, 2000);
   initResolve?.();
@@ -265,8 +266,7 @@ async function openFullscreen(): Promise<vscode.Webview | undefined> {
   }
   const panel = vscode.window.createWebviewPanel("arc.fullscreen", "Arc", vscode.ViewColumn.One, {
     enableScripts: true,
-    retainContextWhenHidden: true,
-    localResourceRoots: [vscode.Uri.file(ctxRef.extensionPath)],
+    localResourceRoots: webviewResourceRoots(ctxRef),
   });
   const prideMode: PrideMode = vscode.workspace.getConfiguration().get<PrideMode>("arc.appearance.prideLogo", "june") ?? "june";
   const logoFile = pickLogo(prideMode).file;
@@ -277,7 +277,6 @@ async function openFullscreen(): Promise<vscode.Webview | undefined> {
   const session: Session = { id: chatId, panel, agent: undefined as unknown as Agent, steps: [], messages: [] };
   fullscreenSessions.set(mapKey, session);
   wireWebview(panel.webview, session);
-  void ensureAgent(session);
   panel.onDidDispose(() => {
     fullscreenSessions.delete(mapKey);
     chatSessions.delete(chatId);
@@ -305,7 +304,6 @@ function newTask() {
   if (sidebarSession.agent) {
     sidebarSession.agent = undefined as unknown as Agent;
     sidebarSession.agentReady = undefined;
-    void ensureAgent(sidebarSession);
   }
   if (sidebarSession.view) {
     sidebarSession.view.webview.postMessage({ type: "chat/current", chatId: sidebarSession.id });
@@ -651,6 +649,16 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     },
     initialMessages: chatHistory?.getMessages(session.id) as ChatMessage[] ?? [],
   });
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+  const prefixes = await loadApprovalsMemory(root);
+  for (const entry of prefixes) {
+    session.agent.addCommandPrefix(entry.prefix);
+  }
+  if (session === sidebarSession && pendingAgentState?.messages?.length) {
+    session.agent.restore(pendingAgentState as any).catch(() => {});
+    pendingAgentState = undefined;
+    void ctxRef.globalState.update("arc.agentState", undefined);
+  }
   return session.agent;
 }
 function broadcast(session: Session, msg: HostMsg) {
@@ -722,11 +730,9 @@ function switchToChat(chatId: string, webview: vscode.Webview) {
   }
   chatTotals.set(chatId, { cost: 0, promptTokens: 0, completionTokens: 0, window: 0 });
   pushContextStats(webview, chatId);
-  void ensureAgent(sidebarSession);
   for (const [, s] of fullscreenSessions) {
     s.agent = undefined as unknown as Agent;
     s.agentReady = undefined;
-    void ensureAgent(s);
   }
 }
 function pushContextStats(webview: vscode.Webview, chatId: string) {
@@ -913,16 +919,6 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           webview.postMessage({ type: "session/steps", steps: session.steps });
           broadcastChatList(webview);
           pushContextStats(webview, session.id);
-          {
-            const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-            const agent = await ensureAgent(session);
-            if (agent) {
-              const prefixes = await loadApprovalsMemory(root);
-              for (const entry of prefixes) {
-                agent.addCommandPrefix(entry.prefix);
-              }
-            }
-          }
           break;
         }
         case "chat/send":
@@ -933,7 +929,6 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             session.steps = [];
             session.agent = undefined as unknown as Agent;
             session.agentReady = undefined;
-            void ensureAgent(session);
             persist?.();
             void persistAsync?.();
             broadcastChatListAll();
@@ -1576,7 +1571,7 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
 </head>
 <body>
   <div id="root" data-mode="${mode}" data-mono="${monoLogo}" data-pride="${prideLogo}" data-mono-text="${monoLogoText}" data-pride-active="${isPride}" data-tool-tree="${toolTree}" data-version="${extVersion}"></div>
-  <script nonce="${nonce}" src="${scriptUri}"></script>
+  <script type="module" nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
 }
