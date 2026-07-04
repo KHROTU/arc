@@ -49,5 +49,32 @@ export function createClient(): RpcClient {
   (window as unknown as { __ARC_ATTACH?: () => void }).__ARC_ATTACH = () => {
     vscode?.postMessage({ type: "ui/attachSelection" });
   };
+  (window as unknown as { __ARC_ATTACH_FILE?: () => void }).__ARC_ATTACH_FILE = () => {
+    vscode?.postMessage({ type: "ui/attachFile" });
+  };
+  (window as unknown as { __ARC_ATTACH_PROBLEMS?: () => void }).__ARC_ATTACH_PROBLEMS = () => {
+    vscode?.postMessage({ type: "ui/attachProblems" });
+  };
+  (window as unknown as { __ARC_ATTACH_ALL_PROBLEMS?: () => void }).__ARC_ATTACH_ALL_PROBLEMS = () => {
+    vscode?.postMessage({ type: "ui/attachAllProblems" });
+  };
+  (window as unknown as { __ARC_ATTACH_FILE_PROBLEMS?: () => void }).__ARC_ATTACH_FILE_PROBLEMS = () => {
+    vscode?.postMessage({ type: "ui/attachFileProblems" });
+  };
+  (window as unknown as { __ARC_ATTACH_CURRENT_FILE?: () => void }).__ARC_ATTACH_CURRENT_FILE = () => {
+    vscode?.postMessage({ type: "ui/attachCurrentFile" });
+  };
+  (window as unknown as { __ARC_ATTACH_GIT_DIFF?: () => void }).__ARC_ATTACH_GIT_DIFF = () => {
+    vscode?.postMessage({ type: "ui/attachGitDiff" });
+  };
+  (window as unknown as { __ARC_ATTACH_GIT_STAGED?: () => void }).__ARC_ATTACH_GIT_STAGED = () => {
+    vscode?.postMessage({ type: "ui/attachGitStaged" });
+  };
+  (window as unknown as { __ARC_ATTACH_CHANGED_FILES?: () => void }).__ARC_ATTACH_CHANGED_FILES = () => {
+    vscode?.postMessage({ type: "ui/attachChangedFiles" });
+  };
+  (window as unknown as { __ARC_ATTACH_PR?: () => void }).__ARC_ATTACH_PR = () => {
+    vscode?.postMessage({ type: "ui/attachPullRequest" });
+  };
   return client;
 }
