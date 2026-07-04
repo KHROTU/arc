@@ -9,6 +9,19 @@ Arc is built for speed and precision. It combines a sophisticated multi-model or
 
 [arc-demo.webm](https://github.com/user-attachments/assets/fa8d9d15-870f-49e2-b1ea-4ed57678483f)
 
+## Efficiency
+
+| Extension | VSIX Size (as of July 4th, 2026) |
+| :--- | :--- |
+| **Arc** | **0.23 MB** |
+| Cline | 10.18 MB |
+| BLACKBOXAI Agent | 20.15 MB |
+| Roo Code | 30.11 MB |
+| Kilo Code | 89.94 MB |
+| Continue | 111.48 MB |
+
+Arc aims to provide a top-of-the-line agentic experience with a minimal footprint. By optimizing our dependency tree and focusing on native VS Code APIs, we keep the extension fast and portable.
+
 ## Features
 
 ### Specialties
@@ -20,15 +33,15 @@ Arc is built for speed and precision. It combines a sophisticated multi-model or
 
 - **File Operations:** Read, write, edit, grep, glob, and semantic search.
 - **Shell Execution:** Run commands (standard or background), manage processes, write to shells, and configure custom execution commands.
-- **LSP Integration:** Check workspace diagnostics and identify file-specific problems.
-- **Playwright Automation:** Navigate, click, type, hover, scroll, evaluate scripts, capture screenshots, read DOM/console/network activity, and wait for specific page states.
-- **Model Context Protocol:** Register, toggle, and remove MCP servers; call custom tools, resources, and prompts.
 - **Subagents & Handoff:** Spawn child agents, query parent agents, and hand off control between instances.
-- **Checkpoint Management:** List, compare, and revert to previous session checkpoints.
+- **Model Context Protocol:** Register, toggle, and remove MCP servers; call custom tools, resources, and prompts.
 - **Git Integration:** View staged/unstaged diffs, inspect branch differences, list changed files, and generate commit messages.
-- **Memory & Rules:** Read, list, create, and modify persistent memories and behavioral rules.
-- **Web Capabilities:** Fetch web page content and search the web.
+- **Playwright Integration:** Navigate, click, type, hover, scroll, evaluate scripts, capture screenshots, read DOM/console/network activity, and wait for specific page states.
+- **LSP Integration:** Check workspace diagnostics and identify file-specific problems.
 - **Testing & Session Management:** Run automatically detected test suites, manage custom skills, track session history/traces, and update task progress.
+- **Web Capabilities:** Fetch web page content and search the web.
+- **Checkpoint Management:** List, compare, and revert to previous session checkpoints.
+- **Memory & Rules:** Read, list, create, and modify persistent memories and behavioral rules.
 - **User Clarification:** Ask clarifying questions.
 
 ### Design
@@ -41,19 +54,6 @@ Arc is built for speed and precision. It combines a sophisticated multi-model or
 - **OS sandboxing for shell commands.** Shell execution supports three native sandboxing profiles: `sandbox-exec` on macOS, `bwrap` on Linux, and WSB on Windows.
 - **Secret scanning at write time.** Every `file.edit` and `file.write` runs through a pre-write hook that scans for AWS keys, GitHub tokens, OpenAI/Anthropic API keys, private key PEM blocks, and hardcoded secrets. You can add custom regex patterns and commands. The scan runs before the file hits disk, so secrets never touch the filesystem.
 - **Mode write-globs.** Each mode can declare a `writeGlob` that restricts which file paths the agent is allowed to modify. Review mode, for example, can only write `**/.arc/review-*.md`, so the agent can produce review artifacts but cannot touch source files. Switching to Code mode lifts the restriction.
-
-## Efficiency
-
-Arc aims to provide a top-of-the-line agentic experience with a minimal footprint. By optimizing our dependency tree and focusing on native VS Code APIs, we keep the extension fast and portable.
-
-| Extension | VSIX Size (as of July 4th, 2026) |
-| :--- | :--- |
-| **Arc** | **0.23 MB** |
-| Cline | 10.18 MB |
-| BLACKBOXAI Agent | 20.15 MB |
-| Roo Code | 30.11 MB |
-| Kilo Code | 89.94 MB |
-| Continue | 111.48 MB |
 
 ## Featuren't
 
@@ -78,14 +78,7 @@ To run Arc from source:
 
 1. Clone the repository.
 2. Run `pnpm install` and `pnpm build:ext`.
-3. Press `F5` in VS Code to launch the Extension Development Host.
-
-## Project Structure
-
-Arc is split into two main packages:
-
-- `packages/arc`: The VS Code extension, UI components (React), and RPC wiring.
-- `packages/host`: The core engine—agent loops, model routing, MCP clients, and file editing logic.
+3. Press `F5` or `Run > Start Debugging` in VS Code to launch the Extension Development Host.
 
 ## License
 
