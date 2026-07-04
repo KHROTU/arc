@@ -19,7 +19,12 @@ export const ollamaTransport: Transport = {
       stream: true,
       messages: req.messages.map((m) => {
         if (m.role === "tool") {
-          return { role: "tool", tool_name: toApiToolName(toolNameCache.get(m.toolCallId ?? "") ?? "unknown"), content: m.content };
+          const images = (m as any).images as { image_url: { url: string } }[] | undefined;
+          const msg: Record<string, unknown> = { role: "tool", tool_name: toApiToolName(toolNameCache.get(m.toolCallId ?? "") ?? "unknown"), content: m.content };
+          if (images?.length) {
+            msg.images = images.map((img) => img.image_url.url.replace(/^data:image\/\w+;base64,/, ""));
+          }
+          return msg;
         }
         if (m.role === "assistant" && m.toolCalls?.length) {
           const msg: Record<string, unknown> = { role: "assistant" };

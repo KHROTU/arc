@@ -119,6 +119,7 @@ export interface ToolContext {
   proxyWeb?: string;
   proxyShell?: string;
   semanticSearch?: (query: string, k?: number) => Promise<{ file: string; start: number; end: number; score: number; snippet: string }[]>;
+  describeImage?: (dataUrl: string) => Promise<string>;
 }
 export interface ToolResult {
   ok: boolean;
@@ -129,6 +130,7 @@ export interface ToolResult {
   diffHunks?: DiffHunk[];
   filePath?: string;
   runAfter?: { command: string; output: string };
+  images?: { type: string; image_url: { url: string } }[];
 }
 export type ToolFn = (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
 export function checkWriteGlob(filePath: string, glob: string): { allowed: boolean } {
@@ -141,9 +143,38 @@ export function checkWriteGlob(filePath: string, glob: string): { allowed: boole
 }
 export const tools: Record<string, { description: string; fn: ToolFn }> = {
   "file.read": {
-    description: "Read a file from the workspace. Args: { path, offset?, limit? }",
+    description: "Read a file. Images are included inline for vision. Args: { path, offset?, limit? }",
     fn: async (args, ctx) => {
       const ed = new FileEditor(ctx.root);
+      const filePath = String(args.path);
+      const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+      const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif", "heic"]);
+      const MIME: Record<string, string> = {
+        png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+        webp: "image/webp", svg: "image/svg+xml", bmp: "image/bmp", ico: "image/x-icon", avif: "image/avif", heic: "image/heic",
+      };
+      if (IMAGE_EXTS.has(ext)) {
+        try {
+          const full = ed.resolve(filePath);
+          const buf = await fs.readFile(full);
+          const base64 = buf.toString("base64");
+          const mime = MIME[ext] ?? "image/png";
+          const dataUrl = `data:${mime};base64,${base64}`;
+          const sizeLabel = buf.length < 1024 ? `${buf.length}B` : `${(buf.length / 1024).toFixed(1)}KB`;
+          if (ctx.describeImage) {
+            const description = await ctx.describeImage(base64);
+            return { ok: true, output: `Read image: ${filePath.split(/[/\\]/).pop()} (${mime}, ${sizeLabel})\n${description}`, filePath };
+          }
+          return {
+            ok: true,
+            output: `Read image: ${filePath.split(/[/\\]/).pop()} (${mime}, ${sizeLabel})`,
+            filePath,
+            images: [{ type: "image_url", image_url: { url: dataUrl } }],
+          };
+        } catch (e) {
+          return { ok: false, output: `Failed to read image: ${(e as Error).message}` };
+        }
+      }
       const offset = args.offset ? Number(args.offset) : undefined;
       const limit = args.limit ? Number(args.limit) : undefined;
       const body = await ed.read(String(args.path), { offset, limit });
@@ -475,7 +506,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
   "browser.navigate": { description: "Navigate the browser. Args: { url }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.navigate(String(a.url)) : { ok: false, output: "Browser not available." }; } },
   "browser.click": { description: "Click a selector. Args: { selector }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.click(String(a.selector)) : { ok: false, output: "Browser not available." }; } },
   "browser.type": { description: "Type into a selector. Args: { selector, text }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.type(String(a.selector), String(a.text)) : { ok: false, output: "Browser not available." }; } },
-  "browser.screenshot": { description: "Take a screenshot. Args: { path? }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.screenshot(a.path ? String(a.path) : undefined) : { ok: false, output: "Browser not available." }; } },
+  "browser.screenshot": { description: "Take a screenshot. Args: { path?, fullPage?, type? }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.screenshot(a.path ? String(a.path) : undefined, !!a.fullPage, (a.type === "jpeg" ? "jpeg" : "png")) : { ok: false, output: "Browser not available." }; } },
   "browser.evaluate": { description: "Run JS in the page. Args: { script }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.evaluate(String(a.script)) : { ok: false, output: "Browser not available." }; } },
   "browser.readDom": { description: "Read the page's accessibility tree. Args: {} ", fn: async (_a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.readDom() : { ok: false, output: "Browser not available." }; } },
   "browser.close": { description: "Close the browser. Args: {}", fn: async (_a, ctx) => { const b = await resolveBrowser(ctx.browser); if (b) await b.close(); return { ok: true, output: "Browser closed." }; } },

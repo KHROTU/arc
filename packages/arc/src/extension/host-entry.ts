@@ -409,6 +409,7 @@ Working dir: ${root} | OS: ${process.platform} | Date: ${new Date().toISOString(
 
 ## Tool efficiency
 - Prefer dedicated tools over shell.run: file.grep over rg/grep, file.glob over ls/find, file.read over cat/head/tail, web.fetch over curl.
+- Use file.read to view images — the image data is included inline so vision-capable models can see it directly.
 - Use offset/limit on file.read to target just the lines you need.
 - SEARCH/REPLACE block format for file.edit:\n\npath/to/file.ts\n<<<<<<< SEARCH\nexact lines (include enough context for uniqueness)\n=======\nreplacement lines\n>>>>>>> REPLACE
 - After successful file.edit or file.write, do NOT re-read to verify — the tool errors on failure. Trust the result. LSP diagnostics run automatically.
@@ -519,6 +520,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       const hits = await idx.search(query, k ?? 10);
       return hits.map((h: { file: string; start: number; end: number; score: number; text: string }) => ({ file: h.file, start: h.start, end: h.end, score: h.score, snippet: h.text }));
     },
+    describeImage: (dataUrl: string) => describeToolImage(dataUrl, registry?.getCurrent?.()),
   };
   const sinkId = session.id;
   const sink: import("@arc/host").AgentEventSink = {
@@ -1145,6 +1147,122 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           webview.postMessage({ type: "session/attachment", uri, preview: `${preview}  ·  ${text.slice(0, 200)}` });
           break;
         }
+        case "ui/attachFile": {
+          const files = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: "Attach", filters: { "All files": ["*"] } });
+          if (!files?.length) break;
+          const uri = files[0];
+          const rel = vscode.workspace.asRelativePath(uri);
+          try {
+            const raw = await vscode.workspace.fs.readFile(uri);
+            const text = new TextDecoder().decode(raw).slice(0, 200).replace(/\n/g, "↵");
+            webview.postMessage({ type: "session/attachment", uri: rel, preview: `${rel}  ·  ${text}` });
+          } catch {
+            webview.postMessage({ type: "session/attachment", uri: rel, preview: rel });
+          }
+          break;
+        }
+        case "ui/attachProblems": {
+          const ed = vscode.window.activeTextEditor;
+          if (!ed) { webview.postMessage({ type: "error", message: "No active editor." }); break; }
+          const filePath = vscode.workspace.asRelativePath(ed.document.uri);
+          const diags = await lsp.problemsFor(filePath);
+          if (!diags.length) break;
+          const text = diags.map((d) => `[${d.severity === "error" ? "ERROR" : d.severity === "warning" ? "WARNING" : d.severity.toUpperCase()}] ${d.message} (${filePath}:${d.line})`).join("\n");
+          webview.postMessage({ type: "session/attachment", uri: `problems:${filePath}`, preview: `${diags.length} problem${diags.length === 1 ? "" : "s"} in ${filePath}  ·  ${text.slice(0, 200)}` });
+          break;
+        }
+        case "ui/attachAllProblems": {
+          const diags = await lsp.allProblems();
+          if (!diags.length) break;
+          const text = diags.map((d) => `[${d.severity === "error" ? "ERROR" : d.severity === "warning" ? "WARNING" : d.severity.toUpperCase()}] ${d.message} (${d.file}:${d.line})`).join("\n");
+          webview.postMessage({ type: "session/attachment", uri: "problems:workspace", preview: `${diags.length} problem${diags.length === 1 ? "" : "s"} across workspace  ·  ${text.slice(0, 200)}` });
+          break;
+        }
+        case "ui/attachFileProblems": {
+          const files = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: "Check problems", filters: { "Source files": ["*"] } });
+          if (!files?.length) break;
+          const rel = vscode.workspace.asRelativePath(files[0]);
+          const diags = await lsp.problemsFor(rel);
+          if (!diags.length) break;
+          const text = diags.map((d) => `[${d.severity === "error" ? "ERROR" : d.severity === "warning" ? "WARNING" : d.severity.toUpperCase()}] ${d.message} (${rel}:${d.line})`).join("\n");
+          webview.postMessage({ type: "session/attachment", uri: `problems:${rel}`, preview: `${diags.length} problem${diags.length === 1 ? "" : "s"} in ${rel}  ·  ${text.slice(0, 200)}` });
+          break;
+        }
+        case "ui/attachCurrentFile": {
+          const ed = vscode.window.activeTextEditor;
+          if (!ed) { webview.postMessage({ type: "error", message: "No active editor." }); break; }
+          const rel = vscode.workspace.asRelativePath(ed.document.uri);
+          const fullText = ed.document.getText();
+          webview.postMessage({ type: "session/attachment", uri: rel, preview: `${rel} (${fullText.split("\n").length} lines)  ·  ${fullText.slice(0, 200).replace(/\n/g, "↵")}` });
+          break;
+        }
+        case "ui/attachGitDiff": {
+          try {
+            const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+            const execPromise = (await import("node:child_process")).exec;
+            const { stdout } = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+              execPromise("git diff", { cwd: root, maxBuffer: 512 * 1024 }, (err, stdout, stderr) => {
+                if (err) reject(err); else resolve({ stdout, stderr });
+              });
+            });
+            if (!stdout.trim()) break;
+            webview.postMessage({ type: "session/attachment", uri: "git:unstaged", preview: `git diff (unstaged)  ·  ${stdout.trim().slice(0, 200)}` });
+          } catch (e) { webview.postMessage({ type: "error", message: `git diff failed: ${(e as Error).message}` }); }
+          break;
+        }
+        case "ui/attachGitStaged": {
+          try {
+            const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+            const execPromise = (await import("node:child_process")).exec;
+            const { stdout } = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+              execPromise("git diff --staged", { cwd: root, maxBuffer: 512 * 1024 }, (err, stdout, stderr) => {
+                if (err) reject(err); else resolve({ stdout, stderr });
+              });
+            });
+            if (!stdout.trim()) break;
+            webview.postMessage({ type: "session/attachment", uri: "git:staged", preview: `git diff --staged  ·  ${stdout.trim().slice(0, 200)}` });
+          } catch (e) { webview.postMessage({ type: "error", message: `git diff --staged failed: ${(e as Error).message}` }); }
+          break;
+        }
+        case "ui/attachChangedFiles": {
+          try {
+            const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+            const execPromise = (await import("node:child_process")).exec;
+            const { stdout } = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+              execPromise("git diff --name-status", { cwd: root, maxBuffer: 512 * 1024 }, (err, stdout, stderr) => {
+                if (err) reject(err); else resolve({ stdout, stderr });
+              });
+            });
+            if (!stdout.trim()) break;
+            const files = stdout.trim().split("\n").length;
+            webview.postMessage({ type: "session/attachment", uri: "git:changed", preview: `${files} changed file${files === 1 ? "" : "s"}  ·  ${stdout.trim().slice(0, 200)}` });
+          } catch (e) { webview.postMessage({ type: "error", message: `git diff --name-status failed: ${(e as Error).message}` }); }
+          break;
+        }
+        case "ui/attachPullRequest": {
+          try {
+            const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+            const execPromise = (await import("node:child_process")).exec;
+            const { stdout } = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+              execPromise("gh pr view --json number,title,body,url,state,author,baseRefName,headRefName,additions,deletions,files", { cwd: root, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+                if (err) reject(err); else resolve({ stdout, stderr });
+              });
+            });
+            const pr = JSON.parse(stdout);
+            const summary = `#${pr.number} ${pr.title} (${pr.state}) by ${pr.author.login}\n${pr.headRefName} → ${pr.baseRefName}  |  +${pr.additions} -${pr.deletions} across ${pr.files?.length ?? "?"} files\n${pr.url}\n\n${pr.body ?? ""}`;
+            webview.postMessage({ type: "session/attachment", uri: `pr:${pr.number}`, preview: summary.slice(0, 2000) });
+          } catch (e) {
+            const msg = (e as Error).message;
+            if (msg.includes("not found") || msg.includes("ENOENT") || msg.includes("not recognized")) {
+              webview.postMessage({ type: "error", message: "GitHub CLI (gh) not found. Install from https://cli.github.com" });
+            } else if (msg.includes("no pull request")) {
+              webview.postMessage({ type: "error", message: "No pull request found for current branch." });
+            } else {
+              webview.postMessage({ type: "error", message: `Failed to fetch PR: ${msg}` });
+            }
+          }
+          break;
+        }
         case "ui/showProblems":
           void vscode.commands.executeCommand("arc.toggleProblems");
           break;
@@ -1534,6 +1652,18 @@ export function deactivate() {
   }
   void mcp?.dispose();
   void browser?.close();
+}
+async function describeToolImage(base64data: string, currentModel?: import("@arc/host").ModelDescriptor): Promise<string> {
+  if (!base64data) return "";
+  const config = vscode.workspace.getConfiguration();
+  const multimodalIds = config.get<string[]>("arc.model.multimodalIds") ?? [];
+  if (currentModel && multimodalIds.includes(currentModel.id)) return "";
+  const describer = config.get<string>("arc.image.describeModel") ?? "none";
+  if (describer === "none") return "";
+  const match = base64data.match(/^(?:data:image\/\w+;base64,)?(.+)$/i);
+  const raw = match?.[1] ?? base64data;
+  const desc = await callOllamaDescribe(describer, raw, "Describe this image.");
+  return desc ?? "";
 }
 async function maybeDescribeImages(text: string, images?: string[]): Promise<{ text: string; images: string[] | undefined; descriptions?: string[] }> {
   if (!images?.length) return { text, images };

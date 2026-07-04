@@ -3,7 +3,7 @@ export interface BrowserAdapter {
   navigate(url: string): Promise<{ ok: boolean; output: string }>;
   click(selector: string): Promise<{ ok: boolean; output: string }>;
   type(selector: string, text: string): Promise<{ ok: boolean; output: string }>;
-  screenshot(outPath?: string): Promise<{ ok: boolean; output: string }>;
+  screenshot(outPath?: string, fullPage?: boolean, type?: "png" | "jpeg"): Promise<{ ok: boolean; output: string }>;
   evaluate(script: string): Promise<{ ok: boolean; output: string }>;
   readDom(): Promise<{ ok: boolean; output: string }>;
   readPage(): Promise<{ ok: boolean; output: string }>;
@@ -39,7 +39,7 @@ interface PlaywrightPage {
   waitForURL(url: string | RegExp, opts: { timeout: number }): Promise<unknown>;
   waitForLoadState(state: string): Promise<unknown>;
   evaluate(script: string): Promise<unknown>;
-  screenshot(opts: { path: string }): Promise<unknown>;
+  screenshot(opts: { path: string; fullPage?: boolean; type?: string }): Promise<unknown>;
   accessibility: { snapshot(): Promise<unknown> };
   content(): Promise<string>;
   on(event: string, fn: (...args: unknown[]) => void): void;
@@ -124,10 +124,10 @@ export async function createBrowser(kind: BrowserKind = "chromium", headless = t
         return { ok: true, output: `Typed into ${selector}${cap ? "\n\n" + cap : ""}` };
       } catch (e) { return { ok: false, output: `Type failed: ${(e as Error).message}` }; }
     },
-    async screenshot(outPath) {
+    async screenshot(outPath, fullPage, type) {
       try {
-        const p = outPath || path.join(process.cwd(), `arc-shot-${Date.now()}.png`);
-        await page.screenshot({ path: p });
+        const p = outPath || path.join(process.cwd(), `arc-shot-${Date.now()}.${type || "png"}`);
+        await page.screenshot({ path: p, fullPage: fullPage ?? false, type: type || "png" });
         const cap = captureSummary();
         return { ok: true, output: `Saved ${p}${cap ? "\n\n" + cap : ""}` };
       } catch (e) { return { ok: false, output: `Screenshot failed: ${(e as Error).message}` }; }
