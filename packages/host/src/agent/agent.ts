@@ -1099,6 +1099,9 @@ export class Agent {
       ? `${truncatedOutput}\n[runAfter] ${result.runAfter.command}\n${result.runAfter.output}`
       : truncatedOutput;
     this.messages.push({ id: randomUUID(), role: "tool", content: toolContent, toolCallId: tc.id, ts: Date.now() });
+    if (result.images?.length) {
+      this.messages.push({ id: randomUUID(), role: "user", content: result.output, images: result.images, ts: Date.now() });
+    }
     runHooks({
       event: "post.tool",
       tool: tc.name,

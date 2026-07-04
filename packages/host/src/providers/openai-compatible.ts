@@ -267,16 +267,19 @@ function safeParseArgs(s: string | undefined): Record<string, unknown> | undefin
 }
 function toOpenAIMessage(m: import("../protocol/protocol.js").ChatMessage, supportsThinking: boolean, providerKind?: import("../protocol/protocol.js").ProviderKind) {
   if (m.role === "tool") {
+    const images = (m as any).images as { type: string; image_url: { url: string } }[] | undefined;
     const toolCallId = (m.toolCallId ?? "").trim();
     if (!toolCallId) {
-      return {
-        role: "user",
-        content: providerKind === "openrouter"
-          ? `Tool output (without tool_call_id):\n${m.content}`
-          : m.content,
-      };
+      const content = providerKind === "openrouter"
+        ? `Tool output (without tool_call_id):\n${m.content}`
+        : m.content;
+      return images?.length
+        ? { role: "user", content: [{ type: "text", text: content }, ...images.map((img) => ({ type: "image_url", image_url: img.image_url }))] }
+        : { role: "user", content };
     }
-    return { role: "tool", tool_call_id: toolCallId, content: m.content };
+    return images?.length
+      ? { role: "tool", tool_call_id: toolCallId, content: [{ type: "text", text: m.content }, ...images.map((img) => ({ type: "image_url", image_url: img.image_url }))] }
+      : { role: "tool", tool_call_id: toolCallId, content: m.content };
   }
   if (m.role === "assistant" && m.toolCalls?.length) {
     const msg: Record<string, unknown> = { role: "assistant" };
@@ -296,7 +299,7 @@ function toOpenAIMessage(m: import("../protocol/protocol.js").ChatMessage, suppo
   const images = (m as any).images as { type: string; image_url: { url: string } }[] | undefined;
   if (m.role === "user" && images?.length) {
     return {
-      role: "user",
+      role: m.role,
       content: [
         { type: "text", text: m.content },
         ...images.map((img) => ({ type: "image_url", image_url: img.image_url })),

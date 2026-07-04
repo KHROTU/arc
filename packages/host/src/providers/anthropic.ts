@@ -17,7 +17,17 @@ export const anthropicTransport: Transport = {
     const remoteModel = req.model.providers.find((p) => p.id === req.provider.id)?.remoteModel ?? req.model.id;
     const systemMsgs = req.messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
     const conv = req.messages.filter((m) => m.role !== "system").map((m) => {
-      if (m.role === "tool") return { role: "user" as const, content: [{ type: "tool_result", tool_use_id: m.toolCallId ?? "", content: m.content }] };
+      if (m.role === "tool") {
+        const content: unknown[] = [{ type: "tool_result", tool_use_id: m.toolCallId ?? "", content: m.content }];
+        const images = (m as any).images as { image_url: { url: string } }[] | undefined;
+        if (images?.length) {
+          for (const img of images) {
+            const match = img.image_url.url.match(/^data:(image\/\w+);base64,(.+)$/);
+            if (match) content.push({ type: "image", source: { type: "base64", media_type: match[1], data: match[2] } });
+          }
+        }
+        return { role: "user" as const, content };
+      }
       if (m.role === "assistant" && m.toolCalls?.length) {
         return {
           role: "assistant" as const,
@@ -31,7 +41,7 @@ export const anthropicTransport: Transport = {
     });
     const convWithImages = conv.map((c) => {
       if (c.role !== "user" || typeof c.content !== "string") return c;
-      const orig = req.messages.find((m) => m.content === c.content && m.role === "user");
+      const orig = req.messages.find((m) => m.content === c.content && (m.role === "user" || m.role === "tool"));
       const images = (orig as any)?.images as { image_url: { url: string } }[] | undefined;
       if (!images?.length) return c;
       const parts: unknown[] = [{ type: "text", text: c.content }];

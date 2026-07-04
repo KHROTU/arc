@@ -283,6 +283,15 @@ export type WebviewMsg =
   | { type: "mcp/marketplaceSearch"; query: string }
   | { type: "mcp/testCall"; server: string; tool: string }
   | { type: "ui/attachSelection" }
+  | { type: "ui/attachFile" }
+  | { type: "ui/attachProblems" }
+  | { type: "ui/attachAllProblems" }
+  | { type: "ui/attachFileProblems" }
+  | { type: "ui/attachCurrentFile" }
+  | { type: "ui/attachGitDiff" }
+  | { type: "ui/attachGitStaged" }
+  | { type: "ui/attachChangedFiles" }
+  | { type: "ui/attachPullRequest" }
   | { type: "ui/showProblems" }
   | { type: "ui/openFullscreen" }
   | { type: "ui/openSettings" }

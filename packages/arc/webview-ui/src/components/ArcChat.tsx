@@ -114,6 +114,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           setMessages([]);
           setStreaming(null);
           setLastTurnError(null);
+          setPendingAttachment(null);
           break;
         case "session/assistantText":
           if (e.sessionId && sessionIdRef.current && e.sessionId !== sessionIdRef.current) break;
@@ -228,6 +229,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     setShowOnboarding(false);
     setHasEverSent(true);
     setLastTurnError(null);
+    setPendingAttachment(null);
     setMessages((prev) => prev.find((m) => m.content === text && m.role === "user")
       ? prev
       : [...prev, { id: `local-${Date.now()}`, role: "user", content: text, ts: Date.now() }]);

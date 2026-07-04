@@ -68,6 +68,40 @@ export default function Composer({
     if (onAttach) return onAttach();
     (window as unknown as { __ARC_ATTACH?: () => void }).__ARC_ATTACH?.();
   };
+  const attachFile = () => {
+    (window as unknown as { __ARC_ATTACH_FILE?: () => void }).__ARC_ATTACH_FILE?.();
+  };
+  const attachProblems = () => {
+    (window as unknown as { __ARC_ATTACH_PROBLEMS?: () => void }).__ARC_ATTACH_PROBLEMS?.();
+  };
+  const attachAllProblems = () => {
+    (window as unknown as { __ARC_ATTACH_ALL_PROBLEMS?: () => void }).__ARC_ATTACH_ALL_PROBLEMS?.();
+  };
+  const attachFileProblems = () => {
+    (window as unknown as { __ARC_ATTACH_FILE_PROBLEMS?: () => void }).__ARC_ATTACH_FILE_PROBLEMS?.();
+  };
+  const attachCurrentFile = () => {
+    (window as unknown as { __ARC_ATTACH_CURRENT_FILE?: () => void }).__ARC_ATTACH_CURRENT_FILE?.();
+  };
+  const attachGitDiff = () => {
+    (window as unknown as { __ARC_ATTACH_GIT_DIFF?: () => void }).__ARC_ATTACH_GIT_DIFF?.();
+  };
+  const attachGitStaged = () => {
+    (window as unknown as { __ARC_ATTACH_GIT_STAGED?: () => void }).__ARC_ATTACH_GIT_STAGED?.();
+  };
+  const attachChangedFiles = () => {
+    (window as unknown as { __ARC_ATTACH_CHANGED_FILES?: () => void }).__ARC_ATTACH_CHANGED_FILES?.();
+  };
+  const attachPullRequest = () => {
+    (window as unknown as { __ARC_ATTACH_PR?: () => void }).__ARC_ATTACH_PR?.();
+  };
+  const [attachOpen, setAttachOpen] = useState(false);
+  const attachRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const h = (e: MouseEvent) => { if (attachRef.current && !attachRef.current.contains(e.target as Node)) setAttachOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
   if (queuedText) {
     return (
       <div className="arc-composer is-queued">
@@ -86,7 +120,7 @@ export default function Composer({
       {attachments.length > 0 && (
         <div className="arc-composer-attachments">
           {attachments.map((a) => (
-            <span key={a.uri} className="arc-attach-pill" title={a.uri}>
+            <span key={a.uri} className="arc-attach-pill">
               <Paperclip size={11} />
               <span className="arc-attach-pill-text">{a.preview ?? a.uri}</span>
               <button className="arc-attach-pill-x" onClick={() => setAttachments((p) => p.filter((x) => x.uri !== a.uri))} aria-label="Remove">
@@ -141,9 +175,46 @@ export default function Composer({
         placeholder={placeholder ?? "Ask Arc anything…"}
       />
       <div className="arc-composer-bar">
-        <button className="arc-composer-tool" title="Attach editor selection" onClick={attach} disabled={disabled}>
-          <Paperclip size={14} />
-        </button>
+        <div className="arc-attach-wrap" ref={attachRef}>
+          <button className="arc-composer-tool" title="Attach" onClick={() => setAttachOpen((o) => !o)} disabled={disabled}>
+            <Paperclip size={14} />
+          </button>
+          {attachOpen && (
+            <div className="arc-attach-dropdown">
+              <button className="arc-attach-item" onClick={() => { attach(); setAttachOpen(false); }}>Attach selection</button>
+              <div className="arc-attach-parent">
+                <button className="arc-attach-item arc-attach-has-sub" onClick={() => setAttachOpen(false)}>Attach file</button>
+                <div className="arc-attach-submenu">
+                  <button className="arc-attach-item" onClick={() => { attachCurrentFile(); setAttachOpen(false); }}>Current file</button>
+                  <button className="arc-attach-item" onClick={() => { attachFile(); setAttachOpen(false); }}>Select…</button>
+                </div>
+              </div>
+              <div className="arc-attach-parent">
+                <button className="arc-attach-item arc-attach-has-sub" onClick={() => setAttachOpen(false)}>Attach problems</button>
+                <div className="arc-attach-submenu">
+                  <button className="arc-attach-item" onClick={() => { attachProblems(); setAttachOpen(false); }}>Current file</button>
+                  <button className="arc-attach-item" onClick={() => { attachAllProblems(); setAttachOpen(false); }}>All files</button>
+                  <button className="arc-attach-item" onClick={() => { attachFileProblems(); setAttachOpen(false); }}>Select…</button>
+                </div>
+              </div>
+              <div className="arc-attach-parent">
+                <button className="arc-attach-item arc-attach-has-sub" onClick={() => setAttachOpen(false)}>Attach from Git</button>
+                <div className="arc-attach-submenu">
+                  <button className="arc-attach-item" onClick={() => { attachGitDiff(); setAttachOpen(false); }}>Unstaged diff</button>
+                  <button className="arc-attach-item" onClick={() => { attachGitStaged(); setAttachOpen(false); }}>Staged diff</button>
+                  <button className="arc-attach-item" onClick={() => { attachChangedFiles(); setAttachOpen(false); }}>Changed files</button>
+                  <div className="arc-attach-sep" />
+                  <div className="arc-attach-parent">
+                    <button className="arc-attach-item arc-attach-has-sub" onClick={() => setAttachOpen(false)}>Pull request</button>
+                    <div className="arc-attach-submenu">
+                      <button className="arc-attach-item" onClick={() => { attachPullRequest(); setAttachOpen(false); }}>Current branch</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
         <span className="arc-spacer" />
         {streaming ? (
           <div className="arc-send-group" ref={actionsRef}>
