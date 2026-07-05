@@ -469,6 +469,44 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
     description: "Get a combined snapshot of the browser's current state including console messages and network requests.",
     parameters: obj({ tabId: str("Optional tab id to target (defaults to the active tab).") }),
   },
+  "notebook.read": {
+    description: "Read a Jupyter notebook (.ipynb). Without cellIndex, lists every cell (index, type, source preview, whether it has output). With cellIndex, returns that cell's full source and (for code cells) its text/image output.",
+    parameters: obj({
+      path: str("Workspace-relative path to the .ipynb file."),
+      cellIndex: num("Optional 0-based cell index to read in full."),
+    }, ["path"]),
+  },
+  "notebook.editCell": {
+    description: "Replace the source of a cell in a Jupyter notebook by index.",
+    parameters: obj({
+      path: str("Workspace-relative path to the .ipynb file."),
+      cellIndex: num("0-based index of the cell to edit."),
+      source: str("New source text for the cell."),
+    }, ["path", "cellIndex", "source"]),
+  },
+  "notebook.addCell": {
+    description: "Insert a new cell into a Jupyter notebook at the given index. Existing cells shift down.",
+    parameters: obj({
+      path: str("Workspace-relative path to the .ipynb file."),
+      index: num("0-based index to insert the new cell at."),
+      cellType: enumStr(["code", "markdown", "raw"], "Type of the new cell."),
+      source: str("Source text for the new cell."),
+    }, ["path", "index", "cellType", "source"]),
+  },
+  "notebook.deleteCell": {
+    description: "Delete a cell from a Jupyter notebook by index.",
+    parameters: obj({
+      path: str("Workspace-relative path to the .ipynb file."),
+      cellIndex: num("0-based index of the cell to delete."),
+    }, ["path", "cellIndex"]),
+  },
+  "notebook.execute": {
+    description: "Execute a code cell using the workspace's active Jupyter kernel and return its text/image output.",
+    parameters: obj({
+      path: str("Workspace-relative path to the .ipynb file."),
+      cellIndex: num("0-based index of the code cell to execute."),
+    }, ["path", "cellIndex"]),
+  },
 };
 export function buildToolSpecs(
   enabled: Iterable<string>,

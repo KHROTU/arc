@@ -27,6 +27,7 @@ export interface McpServerNotification {
   method: string;
   params?: unknown;
 }
+export type McpRequestHandler = (method: string, params: unknown) => Promise<unknown>;
 export type McpClientStatus = "idle" | "starting" | "ready" | "reconnecting" | "stopped" | "error";
 export interface McpClientOptions {
   reconnectInitialMs?: number;
@@ -49,6 +50,7 @@ export class McpClient extends EventEmitter {
   private healthInflight: number | string | undefined;
   private shouldRun = false;
   private opts: Required<McpClientOptions>;
+  private requestHandler?: McpRequestHandler;
   constructor(public config: McpServerConfig, options: McpClientOptions = {}) {
     super();
     this.opts = {
@@ -64,6 +66,9 @@ export class McpClient extends EventEmitter {
   getStatus(): McpClientStatus {
     return this.status;
   }
+  setRequestHandler(handler: McpRequestHandler): void {
+    this.requestHandler = handler;
+  }
   private setStatus(next: McpClientStatus) {
     if (this.status === next) return;
     this.status = next;
@@ -78,7 +83,7 @@ export class McpClient extends EventEmitter {
       await this.startHttp();
     }
     try {
-      await this.send({ method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "arc", version: "0.1.0" } } });
+      await this.send({ method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: { roots: { listChanged: false }, sampling: {} }, clientInfo: { name: "arc", version: "0.1.0" } } });
       this.sendNotification("notifications/initialized");
       this.setStatus("ready");
       this.reconnectAttempts = 0;
@@ -247,34 +252,63 @@ export class McpClient extends EventEmitter {
     const msg: JsonRpcNotification = { jsonrpc: "2.0", method, params };
     if (this.config.transport.type === "stdio") {
       this.proc?.stdin.write(JSON.stringify(msg) + "\n");
-    } else if (this.httpReady && this.httpEndpoint && this.config.transport.type === "http") {
-      const endpoint = this.httpEndpoint;
-      const headers: Record<string, string> = {
-        "content-type": "application/json",
-        accept: "application/json, text/event-stream",
-        ...this.config.transport.headers,
-      };
-      if (this.httpSessionId) headers["mcp-session-id"] = this.httpSessionId;
-      void fetch(endpoint, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(msg),
-        signal: this.httpAbort?.signal,
-      }).then(async (res) => {
-        try { await res.body?.cancel(); } catch {}
-      }).catch(() => {});
+    } else {
+      this.postHttp(msg);
     }
   }
-  private handleMessage(msg: JsonRpcResponse | JsonRpcNotification) {
-    if (!("id" in msg) || msg.id === undefined || msg.id === null) {
-      const notif = msg as JsonRpcNotification;
-      this.emit("notification", { server: this.config.name, method: notif.method, params: notif.params } satisfies McpServerNotification);
+  private postHttp(msg: unknown) {
+    if (!this.httpReady || !this.httpEndpoint || this.config.transport.type !== "http") return;
+    const endpoint = this.httpEndpoint;
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      ...this.config.transport.headers,
+    };
+    if (this.httpSessionId) headers["mcp-session-id"] = this.httpSessionId;
+    void fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(msg),
+      signal: this.httpAbort?.signal,
+    }).then(async (res) => {
+      try { await res.body?.cancel(); } catch {}
+    }).catch(() => {});
+  }
+  private sendResponse(id: number | string, result?: unknown, error?: { code: number; message: string }) {
+    const msg: JsonRpcResponse = { jsonrpc: "2.0", id, ...(error ? { error } : { result }) };
+    if (this.config.transport.type === "stdio") {
+      this.proc?.stdin.write(JSON.stringify(msg) + "\n");
+    } else {
+      this.postHttp(msg);
+    }
+  }
+  private async handleIncomingRequest(req: JsonRpcRequest) {
+    if (!this.requestHandler) {
+      this.sendResponse(req.id, undefined, { code: -32601, message: `Method not supported: ${req.method}` });
+      return;
+    }
+    try {
+      const result = await this.requestHandler(req.method, req.params);
+      this.sendResponse(req.id, result);
+    } catch (e) {
+      this.sendResponse(req.id, undefined, { code: -32000, message: (e as Error).message });
+    }
+  }
+  private handleMessage(msg: JsonRpcMessage) {
+    if ("method" in msg && msg.method) {
+      if ("id" in msg && msg.id !== undefined && msg.id !== null) {
+        void this.handleIncomingRequest(msg as JsonRpcRequest);
+      } else {
+        const notif = msg as JsonRpcNotification;
+        this.emit("notification", { server: this.config.name, method: notif.method, params: notif.params } satisfies McpServerNotification);
+      }
       return;
     }
     const r = msg as JsonRpcResponse;
-    const p = this.pending.get(r.id as number | string);
+    if (r.id === undefined || r.id === null) return;
+    const p = this.pending.get(r.id);
     if (!p) return;
-    this.pending.delete(r.id as number | string);
+    this.pending.delete(r.id);
     if (r.error) p.reject(new Error(r.error.message));
     else p.resolve(r.result);
   }

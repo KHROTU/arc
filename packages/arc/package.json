@@ -155,6 +155,16 @@
         "category": "Arc"
       },
       {
+        "command": "arc.auditLog.export",
+        "title": "Export Audit Log",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.auditLog.verify",
+        "title": "Verify Audit Log",
+        "category": "Arc"
+      },
+      {
         "command": "arc.openPlayground",
         "title": "Open Component Playground",
         "category": "Arc"
@@ -237,6 +247,14 @@
         },
         {
           "command": "arc.managePrompts",
+          "when": "true"
+        },
+        {
+          "command": "arc.auditLog.export",
+          "when": "true"
+        },
+        {
+          "command": "arc.auditLog.verify",
           "when": "true"
         },
         {

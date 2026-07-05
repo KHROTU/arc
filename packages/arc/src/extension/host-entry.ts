@@ -17,6 +17,10 @@ import {
   type IndexProgress, type EmbeddingBackend,
   IndexWatcher,
   FileContextTracker,
+  completeSamplingRequest,
+  type SamplingCreateMessageParams,
+  listBackgroundProcesses,
+  auditLogPath, verifyAuditLogFile,
 } from "@arc/host";
 import { initDiscordRpcSpoof, reportAgentActivity, reportAgentIdle } from "./discord-rpc.js";
 const SECRET_PREFIX = "arc.apiKey.";
@@ -61,6 +65,7 @@ let browserIdleTimer: ReturnType<typeof setTimeout> | undefined;
 const BROWSER_IDLE_MS = 5 * 60 * 1000;
 let inlineCommentController: vscode.CommentController | undefined;
 const inlineChatSessions = new Map<vscode.CommentThread, Session>();
+const mcpSamplingAllowedServers = new Set<string>();
 const inlineHeaderComments = new Map<vscode.CommentThread, InlineComment>();
 const inlineChatModelChoice = new Map<vscode.CommentThread, ModelDescriptor>();
 const inlineCommentThreadByComment = new WeakMap<vscode.Comment, vscode.CommentThread>();
@@ -208,6 +213,37 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
   });
   vscode.commands.registerCommand("arc.managePrompts", async () => {
     openPrompt();
+  });
+  vscode.commands.registerCommand("arc.auditLog.export", async () => {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const src = auditLogPath(root);
+    try {
+      await fs.access(src);
+    } catch {
+      void vscode.window.showInformationMessage("No audit log has been recorded for this workspace yet.");
+      return;
+    }
+    const dest = await vscode.window.showSaveDialog({
+      defaultUri: vscode.Uri.file(`arc-audit-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`),
+      filters: { "Audit log": ["jsonl"] },
+    });
+    if (!dest) return;
+    await fs.copyFile(src, dest.fsPath);
+    void vscode.window.showInformationMessage(`Audit log exported to ${dest.fsPath}`);
+  });
+  vscode.commands.registerCommand("arc.auditLog.verify", async () => {
+    const picked = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      filters: { "Audit log": ["jsonl"] },
+      openLabel: "Verify",
+    });
+    if (!picked?.length) return;
+    const result = await verifyAuditLogFile(picked[0].fsPath);
+    if (result.ok) {
+      void vscode.window.showInformationMessage(`Audit log verified: ${result.entries} entries, hash chain intact.`);
+    } else {
+      void vscode.window.showErrorMessage(`Audit log verification FAILED at sequence ${result.brokenAtSeq}: ${result.reason}`);
+    }
   });
   vscode.commands.registerCommand("arc.explainSelection", async () => {
     if (!ctxRef) return;
@@ -444,6 +480,19 @@ async function initializeAsync(context: vscode.ExtensionContext) {
   lsp = new LspBridge(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
   mcp = new McpAggregator();
   mcp.setPersistence(() => persistMcpConfig(mcp, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()));
+  mcp.setRoots((vscode.workspace.workspaceFolders ?? []).map((f) => ({ uri: f.uri.toString(), name: f.name })));
+  mcp.setSamplingHandler(async (serverName, params) => {
+    if (!mcpSamplingAllowedServers.has(serverName)) {
+      const pick = await vscode.window.showWarningMessage(
+        `MCP server '${serverName}' wants to send a prompt to your configured model (sampling). Allow?`,
+        { modal: true },
+        "Allow Once", "Always Allow",
+      );
+      if (pick === "Always Allow") mcpSamplingAllowedServers.add(serverName);
+      else if (pick !== "Allow Once") throw new Error("Sampling request denied by user.");
+    }
+    return completeSamplingRequest(registry, params as SamplingCreateMessageParams, { proxyUrl: resolveProxy("providerUrl") ?? resolveProxy("url") });
+  });
   mcp.onChange(() => {
     const list = mcp.listServers().map((s) => ({ name: s.name, enabled: s.enabled, transport: s.transport.type, toolCount: s.tools.length }));
     for (const webview of getAllWebviews()) {
@@ -741,6 +790,40 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       return hits.map((h: { file: string; start: number; end: number; score: number; text: string }) => ({ file: h.file, start: h.start, end: h.end, score: h.score, snippet: h.text }));
     },
     describeImage: (dataUrl: string) => describeToolImage(dataUrl, registry?.getCurrent?.()),
+    executeNotebookCell: async (relPath: string, cellIndex: number) => {
+      try {
+        const uri = resolveWorkspaceFileUri(relPath);
+        if (!uri) return { ok: false, output: `Could not resolve notebook path: ${relPath}` };
+        const notebook = await vscode.workspace.openNotebookDocument(uri);
+        if (cellIndex < 0 || cellIndex >= notebook.cellCount) {
+          return { ok: false, output: `Cell index ${cellIndex} out of range (notebook has ${notebook.cellCount} cell(s)).` };
+        }
+        const target = notebook.cellAt(cellIndex);
+        if (target.kind !== vscode.NotebookCellKind.Code) {
+          return { ok: false, output: `Cell ${cellIndex} is not a code cell.` };
+        }
+        await vscode.commands.executeCommand("notebook.cell.execute", { ranges: [{ start: cellIndex, end: cellIndex + 1 }], document: uri });
+        const deadline = Date.now() + 30_000;
+        while (Date.now() < deadline) {
+          const cell = notebook.cellAt(cellIndex);
+          if (cell.executionSummary?.success !== undefined) break;
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        const finalCell = notebook.cellAt(cellIndex);
+        const parts: string[] = [];
+        const images: string[] = [];
+        for (const out of finalCell.outputs) {
+          for (const item of out.items) {
+            if (item.mime.startsWith("image/")) images.push(`data:${item.mime};base64,${Buffer.from(item.data).toString("base64")}`);
+            else parts.push(Buffer.from(item.data).toString("utf-8"));
+          }
+        }
+        const ok = finalCell.executionSummary?.success !== false;
+        return { ok, output: parts.join("\n").trim() || (ok ? "(cell executed with no text output)" : "Cell execution failed."), images };
+      } catch (e: unknown) {
+        return { ok: false, output: `Failed to execute cell: ${(e as Error).message}` };
+      }
+    },
   };
   const sinkId = session.id;
   const sink: import("@arc/host").AgentEventSink = {
@@ -829,6 +912,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       "rule.list", "rule.read", "rule.create",
       "git.diffStaged", "git.diffUnstaged", "git.changedFiles", "git.branchDiff", "git.commitMessage",
       "session.exportTrace",
+      "notebook.read", "notebook.editCell", "notebook.addCell", "notebook.deleteCell", "notebook.execute",
     ]),
     workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(),
     mode: "code",
@@ -842,6 +926,19 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     proxyProvider: resolveProxy("providerUrl"),
     toolContext,
     fileContextTracker,
+    getBrowserTabs: async () => {
+      if (!browser) return [];
+      const r = await browser.listTabs();
+      return r.tabs ?? [];
+    },
+    getBackgroundProcesses: () => listBackgroundProcesses(),
+    restoreBrowserTabs: async (tabs) => {
+      if (!tabs.length) return;
+      const b = await getBrowser();
+      for (const t of tabs) {
+        await b.newTab(t.url);
+      }
+    },
     approveShell: async (description, meta) => {
       if (!session.view && !session.panel) {
         const choice = await vscode.window.showWarningMessage(description, { modal: true }, "Allow");
@@ -1961,9 +2058,10 @@ function getAllWebviews(): vscode.Webview[] {
   }
   return out;
 }
-export function deactivate() {
+export async function deactivate() {
   if (sidebarSession.agent && sidebarSession.agent.getMessages()?.length) {
-    void ctxRef?.globalState.update("arc.agentState", sidebarSession.agent.snapshot());
+    const snap = await sidebarSession.agent.snapshotWithBrowser();
+    await ctxRef?.globalState.update("arc.agentState", snap);
   }
   stopIndexWatcher();
   ruleWatcherDispose?.();

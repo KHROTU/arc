@@ -14,6 +14,7 @@ import { buildToolSpecs, isMcpToolSpec, parseMcpToolSpec } from "./tool-specs.js
 import { SubagentRunner } from "./subagent.js";
 import { runHooks } from "../hooks/hooks.js";
 import { loadVerifyConfig, runVerification, type VerifyConfig } from "../verify/verify.js";
+import { appendAuditEntry } from "../audit/audit.js";
 import type { ModeRegistry } from "../modes/index.js";
 import { type ApprovalsConfig, type SessionApprovals, type ApproveShellMeta, DEFAULT_APPROVALS, initSession, resolveApproval } from "../approvals/index.js";
 import type { ChatMessage, ModelDescriptor, ToolCall, TurnUsage, ExecutionEvent } from "../protocol/protocol.js";
@@ -60,6 +61,9 @@ export interface AgentOptions {
   fileContextTracker?: import("../context/tracker.js").FileContextTracker;
   verifyMode?: "none" | "default" | "custom";
   verifyMaxRetries?: number;
+  getBrowserTabs?: () => Promise<{ id: string; url: string; active: boolean }[]>;
+  getBackgroundProcesses?: () => { id: string; command: string }[];
+  restoreBrowserTabs?: (tabs: { url: string }[]) => Promise<void>;
 }
 export class Agent {
   private messages: ChatMessage[] = [];
@@ -94,6 +98,7 @@ export class Agent {
     if (this.timeline.length > this.TIMELINE_MAX) {
       this.timeline = this.timeline.slice(-this.TIMELINE_MAX);
     }
+    void appendAuditEntry(this.opts.workspaceRoot, ev.type, ev).catch(() => {});
   }
   getTimeline(): ExecutionEvent[] { return this.timeline.slice(); }
   private async persistPlan(): Promise<void> {
@@ -158,15 +163,44 @@ export class Agent {
     this.messages.push(m);
     this.sink.message(m);
   }
-  snapshot(): { messages: ChatMessage[]; steps: ProcessStep[]; mode: string; todoItems: TodoItem[] } {
-    return { messages: this.messages.slice(), steps: this.steps.slice(), mode: this.currentMode, todoItems: this.todoItems.slice() };
+  snapshot(): { messages: ChatMessage[]; steps: ProcessStep[]; mode: string; todoItems: TodoItem[]; browserTabs?: { url: string }[]; backgroundProcesses?: { command: string }[] } {
+    const backgroundProcesses = this.opts.getBackgroundProcesses?.().map((p) => ({ command: p.command }));
+    return {
+      messages: this.messages.slice(),
+      steps: this.steps.slice(),
+      mode: this.currentMode,
+      todoItems: this.todoItems.slice(),
+      ...(backgroundProcesses?.length ? { backgroundProcesses } : {}),
+    };
   }
-  async restore(snapshot: { messages: ChatMessage[]; steps?: ProcessStep[]; mode?: string; todoItems?: TodoItem[] }): Promise<void> {
+  async snapshotWithBrowser(): Promise<{ messages: ChatMessage[]; steps: ProcessStep[]; mode: string; todoItems: TodoItem[]; browserTabs?: { url: string }[]; backgroundProcesses?: { command: string }[] }> {
+    const base = this.snapshot();
+    if (!this.opts.getBrowserTabs) return base;
+    try {
+      const tabs = await this.opts.getBrowserTabs();
+      const browserTabs = tabs.filter((t) => t.url && t.url !== "about:blank").map((t) => ({ url: t.url }));
+      return browserTabs.length ? { ...base, browserTabs } : base;
+    } catch {
+      return base;
+    }
+  }
+  async restore(snapshot: { messages: ChatMessage[]; steps?: ProcessStep[]; mode?: string; todoItems?: TodoItem[]; browserTabs?: { url: string }[]; backgroundProcesses?: { command: string }[] }): Promise<void> {
     this.messages = snapshot.messages;
     this.steps = snapshot.steps ?? [];
     this.currentMode = snapshot.mode ?? "code";
     this.todoItems = snapshot.todoItems ?? [];
     this.sessionStarted = true;
+    if (snapshot.backgroundProcesses?.length) {
+      const list = snapshot.backgroundProcesses.map((p) => `- ${p.command}`).join("\n");
+      const note = `The following background process(es) were running before the editor restarted and were NOT resumed (they terminate when the extension host stops):\n${list}\nRestart them with shell.backgroundRun if the task still needs them.`;
+      this.messages.push({ id: randomUUID(), role: "system", content: note, ts: Date.now() });
+    }
+    if (snapshot.browserTabs?.length && this.opts.restoreBrowserTabs) {
+      try {
+        await this.opts.restoreBrowserTabs(snapshot.browserTabs);
+      } catch {
+      }
+    }
   }
   toggleAutoApprove(): boolean {
     this.sessionApprovals.autoApproveAll = !this.sessionApprovals.autoApproveAll;
@@ -1030,7 +1064,7 @@ export class Agent {
         this.pushTimeline({ type: "checkpoint_snapshot", turnId, fileCount: filesToSnapshot.length || 1, ts: Date.now() });
 } catch {  }
     }
-    if (tc.name === "file.edit" || tc.name === "file.write") {
+    if (WRITE_TOOLS.has(tc.name)) {
       const writeFilePath = String(tc.args.path);
       if (modeDef?.writeGlob) {
         const check = checkWriteGlob(writeFilePath, modeDef.writeGlob);
@@ -1063,7 +1097,7 @@ export class Agent {
         }
       }
     }
-    const hookTools = new Set(["shell.run", "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage", "web.fetch", "web.search", "mcp.call", "file.edit", "file.write", "file.read", "subagent.spawn", "handoff"]);
+    const hookTools = new Set(["shell.run", "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage", "web.fetch", "web.search", "mcp.call", "file.edit", "file.write", "file.read", "subagent.spawn", "handoff", "notebook.editCell", "notebook.addCell", "notebook.deleteCell", "notebook.execute"]);
     if (hookTools.has(tc.name)) {
       const decisions = await runHooks({
         event: "pre.tool",
@@ -1470,6 +1504,11 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
       case "browser.domSnapshot": return "Failed to read browser snapshot";
       case "test.run": return "Tests failed";
       case "session.exportTrace": return "Failed to export trace";
+      case "notebook.read": return `Failed to read notebook ${path}`;
+      case "notebook.editCell": return `Failed to edit cell ${args.cellIndex ?? ""} in ${path}`;
+      case "notebook.addCell": return `Failed to add cell to ${path}`;
+      case "notebook.deleteCell": return `Failed to delete cell ${args.cellIndex ?? ""} from ${path}`;
+      case "notebook.execute": return `Failed to execute cell ${args.cellIndex ?? ""} in ${path}`;
       default: return `Failed: ${name}`;
     }
   }
@@ -1552,11 +1591,16 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
     case "browser.domSnapshot": return "Read browser snapshot";
     case "test.run": return `Ran tests${args.scope ? " (" + String(args.scope) + ")" : ""}`;
     case "session.exportTrace": return "Exported session trace";
+    case "notebook.read": return args.cellIndex !== undefined ? `Read cell ${args.cellIndex} of ${cleanFilePath(path)}` : `Read notebook ${cleanFilePath(path)}`;
+    case "notebook.editCell": return `Edited cell ${args.cellIndex ?? ""} in ${cleanFilePath(path)}`;
+    case "notebook.addCell": return `Added a cell to ${cleanFilePath(path)}`;
+    case "notebook.deleteCell": return `Deleted cell ${args.cellIndex ?? ""} from ${cleanFilePath(path)}`;
+    case "notebook.execute": return `Executed cell ${args.cellIndex ?? ""} in ${cleanFilePath(path)}`;
     default: return name;
   }
 }
 const READ_TOOLS = new Set(["file.read", "file.grep", "file.glob", "file.semanticSearch"]);
-const WRITE_TOOLS = new Set(["file.edit", "file.write"]);
+const WRITE_TOOLS = new Set(["file.edit", "file.write", "notebook.editCell", "notebook.addCell", "notebook.deleteCell"]);
 const SHELL_TOOLS = new Set(["shell.run", "shell.backgroundRun", "shell.check", "shell.write", "shell.customRun", "shell.editCustomRun", "shell.runCustomRun"]);
 const BROWSER_TOOLS = new Set(["browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor", "browser.console", "browser.network", "browser.domSnapshot", "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage", "browser.newTab", "browser.switchTab", "browser.closeTab", "browser.listTabs", "browser.intercept", "browser.unintercept"]);
 const MCP_TOOLS = new Set(["mcp.call", "mcp.create", "mcp.remove", "mcp.toggle", "mcp.resources/list", "mcp.resources/read", "mcp.prompts/list", "mcp.prompts/get"]);
@@ -1622,6 +1666,11 @@ function prettyToolSummary(name: string, args: Record<string, unknown>): string 
     case "browser.network": return "Browser network";
     case "browser.domSnapshot": return "Browser snapshot";
     case "test.run": return "Run tests";
+    case "notebook.read": return args.cellIndex !== undefined ? `Read notebook cell ${args.cellIndex}` : "List notebook cells";
+    case "notebook.editCell": return `Edit notebook cell ${args.cellIndex ?? ""}`;
+    case "notebook.addCell": return "Add notebook cell";
+    case "notebook.deleteCell": return `Delete notebook cell ${args.cellIndex ?? ""}`;
+    case "notebook.execute": return `Execute notebook cell ${args.cellIndex ?? ""}`;
     default: return name;
   }
 }
@@ -1650,4 +1699,4 @@ function renderForSummary(msgs: ChatMessage[]): string {
     }
   }
   return out.join("\n");
-}
+}

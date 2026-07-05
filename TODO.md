@@ -34,7 +34,7 @@
 
 | Task | Ref | Description |
 |------|-----|-------------|
-| 3.1 Full agent resume | B-15 | Extend `agent.snapshot()`: browser tabs (2.6), MCP connections, background processes. Restore on reactivate. `--resume-session`. Graceful degradation. |
-| 3.2 Tamper-evident audit log | B-03 | JSONL export with SHA-256 hash chain. `arc audit verify <file>`. Include FileContextTracker (1.2). |
-| 3.3 MCP sampling + roots | E-17 | `sampling/createMessage` → LLM, `roots/list` → workspace URIs. Permission gate per server. |
-| 3.4 Notebook (.ipynb) support | G-13 | Index, read, edit, execute cells. Use workspace kernel. Render outputs (text + images). |
+| ✅ 3.1 Full agent resume | B-15 | Extend `agent.snapshot()`: browser tabs (2.6), MCP connections, background processes. Restore on reactivate. `--resume-session`. Graceful degradation. |
+| ✅ 3.2 Tamper-evident audit log | B-03 | JSONL export with SHA-256 hash chain. `arc audit verify <file>`. Include FileContextTracker (1.2). |
+| ✅ 3.3 MCP sampling + roots | E-17 | `sampling/createMessage` → LLM, `roots/list` → workspace URIs. Permission gate per server. |
+| ✅ 3.4 Notebook (.ipynb) support | G-13 | Index, read, edit, execute cells. Use workspace kernel. Render outputs (text + images). |

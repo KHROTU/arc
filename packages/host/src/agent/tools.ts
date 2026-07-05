@@ -7,6 +7,7 @@ import { getSkillsDir } from "../arc-dir.js";
 import { runPreWriteHooks, runPostEditHooks } from "../hooks/hooks.js";
 import { getSandboxArgs } from "../sandbox/sandbox.js";
 import { makeProxyDispatcher } from "../util/proxy.js";
+import { parseNotebook, serializeNotebook, listCells, readCell, editCellSource, addCell, deleteCell } from "../notebook/notebook.js";
 import type { SandboxProfile } from "../sandbox/sandbox.js";
 import type { DiffHunk } from "../protocol/process.js";
 const pexec = promisify(exec);
@@ -23,10 +24,17 @@ async function resolveBrowser(src: BrowserSource | undefined): Promise<BrowserAd
   if (!src) return undefined;
   return typeof src === "function" ? await src() : src;
 }
-interface BgProcess { proc: ChildProcess; stdout: string; stderr: string; exited: boolean; exitCode: number | undefined; }
+interface BgProcess { proc: ChildProcess; command: string; stdout: string; stderr: string; exited: boolean; exitCode: number | undefined; }
 const bgProcesses = new Map<string, BgProcess>();
 let bgIds = 0;
 const activeProcesses = new Set<ChildProcess>();
+export function listBackgroundProcesses(): { id: string; command: string; exited: boolean }[] {
+  const out: { id: string; command: string; exited: boolean }[] = [];
+  for (const [id, bg] of bgProcesses) {
+    if (!bg.exited) out.push({ id, command: bg.command, exited: bg.exited });
+  }
+  return out;
+}
 export function killActiveProcesses(): { count: number; pids: number[] } {
   const pids: number[] = [];
   let count = 0;
@@ -122,6 +130,7 @@ export interface ToolContext {
   semanticSearch?: (query: string, k?: number) => Promise<{ file: string; start: number; end: number; score: number; snippet: string }[]>;
   describeImage?: (dataUrl: string) => Promise<string>;
   fileContextTracker?: FileContextTracker;
+  executeNotebookCell?: (path: string, cellIndex: number) => Promise<{ ok: boolean; output: string; images?: string[] }>;
 }
 export interface ToolResult {
   ok: boolean;
@@ -312,7 +321,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
         const proxyEnv = shellEnv(ctx.proxyShell || ctx.proxyUrl);
         const proc = spawn(cmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...(proxyEnv ? { env: { ...process.env, ...proxyEnv } } : {}) });
         activeProcesses.add(proc);
-        const bg: BgProcess = { proc, stdout: "", stderr: "", exited: false, exitCode: undefined };
+        const bg: BgProcess = { proc, command: cmd, stdout: "", stderr: "", exited: false, exitCode: undefined };
         const id = String(bgIds++);
         bgProcesses.set(id, bg);
         const onChunk = ctx.onChunk;
@@ -897,6 +906,136 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     fn: async (a, ctx) => {
       const b = await resolveBrowser(ctx.browser);
       return b ? b.readPage(a.tabId ? String(a.tabId) : undefined) : { ok: false, output: "Browser not available." };
+    },
+  },
+  "notebook.read": {
+    description: "Read a Jupyter notebook (.ipynb). Without cellIndex, lists every cell (index, type, source preview, whether it has output). With cellIndex, returns that cell's full source and (for code cells) its text/image output.",
+    fn: async (args, ctx) => {
+      const filePath = String(args.path);
+      const ed = new FileEditor(ctx.root);
+      let raw: string;
+      try {
+        raw = await ed.read(filePath);
+      } catch (e: unknown) {
+        return { ok: false, output: `Failed to read ${filePath}: ${(e as Error).message}` };
+      }
+      let doc;
+      try {
+        doc = parseNotebook(raw);
+      } catch (e: unknown) {
+        return { ok: false, output: (e as Error).message };
+      }
+      const cellIndex = args.cellIndex !== undefined ? Number(args.cellIndex) : undefined;
+      if (cellIndex === undefined) {
+        const cells = listCells(doc);
+        if (!cells.length) return { ok: true, output: "(empty notebook)" };
+        const out = cells.map((c) => `[${c.index}] (${c.cellType}${c.hasOutput ? ", has output" : ""}) ${c.preview.replace(/\n/g, " ")}`).join("\n");
+        return { ok: true, output: out };
+      }
+      try {
+        const cell = readCell(doc, cellIndex);
+        const outputText = cell.output
+          ? `\n\n--- Output ---\n${cell.output.text || "(no text output)"}${cell.output.images.length ? `\n(${cell.output.images.length} image output(s); use notebook.execute to regenerate them)` : ""}`
+          : "";
+        return { ok: true, output: `[${cell.index}] (${cell.cellType})\n${cell.source}${outputText}` };
+      } catch (e: unknown) {
+        return { ok: false, output: (e as Error).message };
+      }
+    },
+  },
+  "notebook.editCell": {
+    description: "Replace the source of a cell in a Jupyter notebook by index. Args: { path, cellIndex, source }",
+    fn: async (args, ctx) => {
+      const filePath = String(args.path);
+      const cellIndex = Number(args.cellIndex);
+      const source = String(args.source ?? "");
+      const ed = new FileEditor(ctx.root);
+      let raw: string;
+      try {
+        raw = await ed.read(filePath);
+      } catch (e: unknown) {
+        return { ok: false, output: `Failed to read ${filePath}: ${(e as Error).message}` };
+      }
+      let doc;
+      try {
+        doc = parseNotebook(raw);
+      } catch (e: unknown) {
+        return { ok: false, output: (e as Error).message };
+      }
+      let updated;
+      try {
+        updated = editCellSource(doc, cellIndex, source);
+      } catch (e: unknown) {
+        return { ok: false, output: (e as Error).message };
+      }
+      const full = ed.resolve(filePath);
+      await fs.writeFile(full, serializeNotebook(updated), "utf-8");
+      return { ok: true, output: `Updated cell ${cellIndex} in ${filePath}`, touchedFiles: [filePath], filePath };
+    },
+  },
+  "notebook.addCell": {
+    description: "Insert a new cell into a Jupyter notebook at the given index (existing cells shift down). Args: { path, index, cellType, source }",
+    fn: async (args, ctx) => {
+      const filePath = String(args.path);
+      const index = Number(args.index);
+      const cellType = String(args.cellType ?? "code") as "code" | "markdown" | "raw";
+      const source = String(args.source ?? "");
+      const ed = new FileEditor(ctx.root);
+      let raw: string;
+      try {
+        raw = await ed.read(filePath);
+      } catch (e: unknown) {
+        return { ok: false, output: `Failed to read ${filePath}: ${(e as Error).message}` };
+      }
+      let doc;
+      try {
+        doc = parseNotebook(raw);
+      } catch (e: unknown) {
+        return { ok: false, output: (e as Error).message };
+      }
+      const updated = addCell(doc, index, cellType, source);
+      const full = ed.resolve(filePath);
+      await fs.writeFile(full, serializeNotebook(updated), "utf-8");
+      return { ok: true, output: `Inserted a new ${cellType} cell at index ${index} in ${filePath}`, touchedFiles: [filePath], filePath };
+    },
+  },
+  "notebook.deleteCell": {
+    description: "Delete a cell from a Jupyter notebook by index. Args: { path, cellIndex }",
+    fn: async (args, ctx) => {
+      const filePath = String(args.path);
+      const cellIndex = Number(args.cellIndex);
+      const ed = new FileEditor(ctx.root);
+      let raw: string;
+      try {
+        raw = await ed.read(filePath);
+      } catch (e: unknown) {
+        return { ok: false, output: `Failed to read ${filePath}: ${(e as Error).message}` };
+      }
+      let doc;
+      try {
+        doc = parseNotebook(raw);
+      } catch (e: unknown) {
+        return { ok: false, output: (e as Error).message };
+      }
+      let updated;
+      try {
+        updated = deleteCell(doc, cellIndex);
+      } catch (e: unknown) {
+        return { ok: false, output: (e as Error).message };
+      }
+      const full = ed.resolve(filePath);
+      await fs.writeFile(full, serializeNotebook(updated), "utf-8");
+      return { ok: true, output: `Deleted cell ${cellIndex} from ${filePath}`, touchedFiles: [filePath], filePath };
+    },
+  },
+  "notebook.execute": {
+    description: "Execute a code cell using the workspace's active Jupyter kernel and return its text/image output. Args: { path, cellIndex }",
+    fn: async (args, ctx) => {
+      if (!ctx.executeNotebookCell) return { ok: false, output: "Notebook execution is not available in this environment." };
+      const filePath = String(args.path);
+      const cellIndex = Number(args.cellIndex);
+      const r = await ctx.executeNotebookCell(filePath, cellIndex);
+      return { ok: r.ok, output: r.output, touchedFiles: r.ok ? [filePath] : [], filePath };
     },
   },
 };
