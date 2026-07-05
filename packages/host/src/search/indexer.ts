@@ -25,6 +25,7 @@ const DEFAULT_EXCLUDE = [
   "**/target/**", "**/venv/**", "**/__pycache__/**", "**/*.min.js", "**/*.lock",
   "**/*.lockb", "**/package-lock.json", "**/pnpm-lock.yaml", "**/yarn.lock",
 ];
+export { DEFAULT_INCLUDE, DEFAULT_EXCLUDE };
 export interface IndexerOptions {
   backend: EmbeddingBackend;
   opts?: IndexOptions;
@@ -161,7 +162,7 @@ export function chunkText(text: string, opts: ChunkOptions = {}): TextChunk[] {
   }
   return chunks;
 }
-async function walk(root: string, include: string[], exclude: string[]): Promise<string[]> {
+export async function walk(root: string, include: string[], exclude: string[]): Promise<string[]> {
   const out: string[] = [];
   async function visit(dir: string) {
     let entries: import("node:fs").Dirent[];

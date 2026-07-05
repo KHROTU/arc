@@ -36,10 +36,30 @@ interface ServerEntry {
 }
 export type McpListener = () => void;
 export type McpPersistence = () => void | Promise<void>;
+export interface McpRoot { uri: string; name?: string }
+export type McpSamplingHandler = (serverName: string, params: unknown) => Promise<unknown>;
 export class McpAggregator {
   private servers = new Map<string, ServerEntry>();
   private listeners = new Set<McpListener>();
   private persist?: McpPersistence;
+  private roots: McpRoot[] = [];
+  private samplingHandler?: McpSamplingHandler;
+  setRoots(roots: McpRoot[]): void {
+    this.roots = roots;
+  }
+  setSamplingHandler(handler: McpSamplingHandler): void {
+    this.samplingHandler = handler;
+  }
+  private async handleServerRequest(entry: ServerEntry, method: string, params: unknown): Promise<unknown> {
+    if (method === "roots/list") {
+      return { roots: this.roots.map((r) => ({ uri: r.uri, ...(r.name ? { name: r.name } : {}) })) };
+    }
+    if (method === "sampling/createMessage") {
+      if (!this.samplingHandler) throw new Error("Sampling is not supported by this client.");
+      return this.samplingHandler(entry.config.name, params);
+    }
+    throw new Error(`Method not supported: ${method}`);
+  }
   private resolveServer(name: string): ServerEntry | undefined {
     const direct = this.servers.get(name);
     if (direct) return direct;
@@ -192,6 +212,7 @@ export class McpAggregator {
     client.on("status", () => this.notify());
     client.on("unhealthy", () => this.notify());
     client.on("exit", () => this.notify());
+    client.setRequestHandler((method, params) => this.handleServerRequest(entry, method, params));
     await client.start();
     entry.client = client;
     await new Promise((r) => setTimeout(r, 1500));

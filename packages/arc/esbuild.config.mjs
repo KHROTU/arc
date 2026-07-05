@@ -3,13 +3,10 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { existsSync } from "node:fs";
-
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const watch = process.argv.includes("--watch");
 const isProd = !watch && process.env.NODE_ENV !== "development";
-
 await mkdir(resolve(__dirname, "dist"), { recursive: true });
-
 const host = {
   entryPoints: [resolve(__dirname, "src/extension/host-entry.ts")],
   bundle: true,
@@ -36,11 +33,10 @@ const host = {
     },
   ],
 };
-
 const webview = {
   entryPoints: [resolve(__dirname, "webview-ui/src/entry.tsx")],
   bundle: true,
-  format: "iife",
+  format: "esm",
   platform: "browser",
   target: "es2020",
   outfile: resolve(__dirname, "dist/webview.js"),
@@ -77,7 +73,6 @@ const webview = {
     },
   ],
 };
-
 const ctx1 = await esbuild.context(host);
 const ctx2 = await esbuild.context(webview);
 if (watch) {

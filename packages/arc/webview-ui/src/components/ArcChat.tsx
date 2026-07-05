@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Settings, Plus, Trash2, Pencil, Maximize2, X, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search, ArrowLeft, Undo2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -7,12 +7,12 @@ import Composer from "./Composer";
 import ModelPicker from "./ModelPicker";
 import ModePicker from "./ModePicker";
 import EffortPicker, { type Effort } from "./EffortPicker";
-import ConversationSearch from "./ConversationSearch";
-import SettingsModal from "./SettingsView";
 import type { ModelDescriptor, TurnUsage, ChatMessage, ProviderConfig } from "@arc/host/protocol";
 import { useArcLogo, swapOnError } from "../hooks/useArcLogo";
 import { renderMarkdown } from "../util/markdown";
 import type { RpcClient } from "../rpc";
+const ConversationSearch = lazy(() => import("./ConversationSearch"));
+const SettingsModal = lazy(() => import("./SettingsView"));
 type ChatMeta = { id: string; title: string; updatedAt: number; cost: number; isActive: boolean };
 type Props = {
   client: RpcClient;
@@ -83,6 +83,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [prefillText, setPrefillText] = useState<string | null>(null);
   const [autoApproveActive, setAutoApproveActive] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState<Effort>("high");
+  const [resolvedDiffs, setResolvedDiffs] = useState<Record<string, "accepted" | "rejected">>({});
   const transcriptRef = useRef<HTMLDivElement>(null);
   const pendingTextRef = useRef<{ id: string; text: string } | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -340,6 +341,14 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const timelineNodes = useMemo<ReactNode[]>(() => {
     const out: ReactNode[] = [];
     let run: ProcessStep[] = [];
+    const handleResolveDiff = (step: ProcessStep, action: "accept" | "reject") => {
+      setResolvedDiffs((cur) => ({ ...cur, [step.id]: action === "accept" ? "accepted" : "rejected" }));
+      if (action === "reject" && step.filePath) {
+        client.send({ type: "diff/reject", stepId: step.id, filePath: step.filePath, hunks: step.diffHunks ?? [] });
+      } else if (action === "accept" && step.filePath) {
+        client.send({ type: "diff/accept", stepId: step.id, filePath: step.filePath });
+      }
+    };
     const flush = () => {
       if (run.length) {
         out.push(
@@ -352,6 +361,8 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
               client.send({ type: "ui/openFileDiff", path: payload.filePath, hunks: payload.hunks });
             }}
             toolTreeMode={toolTreeMode}
+            resolvedDiffs={resolvedDiffs}
+            onResolveDiff={handleResolveDiff}
           />,
         );
         run = [];
@@ -370,7 +381,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     }
     flush();
     return out;
-  }, [timeline, toolTreeMode, variant]);
+  }, [timeline, toolTreeMode, variant, resolvedDiffs, client]);
   const latestTodos = useMemo(() => {
     for (let i = steps.length - 1; i >= 0; i--) {
       if (steps[i].type === "todo_list" && steps[i].todos?.length) return steps[i].todos ?? null;
@@ -636,20 +647,24 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
       </div>
       </> )}
       {showSearch && (
-        <ConversationSearch
-          client={client}
-          onClose={() => setShowSearch(false)}
-        />
+        <Suspense fallback={null}>
+          <ConversationSearch
+            client={client}
+            onClose={() => setShowSearch(false)}
+          />
+        </Suspense>
       )}
       {showSettings && (
-        <SettingsModal
-          client={client}
-          onClose={() => setShowSettings(false)}
-          models={models}
-          providers={providers}
-          monoLogoText={monoLogoText}
-          version={version}
-        />
+        <Suspense fallback={null}>
+          <SettingsModal
+            client={client}
+            onClose={() => setShowSettings(false)}
+            models={models}
+            providers={providers}
+            monoLogoText={monoLogoText}
+            version={version}
+          />
+        </Suspense>
       )}
     </div>
   );

@@ -141,31 +141,61 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
   },
   "browser.navigate": {
     description: "Navigate the browser to a URL.",
-    parameters: obj({ url: str("Absolute URL.") }, ["url"]),
+    parameters: obj({ url: str("Absolute URL."), tabId: str("Optional tab id to target (defaults to the active tab).") }, ["url"]),
   },
   "browser.click": {
     description: "Click an element by selector.",
-    parameters: obj({ selector: str("CSS selector.") }, ["selector"]),
+    parameters: obj({ selector: str("CSS selector."), tabId: str("Optional tab id to target (defaults to the active tab).") }, ["selector"]),
   },
   "browser.type": {
     description: "Type text into an element.",
-    parameters: obj({ selector: str("CSS selector."), text: str("Text to type.") }, ["selector", "text"]),
+    parameters: obj({ selector: str("CSS selector."), text: str("Text to type."), tabId: str("Optional tab id to target (defaults to the active tab).") }, ["selector", "text"]),
   },
   "browser.screenshot": {
     description: "Capture a screenshot of the current page.",
-    parameters: obj({ path: str("Optional output path.") }),
+    parameters: obj({ path: str("Optional output path."), tabId: str("Optional tab id to target (defaults to the active tab).") }),
   },
   "browser.evaluate": {
     description: "Evaluate JavaScript in the page.",
-    parameters: obj({ script: str("JavaScript source to run.") }, ["script"]),
+    parameters: obj({ script: str("JavaScript source to run."), tabId: str("Optional tab id to target (defaults to the active tab).") }, ["script"]),
   },
   "browser.readDom": {
     description: "Read the page's accessibility tree.",
-    parameters: obj({}),
+    parameters: obj({ tabId: str("Optional tab id to target (defaults to the active tab).") }),
   },
   "browser.close": {
     description: "Close the browser.",
     parameters: obj({}),
+  },
+  "browser.newTab": {
+    description: "Open a new browser tab, optionally navigating to a URL. The new tab becomes active.",
+    parameters: obj({ url: str("Optional URL to navigate the new tab to.") }),
+  },
+  "browser.switchTab": {
+    description: "Switch the active tab used by browser tools that omit tabId.",
+    parameters: obj({ tabId: str("The tab id to make active (see browser.listTabs).") }, ["tabId"]),
+  },
+  "browser.closeTab": {
+    description: "Close a browser tab by id.",
+    parameters: obj({ tabId: str("The tab id to close.") }, ["tabId"]),
+  },
+  "browser.listTabs": {
+    description: "List all open browser tabs with their ids, URLs, and which one is active.",
+    parameters: obj({}),
+  },
+  "browser.intercept": {
+    description: "Intercept network requests matching a URL glob pattern (e.g. '**/api/**'), to mock a response or block the request entirely. Applies to all tabs.",
+    parameters: obj({
+      pattern: str("URL glob pattern to match, e.g. '**/api/users' or '**/*.png'."),
+      status: num("HTTP status code to respond with when mocking (default 200)."),
+      body: str("Response body to return when mocking."),
+      contentType: str("Content-Type header for the mocked response (default application/json)."),
+      block: bool("If true, aborts matching requests instead of returning a mocked response."),
+    }, ["pattern"]),
+  },
+  "browser.unintercept": {
+    description: "Stop intercepting requests matching a previously registered pattern.",
+    parameters: obj({ pattern: str("The exact pattern previously passed to browser.intercept.") }, ["pattern"]),
   },
   "web.fetch": {
     description: "Fetch raw text content from a web URL.",
@@ -415,6 +445,7 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
     parameters: obj({
       pixels: num("Pixel offset to scroll (positive = down, negative = up). Defaults to 300."),
       selector: str("Optional CSS selector to scroll into view."),
+      tabId: str("Optional tab id to target (defaults to the active tab)."),
     }),
   },
   "browser.waitFor": {
@@ -423,19 +454,58 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
       selector: str("CSS selector to wait for."),
       url: str("URL pattern to wait for."),
       state: str("Load state: networkidle, load, or domcontentloaded. Defaults to networkidle."),
+      tabId: str("Optional tab id to target (defaults to the active tab)."),
     }),
   },
   "browser.console": {
     description: "Read the browser's console log (last 50 entries, log/warn/error).",
-    parameters: obj({}),
+    parameters: obj({ tabId: str("Optional tab id to target (defaults to the active tab).") }),
   },
   "browser.network": {
     description: "Read the browser's network request log (last 50 entries with method, status, URL, timing).",
-    parameters: obj({}),
+    parameters: obj({ tabId: str("Optional tab id to target (defaults to the active tab).") }),
   },
   "browser.domSnapshot": {
     description: "Get a combined snapshot of the browser's current state including console messages and network requests.",
-    parameters: obj({}),
+    parameters: obj({ tabId: str("Optional tab id to target (defaults to the active tab).") }),
+  },
+  "notebook.read": {
+    description: "Read a Jupyter notebook (.ipynb). Without cellIndex, lists every cell (index, type, source preview, whether it has output). With cellIndex, returns that cell's full source and (for code cells) its text/image output.",
+    parameters: obj({
+      path: str("Workspace-relative path to the .ipynb file."),
+      cellIndex: num("Optional 0-based cell index to read in full."),
+    }, ["path"]),
+  },
+  "notebook.editCell": {
+    description: "Replace the source of a cell in a Jupyter notebook by index.",
+    parameters: obj({
+      path: str("Workspace-relative path to the .ipynb file."),
+      cellIndex: num("0-based index of the cell to edit."),
+      source: str("New source text for the cell."),
+    }, ["path", "cellIndex", "source"]),
+  },
+  "notebook.addCell": {
+    description: "Insert a new cell into a Jupyter notebook at the given index. Existing cells shift down.",
+    parameters: obj({
+      path: str("Workspace-relative path to the .ipynb file."),
+      index: num("0-based index to insert the new cell at."),
+      cellType: enumStr(["code", "markdown", "raw"], "Type of the new cell."),
+      source: str("Source text for the new cell."),
+    }, ["path", "index", "cellType", "source"]),
+  },
+  "notebook.deleteCell": {
+    description: "Delete a cell from a Jupyter notebook by index.",
+    parameters: obj({
+      path: str("Workspace-relative path to the .ipynb file."),
+      cellIndex: num("0-based index of the cell to delete."),
+    }, ["path", "cellIndex"]),
+  },
+  "notebook.execute": {
+    description: "Execute a code cell using the workspace's active Jupyter kernel and return its text/image output.",
+    parameters: obj({
+      path: str("Workspace-relative path to the .ipynb file."),
+      cellIndex: num("0-based index of the code cell to execute."),
+    }, ["path", "cellIndex"]),
   },
 };
 export function buildToolSpecs(
