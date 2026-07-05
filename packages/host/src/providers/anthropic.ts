@@ -11,6 +11,36 @@ const ANTHROPIC_EFFORT: Record<string, string | undefined> = {
   xhigh: "xhigh",
   max: "max",
 };
+type ContentBlock = Record<string, unknown>;
+function markCacheControl(content: unknown): unknown {
+  if (typeof content === "string") {
+    return [{ type: "text", text: content, cache_control: { type: "ephemeral" } }];
+  }
+  if (Array.isArray(content) && content.length > 0) {
+    const copy = content.slice();
+    copy[copy.length - 1] = { ...(copy[copy.length - 1] as ContentBlock), cache_control: { type: "ephemeral" } };
+    return copy;
+  }
+  return content;
+}
+export function applyPromptCaching(body: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...body };
+  if (Array.isArray(out.tools) && out.tools.length > 0) {
+    const tools = (out.tools as ContentBlock[]).slice();
+    tools[tools.length - 1] = { ...tools[tools.length - 1], cache_control: { type: "ephemeral" } };
+    out.tools = tools;
+  }
+  if (typeof out.system === "string" && out.system) {
+    out.system = [{ type: "text", text: out.system, cache_control: { type: "ephemeral" } }];
+  }
+  if (Array.isArray(out.messages) && out.messages.length > 1) {
+    const messages = (out.messages as { role: string; content: unknown }[]).slice();
+    const cutIdx = messages.length - 2;
+    messages[cutIdx] = { ...messages[cutIdx], content: markCacheControl(messages[cutIdx].content) };
+    out.messages = messages;
+  }
+  return out;
+}
 export const anthropicTransport: Transport = {
   kind: "anthropic",
   async stream(req: StreamRequest): Promise<StreamHandle> {
@@ -77,6 +107,7 @@ export const anthropicTransport: Transport = {
         body.thinking = { type: "disabled" };
       }
     }
+    const cachedBody = applyPromptCaching(body);
     const res = await withRetry(
       () => fetch(`${base}/v1/messages`, {
         method: "POST",
@@ -84,9 +115,10 @@ export const anthropicTransport: Transport = {
           "content-type": "application/json",
           "x-api-key": req.provider.apiKey ?? "",
           "anthropic-version": "2023-06-01",
+          "anthropic-beta": "prompt-caching-2024-07-31",
           "anthropic-dangerous-direct-browser-access": "true",
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify(cachedBody),
         signal: req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000),
         ...(req.proxyUrl ? { dispatcher: makeProxyDispatcher(req.proxyUrl) } : {}),
       }),
