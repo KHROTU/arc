@@ -678,8 +678,18 @@ function SearchTab({ client }: { client: RpcClient }) {
           <span className="arc-row-label">Backend</span>
           <span className="arc-spacer" />
           <select className="arc-input arc-input-sm" value={searchBackend} onChange={(e) => { const v = e.target.value as typeof searchBackend; setSearchBackend(v); client.send({ type: "config/set", key: "arc.search.backend", value: v }); }}>
-            <option value="hash-based">Hash-based</option>
-            <option value="semantic">Semantic</option>
+            <option value="hash-based">hash-based</option>
+            <option value="semantic">semantic</option>
+          </select>
+        </div></li>
+        <li className="arc-row"><div className="arc-row-main">
+          <span className="arc-row-label">Automatic reindexing</span>
+          <span className="arc-row-meta">Periodically rebuild the full index, in addition to live file watching</span>
+          <span className="arc-spacer" />
+          <select className="arc-input arc-input-sm" value={autoReindex} onChange={(e) => { const v = e.target.value as typeof autoReindex; setAutoReindex(v); client.send({ type: "config/set", key: "arc.search.autoReindex", value: v }); }}>
+            <option value="off">off</option>
+            <option value="hourly">hourly</option>
+            <option value="daily">daily</option>
           </select>
         </div></li>
         <li className="arc-row"><div className="arc-row-main">
@@ -689,16 +699,6 @@ function SearchTab({ client }: { client: RpcClient }) {
             <option value="low">nomic-embed-text (768d)</option>
             <option value="mid">qwen3-embedding:0.6b (1024d)</option>
             <option value="high">qwen3-embedding:8b (4096d)</option>
-          </select>
-        </div></li>
-        <li className="arc-row"><div className="arc-row-main">
-          <span className="arc-row-label">Automatic reindexing</span>
-          <span className="arc-row-meta">Periodically rebuild the full index, in addition to live file watching</span>
-          <span className="arc-spacer" />
-          <select className="arc-input arc-input-sm" value={autoReindex} onChange={(e) => { const v = e.target.value as typeof autoReindex; setAutoReindex(v); client.send({ type: "config/set", key: "arc.search.autoReindex", value: v }); }}>
-            <option value="off">Off</option>
-            <option value="hourly">Hourly</option>
-            <option value="daily">Daily</option>
           </select>
         </div></li>
       </ul>
