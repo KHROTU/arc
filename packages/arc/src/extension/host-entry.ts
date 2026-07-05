@@ -16,6 +16,7 @@ import {
   Indexer, HashEmbeddingBackend, OllamaEmbeddingBackend, DEFAULT_EMBEDDING_MODELS,
   type IndexProgress, type EmbeddingBackend,
   IndexWatcher,
+  FileContextTracker,
 } from "@arc/host";
 import { initDiscordRpcSpoof, reportAgentActivity, reportAgentIdle } from "./discord-rpc.js";
 const SECRET_PREFIX = "arc.apiKey.";
@@ -30,6 +31,7 @@ let skillRegistry: SkillRegistry;
 let skillRegistryReady: Promise<void>;
 let ruleRegistry: RuleRegistry;
 let ruleWatcherDispose: (() => void) | undefined;
+let fileContextTracker: FileContextTracker;
 let persist: () => void;
 let persistAsync: () => Promise<void>;
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
@@ -96,10 +98,12 @@ export function activate(context: vscode.ExtensionContext) {
   modeRegistry = new ModeRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
   skillRegistry = new SkillRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
   ruleRegistry = new RuleRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
+  fileContextTracker = new FileContextTracker({ dbPath: path.join(getWorkspaceArcDir(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()), "context.db") });
   Promise.allSettled([
     modeRegistry.load(),
     skillRegistry.load().then(() => { skillRegistryReady = Promise.resolve(); }),
     ruleRegistry.load(),
+    fileContextTracker.load(),
   ]).then((results) => {
     for (const r of results) {
       if (r.status === "rejected") {
@@ -634,6 +638,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     proxyUrl: resolveProxy("url"),
     proxyProvider: resolveProxy("providerUrl"),
     toolContext,
+    fileContextTracker,
     approveShell: async (description, meta) => {
       const id = String(++approvalId);
       const promise = new Promise<boolean>((resolve) => {
@@ -1695,6 +1700,7 @@ export function deactivate() {
   }
   stopIndexWatcher();
   ruleWatcherDispose?.();
+  void fileContextTracker?.save();
   void mcp?.dispose();
   void browser?.close();
 }

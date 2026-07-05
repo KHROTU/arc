@@ -96,6 +96,7 @@ async function runSingleCommand(
 import type { ApprovalsConfig, SessionApprovals, ApproveShellMeta } from "../approvals/index.js";
 import type { SkillRegistry } from "../skills/index.js";
 import type { RuleRegistry } from "../rules/index.js";
+import type { FileContextTracker } from "../context/tracker.js";
 export interface ToolContext {
   root: string;
   approvalsConfig: ApprovalsConfig;
@@ -120,6 +121,7 @@ export interface ToolContext {
   proxyShell?: string;
   semanticSearch?: (query: string, k?: number) => Promise<{ file: string; start: number; end: number; score: number; snippet: string }[]>;
   describeImage?: (dataUrl: string) => Promise<string>;
+  fileContextTracker?: FileContextTracker;
 }
 export interface ToolResult {
   ok: boolean;
@@ -163,12 +165,13 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
           const sizeLabel = buf.length < 1024 ? `${buf.length}B` : `${(buf.length / 1024).toFixed(1)}KB`;
           if (ctx.describeImage) {
             const description = await ctx.describeImage(base64);
-            return { ok: true, output: `Read image: ${filePath.split(/[/\\]/).pop()} (${mime}, ${sizeLabel})\n${description}`, filePath };
+            return { ok: true, output: `Read image: ${filePath.split(/[/\\]/).pop()} (${mime}, ${sizeLabel})\n${description}`, filePath, touchedFiles: [filePath] };
           }
           return {
             ok: true,
             output: `Read image: ${filePath.split(/[/\\]/).pop()} (${mime}, ${sizeLabel})`,
             filePath,
+            touchedFiles: [filePath],
             images: [{ type: "image_url", image_url: { url: dataUrl } }],
           };
         } catch (e) {
@@ -178,7 +181,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const offset = args.offset ? Number(args.offset) : undefined;
       const limit = args.limit ? Number(args.limit) : undefined;
       const body = await ed.read(String(args.path), { offset, limit });
-      return { ok: true, output: body, filePath: String(args.path) };
+      return { ok: true, output: body, filePath: String(args.path), touchedFiles: [String(args.path)] };
     },
   },
   "file.edit": {

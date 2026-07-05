@@ -38,3 +38,4 @@ export * from "./search/indexer.js";
 export * from "./hooks/hooks.js";
 export * from "./search/watcher.js";
 export * from "./util/dep-graph.js";
+export * from "./context/tracker.js";

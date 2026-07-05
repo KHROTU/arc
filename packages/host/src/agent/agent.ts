@@ -56,6 +56,7 @@ export interface AgentOptions {
   proxyProvider?: string;
   proxyWeb?: string;
   proxyShell?: string;
+  fileContextTracker?: import("../context/tracker.js").FileContextTracker;
 }
 export class Agent {
   private messages: ChatMessage[] = [];
@@ -1122,7 +1123,11 @@ export class Agent {
         }
       }
     });
-    if (result.touchedFiles && result.touchedFiles.length && this.opts.toolContext.summaryForFiles) {
+    if (result.touchedFiles && result.touchedFiles.length && this.opts.fileContextTracker) {
+      const kind = isEditOrWrite ? "edit" : "read";
+      for (const f of result.touchedFiles) this.opts.fileContextTracker.touch(f, kind);
+    }
+    if (result.touchedFiles && result.touchedFiles.length && isEditOrWrite && this.opts.toolContext.summaryForFiles) {
       const summary = await this.opts.toolContext.summaryForFiles(result.touchedFiles);
       if (summary.text) {
         const fbId = `lsp-fb-${randomUUID()}`;
