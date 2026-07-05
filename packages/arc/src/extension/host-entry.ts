@@ -29,6 +29,7 @@ let modeRegistry: ModeRegistry;
 let skillRegistry: SkillRegistry;
 let skillRegistryReady: Promise<void>;
 let ruleRegistry: RuleRegistry;
+let ruleWatcherDispose: (() => void) | undefined;
 let persist: () => void;
 let persistAsync: () => Promise<void>;
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
@@ -105,6 +106,17 @@ export function activate(context: vscode.ExtensionContext) {
         log.appendLine(`[arc] Registry load failed: ${(r.reason as Error)?.stack ?? r.reason}`);
       }
     }
+    ruleWatcherDispose = ruleRegistry.watch((diff) => {
+      const parts: string[] = [];
+      if (diff.added.length) parts.push(`added: ${diff.added.join(", ")}`);
+      if (diff.changed.length) parts.push(`changed: ${diff.changed.join(", ")}`);
+      if (diff.removed.length) parts.push(`removed: ${diff.removed.join(", ")}`);
+      const note = `[Rules updated] ${parts.join("; ")}`;
+      log.appendLine(`[arc] ${note}`);
+      for (const s of [sidebarSession, ...fullscreenSessions.values()]) {
+        s.agent?.injectSystemNote?.(note);
+      }
+    });
   });
   try {
     registerViewsAndCommands(context);
@@ -1682,6 +1694,7 @@ export function deactivate() {
     void ctxRef?.globalState.update("arc.agentState", sidebarSession.agent.snapshot());
   }
   stopIndexWatcher();
+  ruleWatcherDispose?.();
   void mcp?.dispose();
   void browser?.close();
 }

@@ -130,6 +130,12 @@ export class Agent {
   getTodo() { return this.todoItems.slice(); }
   getUsage() { return this.usageByModel; }
   getHandoffs() { return this.handoffs.slice(); }
+  injectSystemNote(text: string): void {
+    if (!text) return;
+    const m: ChatMessage = { id: randomUUID(), role: "system", content: text, ts: Date.now() };
+    this.messages.push(m);
+    this.sink.message(m);
+  }
   snapshot(): { messages: ChatMessage[]; steps: ProcessStep[]; mode: string; todoItems: TodoItem[] } {
     return { messages: this.messages.slice(), steps: this.steps.slice(), mode: this.currentMode, todoItems: this.todoItems.slice() };
   }
