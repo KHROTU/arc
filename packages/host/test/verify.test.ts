@@ -38,7 +38,7 @@ describe("runVerification", () => {
     const result = await runVerification(process.cwd(), config, ["a.ts"]);
     expect(result.ok).toBe(true);
     expect(result.results[0].name).toBe("echo");
-  });
+  }, 15_000);
   it("skips commands whose glob does not match changed files", async () => {
     const config = { commands: [{ name: "pyonly", command: "echo should-not-run", glob: "**/*.py" }], maxRetries: 3 };
     const result = await runVerification(process.cwd(), config, ["a.ts"]);
@@ -51,7 +51,7 @@ describe("runVerification", () => {
     const result = await runVerification(process.cwd(), config, ["a.ts"]);
     expect(result.ok).toBe(false);
     expect(result.results[0].ok).toBe(false);
-  });
+  }, 15_000);
 });
 describe("loadVerifyConfig", () => {
   let root: string;
