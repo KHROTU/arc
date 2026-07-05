@@ -187,12 +187,6 @@
         "icon": "$(trash)"
       },
       {
-        "command": "arc.inlineChat.collapse",
-        "title": "Collapse",
-        "category": "Arc",
-        "icon": "$(fold)"
-      },
-      {
         "command": "arc.inlineChat.pickModel",
         "title": "Switch Model",
         "category": "Arc",
@@ -279,13 +273,8 @@
       ],
       "comments/commentThread/title": [
         {
-          "command": "arc.inlineChat.collapse",
-          "group": "navigation@1",
-          "when": "commentController == arc.inlineChat"
-        },
-        {
           "command": "arc.inlineChat.cancel",
-          "group": "navigation@2",
+          "group": "navigation",
           "when": "commentController == arc.inlineChat"
         }
       ],

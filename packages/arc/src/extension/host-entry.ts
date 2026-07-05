@@ -249,7 +249,7 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
     thread.contextValue = "arcInlineThread";
     const currentModel = inlineChatModelChoice.get(thread) ?? registry?.getCurrent();
     const header = new InlineComment(
-      new vscode.MarkdownString("Describe the edit to make below."),
+      new vscode.MarkdownString(""),
       vscode.CommentMode.Preview,
       { name: currentModel?.label ?? "Select a model" },
       "arcModelHeader",
@@ -275,7 +275,7 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
     const session = inlineChatSessions.get(thread);
     if (session?.agent) session.agent.setModelOverride(picked.model);
     const header = new InlineComment(
-      inlineHeaderComments.get(thread)?.body ?? new vscode.MarkdownString("Describe the edit to make below."),
+      new vscode.MarkdownString(""),
       vscode.CommentMode.Preview,
       { name: picked.model.label },
       "arcModelHeader",
@@ -283,11 +283,6 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
     inlineHeaderComments.set(thread, header);
     inlineCommentThreadByComment.set(header, thread);
     thread.comments = [header, ...thread.comments.slice(1)];
-  });
-  vscode.commands.registerCommand("arc.inlineChat.collapse", (thread: vscode.CommentThread) => {
-    thread.collapsibleState = thread.collapsibleState === vscode.CommentThreadCollapsibleState.Expanded
-      ? vscode.CommentThreadCollapsibleState.Collapsed
-      : vscode.CommentThreadCollapsibleState.Expanded;
   });
   vscode.commands.registerCommand("arc.inlineChat.submit", async (reply: vscode.CommentReply) => {
     const thread = reply.thread;
