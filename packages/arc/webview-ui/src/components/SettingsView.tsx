@@ -575,9 +575,9 @@ function GeneralTab({ client }: { client: RpcClient }) {
             <span className="arc-row-meta">how many times to retry after a failed verification</span>
             <span className="arc-spacer" />
             <select className="arc-input arc-input-sm" value={verifyMode} onChange={(e) => { const v = e.target.value as typeof verifyMode; setVerifyMode(v); client.send({ type: "config/set", key: "arc.verify.mode", value: v }); }}>
-              <option value="none">Disabled</option>
-              <option value="default">Default (from .arc/verify.toml)</option>
-              <option value="custom">Custom</option>
+              <option value="none">off</option>
+              <option value="default">default</option>
+              <option value="custom">custom...</option>
             </select>
           </div></li>
           {verifyMode === "custom" && (

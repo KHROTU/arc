@@ -183,7 +183,20 @@
       {
         "command": "arc.inlineChat.cancel",
         "title": "Discard",
-        "category": "Arc"
+        "category": "Arc",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "arc.inlineChat.collapse",
+        "title": "Collapse",
+        "category": "Arc",
+        "icon": "$(fold)"
+      },
+      {
+        "command": "arc.inlineChat.pickModel",
+        "title": "Switch Model",
+        "category": "Arc",
+        "icon": "$(arrow-swap)"
       }
     ],
     "menus": {
@@ -266,9 +279,21 @@
       ],
       "comments/commentThread/title": [
         {
-          "command": "arc.inlineChat.cancel",
-          "group": "navigation",
+          "command": "arc.inlineChat.collapse",
+          "group": "navigation@1",
           "when": "commentController == arc.inlineChat"
+        },
+        {
+          "command": "arc.inlineChat.cancel",
+          "group": "navigation@2",
+          "when": "commentController == arc.inlineChat"
+        }
+      ],
+      "comments/comment/title": [
+        {
+          "command": "arc.inlineChat.pickModel",
+          "group": "navigation",
+          "when": "commentController == arc.inlineChat && comment == arcModelHeader"
         }
       ]
     },

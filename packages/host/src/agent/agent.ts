@@ -131,6 +131,12 @@ export class Agent {
   private getCurrentModel(): ModelDescriptor | undefined {
     return this.opts.modelOverride ?? this.registry.getCurrent();
   }
+  getModel(): ModelDescriptor | undefined {
+    return this.getCurrentModel();
+  }
+  setModelOverride(model: ModelDescriptor | undefined): void {
+    this.opts.modelOverride = model;
+  }
   private resolveProviderProxy(): string | undefined {
     return this.opts.proxyProvider || this.opts.proxyUrl;
   }

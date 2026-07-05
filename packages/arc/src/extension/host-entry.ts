@@ -61,6 +61,9 @@ let browserIdleTimer: ReturnType<typeof setTimeout> | undefined;
 const BROWSER_IDLE_MS = 5 * 60 * 1000;
 let inlineCommentController: vscode.CommentController | undefined;
 const inlineChatSessions = new Map<vscode.CommentThread, Session>();
+const inlineHeaderComments = new Map<vscode.CommentThread, InlineComment>();
+const inlineChatModelChoice = new Map<vscode.CommentThread, ModelDescriptor>();
+const inlineCommentThreadByComment = new WeakMap<vscode.Comment, vscode.CommentThread>();
 class InlineComment implements vscode.Comment {
   constructor(
     public body: string | vscode.MarkdownString,
@@ -240,10 +243,51 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
       ? new vscode.Range(ed.selection.active.line, 0, ed.selection.active.line, 0)
       : new vscode.Range(ed.selection.start, ed.selection.end);
     const thread = inlineCommentController.createCommentThread(ed.document.uri, range, []);
-    thread.label = "Arc Inline Chat";
+    thread.label = "Arc";
     thread.canReply = true;
     thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
     thread.contextValue = "arcInlineThread";
+    const currentModel = inlineChatModelChoice.get(thread) ?? registry?.getCurrent();
+    const header = new InlineComment(
+      new vscode.MarkdownString("Describe the edit to make below."),
+      vscode.CommentMode.Preview,
+      { name: currentModel?.label ?? "Select a model" },
+      "arcModelHeader",
+    );
+    inlineHeaderComments.set(thread, header);
+    inlineCommentThreadByComment.set(header, thread);
+    thread.comments = [header];
+  });
+  vscode.commands.registerCommand("arc.inlineChat.pickModel", async (comment: vscode.Comment) => {
+    const thread = inlineCommentThreadByComment.get(comment);
+    if (!thread || !registry) return;
+    const modelList = registry.list();
+    if (!modelList.length) {
+      void vscode.window.showInformationMessage("No models configured yet. Add one in Arc settings.");
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(
+      modelList.map((m) => ({ label: m.label, description: m.tier, model: m })),
+      { title: "Switch model for this inline edit" },
+    );
+    if (!picked) return;
+    inlineChatModelChoice.set(thread, picked.model);
+    const session = inlineChatSessions.get(thread);
+    if (session?.agent) session.agent.setModelOverride(picked.model);
+    const header = new InlineComment(
+      inlineHeaderComments.get(thread)?.body ?? new vscode.MarkdownString("Describe the edit to make below."),
+      vscode.CommentMode.Preview,
+      { name: picked.model.label },
+      "arcModelHeader",
+    );
+    inlineHeaderComments.set(thread, header);
+    inlineCommentThreadByComment.set(header, thread);
+    thread.comments = [header, ...thread.comments.slice(1)];
+  });
+  vscode.commands.registerCommand("arc.inlineChat.collapse", (thread: vscode.CommentThread) => {
+    thread.collapsibleState = thread.collapsibleState === vscode.CommentThreadCollapsibleState.Expanded
+      ? vscode.CommentThreadCollapsibleState.Collapsed
+      : vscode.CommentThreadCollapsibleState.Expanded;
   });
   vscode.commands.registerCommand("arc.inlineChat.submit", async (reply: vscode.CommentReply) => {
     const thread = reply.thread;
@@ -268,10 +312,18 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
       updateLastInlineComment(thread, "Arc is unavailable right now.");
       return;
     }
+    const chosenModel = inlineChatModelChoice.get(thread);
+    if (chosenModel) agent.setModelOverride(chosenModel);
     const codeContext = hasSelection
       ? `Selected code (lines ${thread.range.start.line + 1}-${thread.range.end.line + 1}):\n\`\`\`${doc.languageId}\n${selectedText}\n\`\`\``
-      : `Cursor at line ${line}. No selection — infer the relevant surrounding code from the file.`;
-    const prompt = `Inline edit request for ${uriLabel}.\n${codeContext}\n\nInstruction: ${instruction}\n\nEdit ${uriLabel} directly using file.edit to satisfy the instruction. Keep changes minimal and scoped to this request.`;
+      : (() => {
+          const cursorLine = thread.range.start.line;
+          const startLine = Math.max(0, cursorLine - 15);
+          const endLine = Math.min(doc.lineCount - 1, cursorLine + 15);
+          const windowText = doc.getText(new vscode.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length));
+          return `Cursor at line ${line} (no selection). Surrounding code (lines ${startLine + 1}-${endLine + 1}), use file.read for more if needed:\n\`\`\`${doc.languageId}\n${windowText}\n\`\`\``;
+        })();
+    const prompt = `Inline edit request for ${uriLabel}.\n${codeContext}\n\nInstruction: ${instruction}\n\nEdit ${uriLabel} directly using file.edit to satisfy the instruction. The SEARCH block must match the file's on-disk content exactly (re-read the file with file.read first if unsure). Keep changes minimal and scoped to this request.`;
     try {
       await agent.send(prompt);
       const lastAssistant = [...session.messages].reverse().find((m) => (m as { role?: string }).role === "assistant" && (m as { content?: string }).content);
@@ -297,6 +349,8 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
       chatHistory?.remove(session.id);
       inlineChatSessions.delete(thread);
     }
+    inlineHeaderComments.delete(thread);
+    inlineChatModelChoice.delete(thread);
     thread.dispose();
   });
   context.subscriptions.push(
@@ -794,6 +848,10 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     toolContext,
     fileContextTracker,
     approveShell: async (description, meta) => {
+      if (!session.view && !session.panel) {
+        const choice = await vscode.window.showWarningMessage(description, { modal: true }, "Allow");
+        return choice === "Allow";
+      }
       const id = String(++approvalId);
       const promise = new Promise<boolean>((resolve) => {
         pendingApprovals.set(id, { resolve, session });
