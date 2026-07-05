@@ -1699,4 +1699,4 @@ function renderForSummary(msgs: ChatMessage[]): string {
     }
   }
   return out.join("\n");
-}
+}
