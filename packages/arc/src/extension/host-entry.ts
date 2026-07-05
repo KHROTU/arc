@@ -83,6 +83,7 @@ let searchProgress: IndexProgress = { filesScanned: 0, filesIndexed: 0, chunksEm
 let searchAbort: AbortController | undefined;
 let indexWatcher: IndexWatcher | undefined;
 let indexWatcherSaveTimer: ReturnType<typeof setTimeout> | undefined;
+let autoReindexTimer: ReturnType<typeof setInterval> | undefined;
 let approvalsConfig: ApprovalsConfig = { ...DEFAULT_APPROVALS };
 let pendingAgentState: { messages: unknown[]; steps: unknown[]; mode: string; todoItems: unknown[] } | undefined;
 function webviewResourceRoots(context: vscode.ExtensionContext): vscode.Uri[] {
@@ -254,6 +255,9 @@ async function initializeAsync(context: vscode.ExtensionContext) {
     if (e.affectsConfiguration("arc.indexing.autoWatch") || e.affectsConfiguration("arc.search.enabled")) {
       startIndexWatcherIfEnabled();
     }
+    if (e.affectsConfiguration("arc.search.autoReindex")) {
+      scheduleAutoReindex();
+    }
   }));
   store = new CheckpointStore({ dir: context.globalStorageUri.fsPath });
   lsp = new LspBridge(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
@@ -274,6 +278,7 @@ async function initializeAsync(context: vscode.ExtensionContext) {
   chatSessions.set(currentChat.id, sidebarSession);
   persist();
   setTimeout(() => { void tryLoadIndex(); }, 2000);
+  scheduleAutoReindex();
   initResolve?.();
   setTimeout(() => {
     void hydrateMcp(mcp, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()).catch((err) => {
@@ -766,10 +771,10 @@ function pushContextStats(webview: vscode.Webview, chatId: string) {
   const usedPct = window > 0 ? Math.min(100, (tokens / window) * 100) : 0;
   webview.postMessage({ type: "context/stats", usedPct, tokens, window, cost: totals.cost });
 }
-async function reindexWorkspace(webview: vscode.Webview) {
+async function reindexWorkspace(webview?: vscode.Webview) {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!root) {
-    webview.postMessage({ type: "error", message: "No workspace folder to index." });
+    webview?.postMessage({ type: "error", message: "No workspace folder to index." });
     return;
   }
   searchAbort?.abort();
@@ -878,6 +883,21 @@ function stopIndexWatcher(): void {
   indexWatcher?.stop();
   indexWatcher = undefined;
   clearTimeout(indexWatcherSaveTimer);
+}
+function stopAutoReindexSchedule(): void {
+  clearInterval(autoReindexTimer);
+  autoReindexTimer = undefined;
+}
+function scheduleAutoReindex(): void {
+  stopAutoReindexSchedule();
+  const cfg = vscode.workspace.getConfiguration();
+  const mode = cfg.get<string>("arc.search.autoReindex", "off");
+  if (mode !== "hourly" && mode !== "daily") return;
+  const intervalMs = mode === "hourly" ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+  autoReindexTimer = setInterval(() => {
+    if (!vscode.workspace.getConfiguration().get<boolean>("arc.search.enabled", true)) return;
+    void reindexWorkspace();
+  }, intervalMs);
 }
 function startIndexWatcherIfEnabled(): void {
   stopIndexWatcher();
@@ -1700,6 +1720,7 @@ export function deactivate() {
   }
   stopIndexWatcher();
   ruleWatcherDispose?.();
+  stopAutoReindexSchedule();
   void fileContextTracker?.save();
   void mcp?.dispose();
   void browser?.close();

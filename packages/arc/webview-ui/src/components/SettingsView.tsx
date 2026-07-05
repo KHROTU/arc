@@ -641,6 +641,7 @@ function SearchTab({ client }: { client: RpcClient }) {
   const [searchBackend, setSearchBackend] = useState<"hash-based" | "semantic">("hash-based");
   const [searchModelTier, setSearchModelTier] = useState<"low" | "mid" | "high">("low");
   const [searchChunks, setSearchChunks] = useState(0);
+  const [autoReindex, setAutoReindex] = useState<"off" | "hourly" | "daily">("off");
   const [indexing, setIndexing] = useState(false);
   const [progress, setProgress] = useState<{ scanned: number; indexed: number; chunks: number; errors: number }>({ scanned: 0, indexed: 0, chunks: 0, errors: 0 });
   useEffect(() => {
@@ -652,6 +653,7 @@ function SearchTab({ client }: { client: RpcClient }) {
       else setSearchModelTier("low");
     });
     void client.request("arc.search.chunkCount").then((v) => setSearchChunks(typeof v === "number" ? v : 0));
+    void client.request("arc.search.autoReindex").then((v) => setAutoReindex(v === "hourly" || v === "daily" ? v : "off"));
     const off = client.on((e: any) => {
       if (e.type === "search/indexProgress") {
         setIndexing(true);
@@ -687,6 +689,16 @@ function SearchTab({ client }: { client: RpcClient }) {
             <option value="low">nomic-embed-text (768d)</option>
             <option value="mid">qwen3-embedding:0.6b (1024d)</option>
             <option value="high">qwen3-embedding:8b (4096d)</option>
+          </select>
+        </div></li>
+        <li className="arc-row"><div className="arc-row-main">
+          <span className="arc-row-label">Automatic reindexing</span>
+          <span className="arc-row-meta">Periodically rebuild the full index, in addition to live file watching</span>
+          <span className="arc-spacer" />
+          <select className="arc-input arc-input-sm" value={autoReindex} onChange={(e) => { const v = e.target.value as typeof autoReindex; setAutoReindex(v); client.send({ type: "config/set", key: "arc.search.autoReindex", value: v }); }}>
+            <option value="off">Off</option>
+            <option value="hourly">Hourly</option>
+            <option value="daily">Daily</option>
           </select>
         </div></li>
       </ul>

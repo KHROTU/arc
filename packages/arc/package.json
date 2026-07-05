@@ -374,6 +374,16 @@
           "default": true,
           "description": "Automatically keep the semantic search index up to date using a filesystem watcher (with a polling fallback) after the initial index build. Disable to opt out (equivalent to --no-watch)."
         },
+        "arc.search.autoReindex": {
+          "type": "string",
+          "enum": [
+            "off",
+            "hourly",
+            "daily"
+          ],
+          "default": "off",
+          "description": "Periodically trigger a full workspace reindex on a schedule, in addition to the live IndexWatcher. 'off' disables scheduled reindexing."
+        },
         "arc.titleGeneration.method": {
           "type": "string",
           "enum": [
