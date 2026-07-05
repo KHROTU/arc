@@ -15,6 +15,7 @@ import {
   type HostMsg, type WebviewMsg, type ModelDescriptor, type ProviderConfig, type ProcessStep, type ApprovalsConfig,
   Indexer, HashEmbeddingBackend, OllamaEmbeddingBackend, DEFAULT_EMBEDDING_MODELS,
   type IndexProgress, type EmbeddingBackend,
+  IndexWatcher,
 } from "@arc/host";
 import { initDiscordRpcSpoof, reportAgentActivity, reportAgentIdle } from "./discord-rpc.js";
 const SECRET_PREFIX = "arc.apiKey.";
@@ -77,6 +78,8 @@ function getBrowser(): Promise<BrowserAdapter> {
 let searchIndexer: Indexer | undefined;
 let searchProgress: IndexProgress = { filesScanned: 0, filesIndexed: 0, chunksEmbedded: 0, errors: 0 };
 let searchAbort: AbortController | undefined;
+let indexWatcher: IndexWatcher | undefined;
+let indexWatcherSaveTimer: ReturnType<typeof setTimeout> | undefined;
 let approvalsConfig: ApprovalsConfig = { ...DEFAULT_APPROVALS };
 let pendingAgentState: { messages: unknown[]; steps: unknown[]; mode: string; todoItems: unknown[] } | undefined;
 function webviewResourceRoots(context: vscode.ExtensionContext): vscode.Uri[] {
@@ -232,6 +235,9 @@ async function initializeAsync(context: vscode.ExtensionContext) {
       void vscode.commands.executeCommand("setContext", "arc.isPrideMonth", logo.kind === "pride");
     }
     if (e.affectsConfiguration("arc")) persist();
+    if (e.affectsConfiguration("arc.indexing.autoWatch") || e.affectsConfiguration("arc.search.enabled")) {
+      startIndexWatcherIfEnabled();
+    }
   }));
   store = new CheckpointStore({ dir: context.globalStorageUri.fsPath });
   lsp = new LspBridge(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
@@ -787,6 +793,7 @@ async function reindexWorkspace(webview: vscode.Webview) {
   if (indexPath && searchIndexer && searchProgress.filesIndexed > 0) {
     try { await searchIndexer.save(indexPath); } catch {  }
   }
+  startIndexWatcherIfEnabled();
 }
 async function walkWorkspace(root: string): Promise<string[]> {
   const include = [
@@ -850,6 +857,34 @@ function getIndexPath(): string | undefined {
   const dir = path.join(ctxRef.globalStorageUri.fsPath, "index");
   return path.join(dir, `${hash}.arcx`);
 }
+function stopIndexWatcher(): void {
+  indexWatcher?.stop();
+  indexWatcher = undefined;
+  clearTimeout(indexWatcherSaveTimer);
+}
+function startIndexWatcherIfEnabled(): void {
+  stopIndexWatcher();
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!root || !searchIndexer) return;
+  const cfg = vscode.workspace.getConfiguration();
+  const enabled = cfg.get<boolean>("arc.search.enabled", true);
+  const autoWatch = cfg.get<boolean>("arc.indexing.autoWatch", true);
+  if (!enabled || !autoWatch) return;
+  indexWatcher = new IndexWatcher({
+    root,
+    indexer: searchIndexer,
+    onUpdate: ({ updated, removed }) => {
+      searchProgress.filesIndexed += updated.length;
+      broadcastAll({ type: "search/indexUpdated", updated, removed });
+      clearTimeout(indexWatcherSaveTimer);
+      indexWatcherSaveTimer = setTimeout(() => {
+        const indexPath = getIndexPath();
+        if (indexPath && searchIndexer) void searchIndexer.save(indexPath).catch(() => {});
+      }, 3000);
+    },
+  });
+  indexWatcher.start();
+}
 async function tryLoadIndex(): Promise<void> {
   const indexPath = getIndexPath();
   if (!indexPath) return;
@@ -873,6 +908,7 @@ async function tryLoadIndex(): Promise<void> {
   try {
     searchIndexer = await Indexer.load(indexPath, be);
     searchProgress = { filesScanned: searchIndexer.getIndex().size(), filesIndexed: searchIndexer.getIndex().size(), chunksEmbedded: searchIndexer.getIndex().size(), errors: 0 };
+    startIndexWatcherIfEnabled();
   } catch {
     searchIndexer = undefined;
   }
@@ -1645,6 +1681,7 @@ export function deactivate() {
   if (sidebarSession.agent && sidebarSession.agent.getMessages()?.length) {
     void ctxRef?.globalState.update("arc.agentState", sidebarSession.agent.snapshot());
   }
+  stopIndexWatcher();
   void mcp?.dispose();
   void browser?.close();
 }

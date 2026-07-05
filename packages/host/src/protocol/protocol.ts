@@ -253,6 +253,7 @@ export type HostMsg =
   | { type: "approval/request"; id: string; description: string; kind: "shell" | "destructive"; command?: string }
   | { type: "autoApproveState"; active: boolean }
   | { type: "search/indexProgress"; filesScanned: number; filesIndexed: number; chunksEmbedded: number; errors: number }
+  | { type: "search/indexUpdated"; updated: string[]; removed: string[] }
   | { type: "mcp/testResult"; server?: string; output: string }
   | { type: "mcp/traffic"; server: string; dir: string; msg: string }
   | { type: "memory/list"; memories: { index: number; category: string; content: string; createdAt: string }[] }

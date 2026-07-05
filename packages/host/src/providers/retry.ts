@@ -5,7 +5,6 @@ export interface RetryPolicy {
   maxDelayMs: number;
 }
 export const DEFAULT_RETRY_POLICY: RetryPolicy = { maxRetries: 3, baseDelayMs: 1000, maxDelayMs: 30_000 };
-/** Per-provider overrides. Providers not listed use DEFAULT_RETRY_POLICY. */
 export const PROVIDER_RETRY_POLICIES: Partial<Record<ProviderKind, RetryPolicy>> = {
   anthropic: { maxRetries: 4, baseDelayMs: 1000, maxDelayMs: 40_000 },
   openai: { maxRetries: 3, baseDelayMs: 1000, maxDelayMs: 30_000 },
@@ -17,7 +16,6 @@ export function policyFor(kind: ProviderKind | string): RetryPolicy {
 export function isRetryableStatus(status: number): boolean {
   return status === 429 || status === 408 || (status >= 500 && status < 600);
 }
-/** Parses a `Retry-After` header value (seconds or HTTP-date) into milliseconds. */
 export function parseRetryAfterMs(value: string | null | undefined): number | undefined {
   if (!value) return undefined;
   const trimmed = value.trim();
@@ -28,16 +26,11 @@ export function parseRetryAfterMs(value: string | null | undefined): number | un
   if (Number.isFinite(dateMs)) return Math.max(0, dateMs - Date.now());
   return undefined;
 }
-/** Full-jitter exponential backoff: random(0, min(maxDelay, base * 2^attempt)). */
 export function computeBackoffDelay(attempt: number, policy: RetryPolicy = DEFAULT_RETRY_POLICY, retryAfterMs?: number): number {
   if (retryAfterMs !== undefined && Number.isFinite(retryAfterMs)) return Math.min(retryAfterMs, 300_000);
   const cap = Math.min(policy.maxDelayMs, policy.baseDelayMs * 2 ** attempt);
   return Math.random() * cap;
 }
-/**
- * Tracks how many retries have been spent within a window (e.g. per session or per provider),
- * to avoid unbounded retry storms across many concurrent requests.
- */
 export class RetryBudget {
   private used = 0;
   constructor(private limit: number) {}
@@ -59,10 +52,6 @@ export interface RetryContext {
   retryAfterMs?: number;
   delayMs: number;
 }
-/**
- * Executes `attemptFn` up to `policy.maxRetries` additional times when it returns a retryable
- * (429/408/5xx) response, applying exponential backoff with full jitter and honoring `Retry-After`.
- */
 export async function withRetry(
   attemptFn: (attempt: number) => Promise<Response>,
   policy: RetryPolicy = DEFAULT_RETRY_POLICY,
