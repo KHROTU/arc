@@ -247,6 +247,7 @@ export type HostMsg =
   | { type: "provider/list"; providers: ProviderConfig[] }
   | { type: "config/get"; value: unknown; inReplyTo: string }
   | { type: "mcp/list"; servers: { name: string; enabled: boolean; transport: "stdio" | "http"; toolCount: number }[] }
+  | { type: "mode/list"; modes: { slug: string; roleDefinition: string; allowedTools: string[]; writeGlob?: string; description: string; whenToUse: string; model?: string; source: "builtin" | "workspace" | "global" }[] }
   | { type: "chat/searchResults"; results: { id: string; title: string; matches: string[] }[] }
   | { type: "ui/showSettings" }
   | { type: "ui/showSearch" }
@@ -312,6 +313,9 @@ export type WebviewMsg =
   | { type: "search/reindex" }
   | { type: "model/bindUpdate"; modelId: string; providerId: string; remoteModel?: string }
   | { type: "mode/select"; mode: string }
+  | { type: "mode/list" }
+  | { type: "mode/save"; mode: { slug: string; roleDefinition: string; allowedTools: string[]; writeGlob?: string; description: string; whenToUse: string; model?: string }; scope?: "workspace" | "global" }
+  | { type: "mode/delete"; slug: string; scope?: "workspace" | "global" }
   | { type: "autoApprove/toggle" }
   | { type: "approval/response"; id: string; allowed: boolean; rememberCommand?: string; rememberPrefix?: string }
   | { type: "approval/setPreset"; preset: string }

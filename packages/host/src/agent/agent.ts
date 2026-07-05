@@ -116,6 +116,7 @@ export class Agent {
     this.userRequestedMode = opts.userRequestedMode;
     this.sessionApprovals = initSession();
     const modeDef = opts.modeRegistry.get(this.currentMode);
+    this.applyModeModelOverride(modeDef);
     const modeRole = modeDef?.roleDefinition ?? "";
     const fullPrompt = modeRole ? `${modeRole}\n\n---\n\n${opts.systemPrompt}` : opts.systemPrompt;
     if (fullPrompt) {
@@ -130,6 +131,11 @@ export class Agent {
   }
   private resolveProviderProxy(): string | undefined {
     return this.opts.proxyProvider || this.opts.proxyUrl;
+  }
+  private applyModeModelOverride(modeDef: import("../modes/index.js").Mode | undefined): void {
+    if (!modeDef?.model) return;
+    const found = this.registry.list().find((m) => m.id === modeDef.model);
+    if (found) this.opts.modelOverride = found;
   }
   getCurrentMode(): string { return this.currentMode; }
   getModeRegistry(): ModeRegistry { return this.opts.modeRegistry; }
@@ -167,6 +173,7 @@ export class Agent {
     if (!modeDef) return `Unknown mode '${slug}'`;
     this.currentMode = slug;
     this.userRequestedMode = slug;
+    this.applyModeModelOverride(modeDef);
     const output = `Switched to '${slug}' mode.\n\n${modeDef.roleDefinition}`;
     this.messages.push({ id: randomUUID(), role: "system", content: output, ts: Date.now() });
     return output;
@@ -882,6 +889,7 @@ export class Agent {
       const oldMode = this.currentMode;
       this.currentMode = slug;
       this.userRequestedMode = slug;
+      this.applyModeModelOverride(targetMode);
       this.pushTimeline({ type: "mode_switch", turnId, from: oldMode, to: slug, ts: Date.now() });
       const output = `Switched from '${oldMode}' to '${slug}' mode.\n\n## ${slug} mode\n\n${targetMode.roleDefinition}`;
       this.appendToolOutput(tc.id, `Switched to ${slug} mode.`, true);

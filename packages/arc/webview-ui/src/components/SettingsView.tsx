@@ -1,18 +1,19 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Plus, Trash2, Plug, Braces, Cpu, KeyRound, X, Check, Info, ListChecks, Play, ShieldCheck, RefreshCw, CircleDot, AlertTriangle } from "lucide-react";
+import { Plus, Trash2, Plug, Braces, Cpu, KeyRound, X, Check, Info, ListChecks, Play, ShieldCheck, RefreshCw, CircleDot, AlertTriangle, Layers, Pencil } from "lucide-react";
 import type { RpcClient, HostEvent } from "../rpc";
 import type { ModelDescriptor, ModelTier, ProviderConfig, ProviderKind } from "@arc/host/protocol";
 import { PROVIDERS } from "@arc/host/catalog";
 type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderConfig[]; monoLogoText: string; version: string };
 const TIERS: ModelTier[] = ["heavy", "default", "light", "free"];
 const TIER_ORDER: Record<ModelTier, number> = { heavy: 0, default: 1, light: 2, free: 3 };
-type Tab = "models" | "providers" | "mcp" | "general" | "search" | "customize";
+type Tab = "models" | "providers" | "mcp" | "general" | "search" | "customize" | "modes";
 const TABS: { value: Tab; label: string; icon: React.ReactNode }[] = [
   { value: "models", label: "Models", icon: <Cpu size={15} /> },
   { value: "providers", label: "Providers", icon: <KeyRound size={15} /> },
   { value: "mcp", label: "MCP", icon: <Plug size={15} /> },
   { value: "general", label: "General", icon: <Braces size={15} /> },
   { value: "search", label: "Search", icon: <Play size={15} /> },
+  { value: "modes", label: "Modes", icon: <Layers size={15} /> },
   { value: "customize", label: "Customize", icon: <ListChecks size={15} /> },
 ];
 export default function SettingsModal({ client, onClose, models, providers, monoLogoText, version }: Props) {
@@ -62,6 +63,7 @@ export default function SettingsModal({ client, onClose, models, providers, mono
             {tab === "mcp" && <McpTab client={client} />}
             {tab === "general" && <GeneralTab client={client} />}
             {tab === "search" && <SearchTab client={client} />}
+            {tab === "modes" && <ModesTab client={client} models={models} />}
             {tab === "customize" && <CustomTab client={client} />}
             <AboutSection logoTextUri={logoTextUri} version={version} />
           </div>
@@ -711,6 +713,77 @@ function SearchTab({ client }: { client: RpcClient }) {
           </div>
         )}
       </div>
+    </Section>
+  );
+}
+interface CustomModeEntry { slug: string; roleDefinition: string; allowedTools: string[]; writeGlob?: string; description: string; whenToUse: string; model?: string; source: "builtin" | "workspace" | "global" }
+function emptyModeEntry(): CustomModeEntry {
+  return { slug: "", roleDefinition: "", allowedTools: [], writeGlob: "", description: "", whenToUse: "", model: "", source: "workspace" };
+}
+function ModesTab({ client, models }: { client: RpcClient; models: ModelDescriptor[] }) {
+  const [modes, setModes] = useState<CustomModeEntry[]>([]);
+  const [editing, setEditing] = useState<CustomModeEntry | null>(null);
+  const [toolsText, setToolsText] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const off = client.on((e: any) => {
+      if (e.type === "mode/list") setModes(e.modes);
+      if (e.type === "error" && typeof e.message === "string" && e.message.startsWith("Failed to save mode")) setError(e.message);
+    });
+    client.send({ type: "mode/list" });
+    return off;
+  }, [client]);
+  const startNew = () => { setEditing(emptyModeEntry()); setToolsText(""); setError(""); };
+  const startEdit = (m: CustomModeEntry) => { setEditing(m); setToolsText(m.allowedTools.join(", ")); setError(""); };
+  const cancel = () => { setEditing(null); setError(""); };
+  const save = () => {
+    if (!editing) return;
+    const allowedTools = toolsText.split(",").map((t) => t.trim()).filter(Boolean);
+    if (!editing.slug.trim() || !editing.roleDefinition.trim() || !allowedTools.length) { setError("Name, prompt, and at least one tool are required."); return; }
+    client.send({
+      type: "mode/save",
+      mode: { slug: editing.slug.trim(), roleDefinition: editing.roleDefinition, allowedTools, writeGlob: editing.writeGlob || undefined, description: editing.description, whenToUse: editing.whenToUse, model: editing.model || undefined },
+      scope: "workspace",
+    });
+    setEditing(null);
+  };
+  const remove = (slug: string) => client.send({ type: "mode/delete", slug, scope: "workspace" });
+  return (
+    <Section title="Modes" description="Custom agent modes with their own system prompt, allowed tools, write scope, and preferred model." action={!editing && <button className="arc-btn" onClick={startNew}><Plus size={14} /> New mode</button>}>
+      {!editing && (
+        <ul className="arc-rows">
+          {modes.map((m) => (
+            <li key={m.slug} className="arc-row"><div className="arc-row-main">
+              <span className="arc-row-label">{m.slug}</span>
+              <span className="arc-row-meta">{m.description || m.whenToUse || "—"} · {m.source}</span>
+              <span className="arc-spacer" />
+              <button className="arc-iconbtn" onClick={() => startEdit(m)} title="Edit"><Pencil size={14} /></button>
+              <button className="arc-iconbtn" onClick={() => remove(m.slug)} title={m.source === "builtin" ? "Reset to default" : "Delete"}><Trash2 size={14} /></button>
+            </div></li>
+          ))}
+        </ul>
+      )}
+      {editing && (
+        <div className="arc-form">
+          {error && <p className="arc-section-desc" style={{ color: "var(--vscode-errorForeground)" }}>{error}</p>}
+          <input className="arc-input" placeholder="name (slug, e.g. reviewer)" value={editing.slug} onChange={(e) => setEditing({ ...editing, slug: e.target.value })} />
+          <textarea className="arc-input" style={{ width: "100%", resize: "vertical" }} rows={6} placeholder="prompt (system role definition)" value={editing.roleDefinition} onChange={(e) => setEditing({ ...editing, roleDefinition: e.target.value })} />
+          <input className="arc-input" placeholder="tools (comma-separated, e.g. file.read, file.grep, lsp.problems)" value={toolsText} onChange={(e) => setToolsText(e.target.value)} />
+          <div className="arc-form-row">
+            <input className="arc-input" placeholder="write glob (optional, e.g. **/*.ts)" value={editing.writeGlob ?? ""} onChange={(e) => setEditing({ ...editing, writeGlob: e.target.value })} />
+            <select className="arc-input" value={editing.model ?? ""} onChange={(e) => setEditing({ ...editing, model: e.target.value })}>
+              <option value="">(use current model)</option>
+              {models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+            </select>
+          </div>
+          <input className="arc-input" placeholder="description" value={editing.description} onChange={(e) => setEditing({ ...editing, description: e.target.value })} />
+          <input className="arc-input" placeholder="when to use" value={editing.whenToUse} onChange={(e) => setEditing({ ...editing, whenToUse: e.target.value })} />
+          <div className="arc-form-actions">
+            <button className="arc-btn" onClick={save}><Check size={14} /> Save</button>
+            <button className="arc-btn-ghost" onClick={cancel}>Cancel</button>
+          </div>
+        </div>
+      )}
     </Section>
   );
 }

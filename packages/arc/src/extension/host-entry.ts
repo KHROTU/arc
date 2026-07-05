@@ -1156,6 +1156,33 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           }
           break;
         }
+        case "mode/list": {
+          if (modeRegistry) {
+            const modes = modeRegistry.list().map((m) => ({ ...m, source: modeRegistry.sourceOf(m.slug) ?? "workspace" as const }));
+            webview.postMessage({ type: "mode/list", modes });
+          }
+          break;
+        }
+        case "mode/save": {
+          if (modeRegistry) {
+            try {
+              await modeRegistry.save(msg.mode, msg.scope ?? "workspace");
+              const modes = modeRegistry.list().map((m) => ({ ...m, source: modeRegistry.sourceOf(m.slug) ?? "workspace" as const }));
+              webview.postMessage({ type: "mode/list", modes });
+            } catch (e) {
+              webview.postMessage({ type: "error", message: `Failed to save mode: ${(e as Error).message}` });
+            }
+          }
+          break;
+        }
+        case "mode/delete": {
+          if (modeRegistry) {
+            await modeRegistry.delete(msg.slug, msg.scope ?? "workspace");
+            const modes = modeRegistry.list().map((m) => ({ ...m, source: modeRegistry.sourceOf(m.slug) ?? "workspace" as const }));
+            webview.postMessage({ type: "mode/list", modes });
+          }
+          break;
+        }
         case "provider/add": {
           if (registry) {
             registry.upsertProvider({ ...msg.provider, apiKey: msg.apiKey, enabled: msg.provider.enabled ?? true });
