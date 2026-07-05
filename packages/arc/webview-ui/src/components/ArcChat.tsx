@@ -83,6 +83,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [prefillText, setPrefillText] = useState<string | null>(null);
   const [autoApproveActive, setAutoApproveActive] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState<Effort>("high");
+  const [resolvedDiffs, setResolvedDiffs] = useState<Record<string, "accepted" | "rejected">>({});
   const transcriptRef = useRef<HTMLDivElement>(null);
   const pendingTextRef = useRef<{ id: string; text: string } | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -340,6 +341,14 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const timelineNodes = useMemo<ReactNode[]>(() => {
     const out: ReactNode[] = [];
     let run: ProcessStep[] = [];
+    const handleResolveDiff = (step: ProcessStep, action: "accept" | "reject") => {
+      setResolvedDiffs((cur) => ({ ...cur, [step.id]: action === "accept" ? "accepted" : "rejected" }));
+      if (action === "reject" && step.filePath) {
+        client.send({ type: "diff/reject", stepId: step.id, filePath: step.filePath, hunks: step.diffHunks ?? [] });
+      } else if (action === "accept" && step.filePath) {
+        client.send({ type: "diff/accept", stepId: step.id, filePath: step.filePath });
+      }
+    };
     const flush = () => {
       if (run.length) {
         out.push(
@@ -352,6 +361,8 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
               client.send({ type: "ui/openFileDiff", path: payload.filePath, hunks: payload.hunks });
             }}
             toolTreeMode={toolTreeMode}
+            resolvedDiffs={resolvedDiffs}
+            onResolveDiff={handleResolveDiff}
           />,
         );
         run = [];
@@ -370,7 +381,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     }
     flush();
     return out;
-  }, [timeline, toolTreeMode, variant]);
+  }, [timeline, toolTreeMode, variant, resolvedDiffs, client]);
   const latestTodos = useMemo(() => {
     for (let i = steps.length - 1; i >= 0; i--) {
       if (steps[i].type === "todo_list" && steps[i].todos?.length) return steps[i].todos ?? null;

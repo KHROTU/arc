@@ -20,13 +20,13 @@
 
 | Task | Ref | Description |
 |------|-----|-------------|
-| 2.1 Inline chat (Ctrl+L) | G-10 | Floating input at cursor → agent → inline diff. Esc to dismiss. Similar to Copilot's inline chat. Uses FileContextTracker. |
-| 2.2 Right-click code actions | G-11 | "Explain with Arc", "Fix with Arc" via `codeActionProvider`. Include LSP diagnostics. Active session + selection gated. |
-| 2.3 Post-edit verification loop | E-02 | Auto lint → typecheck after edits, feed diagnostics to agent, retry fix up to N. Config in `.arc/verify.toml`. |
-| 2.4 Streaming diffs | B-24 | Real-time streaming diff panel replacing "edit complete" notification. Accept/reject on finalize. |
-| 2.5 Custom modes UI | G-17 | Webview panel to create/edit `.toml` modes. Fields: name, prompt, tools, write-globs, model. Validate on save. |
-| 2.6 Multi-tab management | E-13 | `browser.newTab`, `.switchTab`, `.closeTab`, `.listTabs`. Existing tools accept optional `tabId`. |
-| 2.7 Network interception | E-12 | `browser.intercept(pattern, mock)` / `.unintercept()` for mocking, blocking, or logging requests. |
+| ✅ 2.1 Inline chat (Ctrl+L) | G-10 | Floating input at cursor → agent → inline diff. Esc to dismiss. Similar to Copilot's inline chat. Uses FileContextTracker. |
+| ✅ 2.2 Right-click code actions | G-11 | "Explain with Arc", "Fix with Arc" via `codeActionProvider`. Include LSP diagnostics. Active session + selection gated. |
+| ✅ 2.3 Post-edit verification loop | E-02 | Auto lint → typecheck after edits, feed diagnostics to agent, retry fix up to N. Config in `.arc/verify.toml`. |
+| ✅ 2.4 Streaming diffs | B-24 | Real-time streaming diff panel replacing "edit complete" notification. Accept/reject on finalize. |
+| ✅ 2.5 Custom modes UI | G-17 | Webview panel to create/edit `.toml` modes. Fields: name, prompt, tools, write-globs, model. Validate on save. |
+| ✅ 2.6 Multi-tab management | E-13 | `browser.newTab`, `.switchTab`, `.closeTab`, `.listTabs`. Existing tools accept optional `tabId`. |
+| ✅ 2.7 Network interception | E-12 | `browser.intercept(pattern, mock)` / `.unintercept()` for mocking, blocking, or logging requests. |
 
 ---
 

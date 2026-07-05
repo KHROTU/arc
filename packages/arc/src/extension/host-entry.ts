@@ -1465,6 +1465,24 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           } catch {  }
           break;
         }
+        case "diff/accept": {
+          if (session.agent) session.agent.injectSystemNote(`User accepted the edit to ${msg.filePath}.`);
+          break;
+        }
+        case "diff/reject": {
+          const fileUri = resolveWorkspaceFileUri(msg.filePath);
+          if (fileUri) {
+            try {
+              const beforeContent = buildBeforeContentFromHunks(msg.hunks);
+              await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(beforeContent));
+            } catch (e) {
+              webview.postMessage({ type: "error", message: `Failed to revert ${msg.filePath}: ${(e as Error).message}` });
+              break;
+            }
+          }
+          if (session.agent) session.agent.injectSystemNote(`User rejected the edit to ${msg.filePath}. The file has been reverted to its previous content. Do not reapply this edit unless asked again.`);
+          break;
+        }
         case "ui/openPrompt":
           void vscode.commands.executeCommand("arc.managePrompts");
           break;

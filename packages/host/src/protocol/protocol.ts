@@ -325,4 +325,6 @@ export type WebviewMsg =
   | { type: "chat/editMessage"; messageId: string; newContent: string; content?: string }
   | { type: "memory/list" }
   | { type: "memory/delete"; index: number }
-  | { type: "hooks/list" };
+  | { type: "hooks/list" }
+  | { type: "diff/accept"; stepId: string; filePath: string }
+  | { type: "diff/reject"; stepId: string; filePath: string; hunks: DiffHunk[] };

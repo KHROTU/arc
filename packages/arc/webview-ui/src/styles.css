@@ -597,6 +597,10 @@ body {
 .arc-diff-rem { background: color-mix(in srgb, var(--arc-err) 12%, transparent); }
 .arc-diff-add .arc-diff-sign { color: var(--arc-ok); opacity: 1; }
 .arc-diff-rem .arc-diff-sign { color: var(--arc-err); opacity: 1; }
+.arc-diff-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--arc-line); background: var(--arc-code-bg); }
+.arc-diff-resolution { font-size: 12px; font-weight: 500; color: var(--vscode-descriptionForeground, #858585); }
+.arc-diff-resolution.accepted { color: var(--arc-ok); }
+.arc-diff-resolution.rejected { color: var(--arc-err); }
 .arc-syn-kw { color: var(--arc-syn-kw); }
 .arc-syn-str { color: var(--arc-syn-str); }
 .arc-syn-num { color: var(--arc-syn-num); }
