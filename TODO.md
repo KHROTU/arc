@@ -8,11 +8,11 @@
 
 | Task | Ref | Description |
 |------|-----|-------------|
-| 1.1 IndexWatcher default-on | G-24, B-21 | Start `fs.watch`-based `IndexWatcher` on session init (`indexing.autoWatch`, `--no-watch` opt-out). Emit `index.updated`. Poll fallback for unreliable filesystems. |
-| 1.2 FileContextTracker | G-27 | Persistent per-file read/edit history in `.arc/context.db`. Hook `touchedFiles`. Expose to agent context. LRU eviction. |
-| 1.3 Rule hot-reload | E-09 | Watch `.arc/rules/`, re-parse on change, diff & apply to active session. Graceful fallback on invalid files. |
-| 1.4 Exponential backoff + jitter | E-05 | Replace fixed-delay retries. Parse `Retry-After`. Per-provider policies with retry budgets. |
-| 1.5 Prompt caching | B-22 | `cache_control` breakpoints (static prefix → history → latest). Minimize dynamic content in cacheable prefix. |
+| ✅ 1.1 IndexWatcher default-on | G-24, B-21 | Start `fs.watch`-based `IndexWatcher` on session init (`indexing.autoWatch`, `--no-watch` opt-out). Emit `index.updated`. Poll fallback for unreliable filesystems. |
+| ✅ 1.2 FileContextTracker | G-27 | Persistent per-file read/edit history in `.arc/context.db`. Hook `touchedFiles`. Expose to agent context. LRU eviction. |
+| ✅ 1.3 Rule hot-reload | E-09 | Watch `.arc/rules/`, re-parse on change, diff & apply to active session. Graceful fallback on invalid files. |
+| ✅ 1.4 Exponential backoff + jitter | E-05 | Replace fixed-delay retries. Parse `Retry-After`. Per-provider policies with retry budgets. |
+| ✅ 1.5 Prompt caching | B-22 | `cache_control` breakpoints (static prefix → history → latest). Minimize dynamic content in cacheable prefix. |
 
 ---
 
