@@ -187,6 +187,46 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
   vscode.commands.registerCommand("arc.managePrompts", async () => {
     openPrompt();
   });
+  vscode.commands.registerCommand("arc.explainSelection", async () => {
+    if (!ctxRef) return;
+    const ed = vscode.window.activeTextEditor;
+    if (!ed || ed.selection.isEmpty) return;
+    const text = ed.document.getText(ed.selection);
+    const uri = vscode.workspace.asRelativePath(ed.document.uri);
+    const prompt = `Explain the following code from ${uri}:\n\n\`\`\`${ed.document.languageId}\n${text}\n\`\`\``;
+    await sendToArc(prompt);
+  });
+  vscode.commands.registerCommand("arc.fixSelection", async () => {
+    if (!ctxRef) return;
+    const ed = vscode.window.activeTextEditor;
+    if (!ed || ed.selection.isEmpty) return;
+    const text = ed.document.getText(ed.selection);
+    const uri = vscode.workspace.asRelativePath(ed.document.uri);
+    const diags = vscode.languages.getDiagnostics(ed.document.uri).filter((d) => !!ed.selection.intersection(d.range));
+    const diagText = diags.length
+      ? `\n\nDiagnostics in range:\n${diags.map((d) => `- [${vscode.DiagnosticSeverity[d.severity]}] ${d.message} (line ${d.range.start.line + 1})`).join("\n")}`
+      : "";
+    const prompt = `Fix the following code from ${uri}:\n\n\`\`\`${ed.document.languageId}\n${text}\n\`\`\`${diagText}`;
+    await sendToArc(prompt);
+  });
+  context.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider("*", {
+      provideCodeActions(document, range, ctx) {
+        if (range.isEmpty) return [];
+        const actions: vscode.CodeAction[] = [];
+        const explain = new vscode.CodeAction("Explain with Arc", vscode.CodeActionKind.Empty);
+        explain.command = { command: "arc.explainSelection", title: "Explain with Arc" };
+        actions.push(explain);
+        if (ctx.diagnostics.length) {
+          const fix = new vscode.CodeAction("Fix with Arc", vscode.CodeActionKind.QuickFix);
+          fix.command = { command: "arc.fixSelection", title: "Fix with Arc" };
+          fix.diagnostics = [...ctx.diagnostics];
+          actions.push(fix);
+        }
+        return actions;
+      },
+    }, { providedCodeActionKinds: [vscode.CodeActionKind.Empty, vscode.CodeActionKind.QuickFix] }),
+  );
   void vscode.commands.executeCommand("setContext", "arc.showProblems", false);
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(DIFF_PREVIEW_SCHEME, {
@@ -285,6 +325,20 @@ async function initializeAsync(context: vscode.ExtensionContext) {
       log.appendLine(`[arc] MCP hydration failed: ${(err as Error)?.stack ?? err}`);
     });
   }, 3000);
+}
+async function waitForSidebarView(timeoutMs = 3000): Promise<void> {
+  const start = Date.now();
+  while (!sidebarSession.view && Date.now() - start < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+async function sendToArc(prompt: string): Promise<void> {
+  await vscode.commands.executeCommand("arc.openSidebar");
+  await waitForSidebarView();
+  await initReady;
+  const agent = await ensureAgent(sidebarSession);
+  if (!agent) return;
+  await agent.send(prompt);
 }
 async function openFullscreen(): Promise<vscode.Webview | undefined> {
   if (!ctxRef) return;

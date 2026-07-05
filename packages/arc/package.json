@@ -158,6 +158,16 @@
         "command": "arc.openPlayground",
         "title": "Open Component Playground",
         "category": "Arc"
+      },
+      {
+        "command": "arc.explainSelection",
+        "title": "Explain with Arc",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.fixSelection",
+        "title": "Fix with Arc",
+        "category": "Arc"
       }
     ],
     "menus": {
@@ -205,6 +215,26 @@
         {
           "command": "arc.managePrompts",
           "when": "true"
+        },
+        {
+          "command": "arc.explainSelection",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "arc.fixSelection",
+          "when": "editorHasSelection"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "arc.explainSelection",
+          "when": "editorHasSelection",
+          "group": "arc@1"
+        },
+        {
+          "command": "arc.fixSelection",
+          "when": "editorHasSelection",
+          "group": "arc@2"
         }
       ]
     },
