@@ -14,7 +14,7 @@ document.getElementById("submit-btn").addEventListener("click", () => {
       break;
     case "validate":
       output = name.length < 2
-        ? "Name is too short."
+        ? "Name is too short
         : "Name is valid.";
       break;
   }

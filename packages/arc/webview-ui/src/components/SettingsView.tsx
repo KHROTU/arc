@@ -552,6 +552,8 @@ function GeneralTab({ client }: { client: RpcClient }) {
   const [proxyProviderUrl, setProxyProviderUrl] = useState("");
   const [proxyWebUrl, setProxyWebUrl] = useState("");
   const [proxyShellUrl, setProxyShellUrl] = useState("");
+  const [verifyMode, setVerifyMode] = useState<"none" | "default" | "custom">("default");
+  const [verifyMaxRetries, setVerifyMaxRetries] = useState(3);
   useEffect(() => {
     void client.request("arc.compaction.strategy").then((v) => setCompactionStrategy((v as typeof compactionStrategy) ?? "model-aware"));
     void client.request("arc.compaction.safetyMargin").then((v) => setSafetyMargin(typeof v === "number" ? v : 0.15));
@@ -561,9 +563,32 @@ function GeneralTab({ client }: { client: RpcClient }) {
     void client.request("arc.proxy.providerUrl").then((v) => setProxyProviderUrl(typeof v === "string" ? v : ""));
     void client.request("arc.proxy.webUrl").then((v) => setProxyWebUrl(typeof v === "string" ? v : ""));
     void client.request("arc.proxy.shellUrl").then((v) => setProxyShellUrl(typeof v === "string" ? v : ""));
+    void client.request("arc.verify.mode").then((v) => setVerifyMode(v === "none" || v === "custom" ? v : "default"));
+    void client.request("arc.verify.customMaxRetries").then((v) => setVerifyMaxRetries(typeof v === "number" ? v : 3));
   }, [client]);
   return (
     <>
+      <Section title="Verification" description="Runs commands from .arc/verify.toml after file edits and feeds failures back to the agent to fix.">
+        <ul className="arc-rows">
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Retry strategy</span>
+            <span className="arc-row-meta">how many times to retry after a failed verification</span>
+            <span className="arc-spacer" />
+            <select className="arc-input arc-input-sm" value={verifyMode} onChange={(e) => { const v = e.target.value as typeof verifyMode; setVerifyMode(v); client.send({ type: "config/set", key: "arc.verify.mode", value: v }); }}>
+              <option value="none">Disabled</option>
+              <option value="default">Default (from .arc/verify.toml)</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div></li>
+          {verifyMode === "custom" && (
+            <li className="arc-row"><div className="arc-row-main">
+              <span className="arc-row-label">Max retries</span>
+              <span className="arc-spacer" />
+              <input className="arc-input arc-input-sm" type="number" min={0} step={1} value={verifyMaxRetries} onChange={(e) => setVerifyMaxRetries(Number(e.target.value))} onBlur={() => client.send({ type: "config/set", key: "arc.verify.customMaxRetries", value: verifyMaxRetries })} />
+            </div></li>
+          )}
+        </ul>
+      </Section>
       <Section title="Compaction" description="Controls when and how conversation context is summarized.">
         <ul className="arc-rows">
           <li className="arc-row"><div className="arc-row-main">

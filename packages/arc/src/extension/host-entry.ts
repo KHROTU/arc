@@ -59,6 +59,22 @@ let browser: BrowserAdapter | undefined;
 let browserPromise: Promise<BrowserAdapter> | undefined;
 let browserIdleTimer: ReturnType<typeof setTimeout> | undefined;
 const BROWSER_IDLE_MS = 5 * 60 * 1000;
+let inlineCommentController: vscode.CommentController | undefined;
+const inlineChatSessions = new Map<vscode.CommentThread, Session>();
+class InlineComment implements vscode.Comment {
+  constructor(
+    public body: string | vscode.MarkdownString,
+    public mode: vscode.CommentMode,
+    public author: vscode.CommentAuthorInformation,
+    public contextValue?: string,
+  ) {}
+}
+function updateLastInlineComment(thread: vscode.CommentThread, body: string): void {
+  const comments = thread.comments.slice(0, -1) as InlineComment[];
+  const md = new vscode.MarkdownString(body);
+  md.isTrusted = false;
+  thread.comments = [...comments, new InlineComment(md, vscode.CommentMode.Preview, { name: "Arc" })];
+}
 function resetBrowserIdleTimer(): void {
   clearTimeout(browserIdleTimer);
   browserIdleTimer = setTimeout(() => {
@@ -138,6 +154,9 @@ export function activate(context: vscode.ExtensionContext) {
 function registerViewsAndCommands(context: vscode.ExtensionContext) {
   const prideMode: PrideMode = vscode.workspace.getConfiguration().get<PrideMode>("arc.appearance.prideLogo", "june") ?? "june";
   const logo = pickLogo(prideMode);
+  inlineCommentController = vscode.comments.createCommentController("arc.inlineChat", "Arc Inline Chat");
+  inlineCommentController.options = { prompt: "Describe the edit to make", placeHolder: "e.g. Extract this into a helper function" };
+  context.subscriptions.push(inlineCommentController);
   void vscode.commands.executeCommand("setContext", "arc.isPrideMonth", logo.kind === "pride");
   const sidebarProvider: vscode.WebviewViewProvider = {
     async resolveWebviewView(webviewView: vscode.WebviewView) {
@@ -196,50 +215,104 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
     const prompt = `Explain the following code from ${uri}:\n\n\`\`\`${ed.document.languageId}\n${text}\n\`\`\``;
     await sendToArc(prompt);
   });
-  vscode.commands.registerCommand("arc.fixSelection", async () => {
+  vscode.commands.registerCommand("arc.fixSelection", async (uri?: vscode.Uri, range?: vscode.Range, diagnostics?: vscode.Diagnostic[]) => {
     if (!ctxRef) return;
+    const doc = uri ? await vscode.workspace.openTextDocument(uri) : vscode.window.activeTextEditor?.document;
+    if (!doc) return;
     const ed = vscode.window.activeTextEditor;
-    if (!ed || ed.selection.isEmpty) return;
-    const text = ed.document.getText(ed.selection);
-    const uri = vscode.workspace.asRelativePath(ed.document.uri);
-    const diags = vscode.languages.getDiagnostics(ed.document.uri).filter((d) => !!ed.selection.intersection(d.range));
+    const effectiveRange = range ?? (ed && !ed.selection.isEmpty ? new vscode.Range(ed.selection.start, ed.selection.end) : undefined);
+    if (!effectiveRange) return;
+    const lineRange = effectiveRange.isEmpty ? doc.lineAt(effectiveRange.start.line).range : effectiveRange;
+    const text = doc.getText(lineRange);
+    const relUri = vscode.workspace.asRelativePath(doc.uri);
+    const diags = diagnostics ?? vscode.languages.getDiagnostics(doc.uri).filter((d) => !!lineRange.intersection(d.range));
     const diagText = diags.length
       ? `\n\nDiagnostics in range:\n${diags.map((d) => `- [${vscode.DiagnosticSeverity[d.severity]}] ${d.message} (line ${d.range.start.line + 1})`).join("\n")}`
       : "";
-    const prompt = `Fix the following code from ${uri}:\n\n\`\`\`${ed.document.languageId}\n${text}\n\`\`\`${diagText}`;
+    const prompt = `Fix the following code from ${relUri}:\n\n\`\`\`${doc.languageId}\n${text}\n\`\`\`${diagText}`;
     await sendToArc(prompt);
   });
   vscode.commands.registerCommand("arc.inlineChat", async () => {
-    if (!ctxRef) return;
+    if (!ctxRef || !inlineCommentController) return;
     const ed = vscode.window.activeTextEditor;
     if (!ed) return;
-    const hasSelection = !ed.selection.isEmpty;
-    const selectedText = hasSelection ? ed.document.getText(ed.selection) : "";
-    const line = ed.selection.active.line + 1;
-    const uri = vscode.workspace.asRelativePath(ed.document.uri);
-    const instruction = await vscode.window.showInputBox({
-      prompt: hasSelection ? `Arc inline edit — selected code in ${uri}` : `Arc inline edit — ${uri} at line ${line}`,
-      placeHolder: "Describe the edit to make (Esc to cancel)",
-    });
+    const range = ed.selection.isEmpty
+      ? new vscode.Range(ed.selection.active.line, 0, ed.selection.active.line, 0)
+      : new vscode.Range(ed.selection.start, ed.selection.end);
+    const thread = inlineCommentController.createCommentThread(ed.document.uri, range, []);
+    thread.label = "Arc Inline Chat";
+    thread.canReply = true;
+    thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+    thread.contextValue = "arcInlineThread";
+  });
+  vscode.commands.registerCommand("arc.inlineChat.submit", async (reply: vscode.CommentReply) => {
+    const thread = reply.thread;
+    const instruction = reply.text.trim();
     if (!instruction) return;
+    const doc = await vscode.workspace.openTextDocument(thread.uri);
+    const hasSelection = !thread.range.isEmpty;
+    const selectedText = hasSelection ? doc.getText(thread.range) : "";
+    const line = thread.range.start.line + 1;
+    const uriLabel = vscode.workspace.asRelativePath(thread.uri);
+    const userComment = new InlineComment(instruction, vscode.CommentMode.Preview, { name: "You" });
+    const pendingComment = new InlineComment(new vscode.MarkdownString("_Arc is thinking..._"), vscode.CommentMode.Preview, { name: "Arc" });
+    thread.comments = [...thread.comments, userComment, pendingComment];
+    let session = inlineChatSessions.get(thread);
+    if (!session) {
+      session = { id: `inline-${Date.now()}-${Math.random().toString(36).slice(2)}`, agent: undefined as unknown as Agent, steps: [], messages: [] };
+      inlineChatSessions.set(thread, session);
+    }
+    await initReady;
+    const agent = await ensureAgent(session);
+    if (!agent) {
+      updateLastInlineComment(thread, "Arc is unavailable right now.");
+      return;
+    }
     const codeContext = hasSelection
-      ? `Selected code (lines ${ed.selection.start.line + 1}-${ed.selection.end.line + 1}):\n\`\`\`${ed.document.languageId}\n${selectedText}\n\`\`\``
+      ? `Selected code (lines ${thread.range.start.line + 1}-${thread.range.end.line + 1}):\n\`\`\`${doc.languageId}\n${selectedText}\n\`\`\``
       : `Cursor at line ${line}. No selection — infer the relevant surrounding code from the file.`;
-    const prompt = `Inline edit request for ${uri}.\n${codeContext}\n\nInstruction: ${instruction}\n\nEdit ${uri} directly using file.edit to satisfy the instruction. Keep changes minimal and scoped to this request.`;
-    await sendToArc(prompt);
+    const prompt = `Inline edit request for ${uriLabel}.\n${codeContext}\n\nInstruction: ${instruction}\n\nEdit ${uriLabel} directly using file.edit to satisfy the instruction. Keep changes minimal and scoped to this request.`;
+    try {
+      await agent.send(prompt);
+      const lastAssistant = [...session.messages].reverse().find((m) => (m as { role?: string }).role === "assistant" && (m as { content?: string }).content);
+      const editedFiles = new Set<string>();
+      for (const step of session.steps) {
+        const s = step as { type?: string; toolName?: string; filePath?: string; args?: Record<string, unknown> };
+        if (s.type === "tool" && (s.toolName === "file.edit" || s.toolName === "file.write")) {
+          const p = s.filePath ?? (s.args?.path as string | undefined);
+          if (p) editedFiles.add(p);
+        }
+      }
+      const summaryParts: string[] = [];
+      if (lastAssistant) summaryParts.push(String((lastAssistant as { content?: string }).content ?? ""));
+      if (editedFiles.size) summaryParts.push(`\n**Edited:** ${[...editedFiles].join(", ")}`);
+      updateLastInlineComment(thread, summaryParts.join("\n").trim() || "Done.");
+    } catch (err) {
+      updateLastInlineComment(thread, `Error: ${(err as Error).message}`);
+    }
+  });
+  vscode.commands.registerCommand("arc.inlineChat.cancel", (thread: vscode.CommentThread) => {
+    const session = inlineChatSessions.get(thread);
+    if (session) {
+      chatHistory?.remove(session.id);
+      inlineChatSessions.delete(thread);
+    }
+    thread.dispose();
   });
   context.subscriptions.push(
     vscode.languages.registerCodeActionsProvider("*", {
       provideCodeActions(document, range, ctx) {
-        if (range.isEmpty) return [];
         const actions: vscode.CodeAction[] = [];
-        const explain = new vscode.CodeAction("Explain with Arc", vscode.CodeActionKind.Empty);
-        explain.command = { command: "arc.explainSelection", title: "Explain with Arc" };
-        actions.push(explain);
+        if (!range.isEmpty) {
+          const explain = new vscode.CodeAction("Explain with Arc", vscode.CodeActionKind.Empty);
+          explain.command = { command: "arc.explainSelection", title: "Explain with Arc" };
+          actions.push(explain);
+        }
         if (ctx.diagnostics.length) {
-          const fix = new vscode.CodeAction("Fix with Arc", vscode.CodeActionKind.QuickFix);
-          fix.command = { command: "arc.fixSelection", title: "Fix with Arc" };
+          const fix = new vscode.CodeAction(`Fix with Arc: ${ctx.diagnostics[0].message}`.slice(0, 80), vscode.CodeActionKind.QuickFix);
+          fix.command = { command: "arc.fixSelection", title: "Fix with Arc", arguments: [document.uri, range, [...ctx.diagnostics]] };
           fix.diagnostics = [...ctx.diagnostics];
+          fix.isPreferred = true;
           actions.push(fix);
         }
         return actions;
@@ -714,6 +787,8 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     approvalsConfig,
     reasoningEffort: (vscode.workspace.getConfiguration().get<string>("arc.reasoning.effort", "high") ?? "high") as "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
     isMain: true,
+    verifyMode: (vscode.workspace.getConfiguration().get<string>("arc.verify.mode", "default") ?? "default") as "none" | "default" | "custom",
+    verifyMaxRetries: vscode.workspace.getConfiguration().get<number>("arc.verify.customMaxRetries", 3),
     proxyUrl: resolveProxy("url"),
     proxyProvider: resolveProxy("providerUrl"),
     toolContext,

@@ -58,6 +58,8 @@ export interface AgentOptions {
   proxyWeb?: string;
   proxyShell?: string;
   fileContextTracker?: import("../context/tracker.js").FileContextTracker;
+  verifyMode?: "none" | "default" | "custom";
+  verifyMaxRetries?: number;
 }
 export class Agent {
   private messages: ChatMessage[] = [];
@@ -1158,17 +1160,19 @@ export class Agent {
       }
     }
     if (result.ok && result.touchedFiles && result.touchedFiles.length && isEditOrWrite) {
-      const verifyConfig = await this.getVerifyConfig();
+      const verifyMode = this.opts.verifyMode ?? "default";
+      const verifyConfig = verifyMode === "none" ? undefined : await this.getVerifyConfig();
       if (verifyConfig && verifyConfig.commands.length) {
+        const maxRetries = verifyMode === "custom" && this.opts.verifyMaxRetries != null ? this.opts.verifyMaxRetries : verifyConfig.maxRetries;
         const verifyResult = await runVerification(this.opts.workspaceRoot, verifyConfig, result.touchedFiles);
         if (!verifyResult.ok) {
           this.verifyAttempts++;
           const failing = verifyResult.results.filter((r) => !r.ok);
           const report = failing.map((r) => `[${r.name}] FAILED\n${r.output}`).join("\n\n");
-          const exhausted = this.verifyAttempts >= verifyConfig.maxRetries;
+          const exhausted = this.verifyAttempts >= maxRetries;
           const note = exhausted
-            ? `Verification failed after ${this.verifyAttempts} attempt(s) (max ${verifyConfig.maxRetries}). Stop retrying automatically and report the remaining failures to the user:\n\n${report}`
-            : `Post-edit verification failed (attempt ${this.verifyAttempts}/${verifyConfig.maxRetries}). Fix the issues below before continuing:\n\n${report}`;
+            ? `Verification failed after ${this.verifyAttempts} attempt(s) (max ${maxRetries}). Stop retrying automatically and report the remaining failures to the user:\n\n${report}`
+            : `Post-edit verification failed (attempt ${this.verifyAttempts}/${maxRetries}). Fix the issues below before continuing:\n\n${report}`;
           const vfId = `verify-fb-${randomUUID()}`;
           this.openStep({ id: vfId, type: "tool", title: exhausted ? "Verification failed (retries exhausted)" : "Verification failed", output: note });
           this.messages.push({ id: randomUUID(), role: "tool", content: note, toolCallId: tc.id, ts: Date.now() });
@@ -1418,6 +1422,12 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
       case "browser.hover": return `Failed to hover ${clip(String(args.selector ?? ""))}`;
       case "browser.scroll": return `Failed to scroll ${args.selector ? "to " + String(args.selector) : ""}`;
       case "browser.waitFor": return `Wait failed for ${args.selector ?? args.url ?? args.state ?? "condition"}`;
+      case "browser.newTab": return `Failed to open new tab${args.url ? " for " + clip(String(args.url)) : ""}`;
+      case "browser.switchTab": return `Failed to switch to tab ${args.tabId ?? ""}`;
+      case "browser.closeTab": return `Failed to close tab ${args.tabId ?? ""}`;
+      case "browser.listTabs": return "Failed to list browser tabs";
+      case "browser.intercept": return `Failed to intercept ${clip(String(args.pattern ?? ""))}`;
+      case "browser.unintercept": return `Failed to remove interception for ${clip(String(args.pattern ?? ""))}`;
       case "mcp.call": return `Failed MCP ${args.server ?? ""}/${args.tool ?? ""}`;
       case "mcp.create": return `Failed to register MCP server ${args.name ?? ""}`;
       case "mcp.remove": return `Failed to remove MCP server ${args.name ?? ""}`;
@@ -1492,6 +1502,12 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
     case "browser.hover": return `Hovered ${clip(String(args.selector ?? ""))}`;
     case "browser.scroll": return `Scrolled ${args.selector ? "to " + String(args.selector) : ""}`;
     case "browser.waitFor": return `Waited for ${args.selector ?? args.url ?? args.state ?? "condition"}`;
+    case "browser.newTab": return `Opened new tab${args.url ? " for " + clip(String(args.url)) : ""}`;
+    case "browser.switchTab": return `Switched to tab ${args.tabId ?? ""}`;
+    case "browser.closeTab": return `Closed tab ${args.tabId ?? ""}`;
+    case "browser.listTabs": return "Listed browser tabs";
+    case "browser.intercept": return `Intercepting ${clip(String(args.pattern ?? ""))}`;
+    case "browser.unintercept": return `Stopped intercepting ${clip(String(args.pattern ?? ""))}`;
     case "mcp.call": return `Called ${args.server ?? ""}/${args.tool ?? ""}`;
     case "mcp.create": return `Registered MCP server ${args.name ?? ""}`;
     case "mcp.remove": return `Removed MCP server ${args.name ?? ""}`;
@@ -1536,7 +1552,7 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
 const READ_TOOLS = new Set(["file.read", "file.grep", "file.glob", "file.semanticSearch"]);
 const WRITE_TOOLS = new Set(["file.edit", "file.write"]);
 const SHELL_TOOLS = new Set(["shell.run", "shell.backgroundRun", "shell.check", "shell.write", "shell.customRun", "shell.editCustomRun", "shell.runCustomRun"]);
-const BROWSER_TOOLS = new Set(["browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor", "browser.console", "browser.network", "browser.domSnapshot", "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage"]);
+const BROWSER_TOOLS = new Set(["browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor", "browser.console", "browser.network", "browser.domSnapshot", "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage", "browser.newTab", "browser.switchTab", "browser.closeTab", "browser.listTabs", "browser.intercept", "browser.unintercept"]);
 const MCP_TOOLS = new Set(["mcp.call", "mcp.create", "mcp.remove", "mcp.toggle", "mcp.resources/list", "mcp.resources/read", "mcp.prompts/list", "mcp.prompts/get"]);
 const GIT_TOOLS = new Set(["git.diffStaged", "git.diffUnstaged", "git.changedFiles", "git.branchDiff", "git.commitMessage"]);
 function categoryForTool(name: string): string | undefined {
@@ -1579,6 +1595,12 @@ function prettyToolSummary(name: string, args: Record<string, unknown>): string 
     case "browser.runCode": return "Run Playwright code";
     case "browser.readPage": return "Read page content";
     case "browser.close": return "Close browser";
+    case "browser.newTab": return `Open new tab${args.url ? " for " + clip(String(args.url)) : ""}`;
+    case "browser.switchTab": return `Switch to tab ${args.tabId ?? ""}`;
+    case "browser.closeTab": return `Close tab ${args.tabId ?? ""}`;
+    case "browser.listTabs": return "List browser tabs";
+    case "browser.intercept": return `Intercept ${clip(String(args.pattern ?? ""))}`;
+    case "browser.unintercept": return `Stop intercepting ${clip(String(args.pattern ?? ""))}`;
     case "web.fetch": return `Fetch ${clip(String(args.url ?? ""))}`;
     case "web.search": return `Search for ${clip(String(args.query ?? ""), 40)}`;
     case "mcp.call": return `MCP ${args.server ?? ""}/${args.tool ?? ""}`;

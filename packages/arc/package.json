@@ -173,6 +173,17 @@
         "command": "arc.inlineChat",
         "title": "Inline Chat",
         "category": "Arc"
+      },
+      {
+        "command": "arc.inlineChat.submit",
+        "title": "Send to Arc",
+        "category": "Arc",
+        "enablement": "!commentIsEmpty"
+      },
+      {
+        "command": "arc.inlineChat.cancel",
+        "title": "Discard",
+        "category": "Arc"
       }
     ],
     "menus": {
@@ -244,6 +255,20 @@
           "command": "arc.fixSelection",
           "when": "editorHasSelection",
           "group": "arc@2"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "arc.inlineChat.submit",
+          "group": "inline",
+          "when": "commentController == arc.inlineChat"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "arc.inlineChat.cancel",
+          "group": "navigation",
+          "when": "commentController == arc.inlineChat"
         }
       ]
     },
@@ -384,6 +409,27 @@
           "type": "number",
           "default": 0.15,
           "description": "Safety margin reserved for model output (fraction of window)."
+        },
+        "arc.verify.mode": {
+          "type": "string",
+          "enum": [
+            "none",
+            "default",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "Never run post-edit verification commands, even if .arc/verify.toml defines them.",
+            "Use the retry count defined in .arc/verify.toml (falls back to 3 if unset).",
+            "Override the retry count with arc.verify.customMaxRetries."
+          ],
+          "default": "default",
+          "description": "Controls how post-edit verification (running configured verify commands after file edits) retries on failure."
+        },
+        "arc.verify.customMaxRetries": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "description": "Number of retry attempts for post-edit verification when arc.verify.mode is 'custom'."
         },
         "arc.search.enabled": {
           "type": "boolean",
