@@ -168,6 +168,11 @@
         "command": "arc.fixSelection",
         "title": "Fix with Arc",
         "category": "Arc"
+      },
+      {
+        "command": "arc.inlineChat",
+        "title": "Inline Chat",
+        "category": "Arc"
       }
     ],
     "menus": {
@@ -223,6 +228,10 @@
         {
           "command": "arc.fixSelection",
           "when": "editorHasSelection"
+        },
+        {
+          "command": "arc.inlineChat",
+          "when": "editorTextFocus"
         }
       ],
       "editor/context": [
@@ -258,6 +267,12 @@
         "command": "arc.newTask",
         "key": "ctrl+shift+n",
         "mac": "cmd+shift+n"
+      },
+      {
+        "command": "arc.inlineChat",
+        "key": "ctrl+l",
+        "mac": "cmd+l",
+        "when": "editorTextFocus"
       }
     ],
     "configuration": {

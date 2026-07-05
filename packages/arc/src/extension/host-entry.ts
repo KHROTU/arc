@@ -209,6 +209,25 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
     const prompt = `Fix the following code from ${uri}:\n\n\`\`\`${ed.document.languageId}\n${text}\n\`\`\`${diagText}`;
     await sendToArc(prompt);
   });
+  vscode.commands.registerCommand("arc.inlineChat", async () => {
+    if (!ctxRef) return;
+    const ed = vscode.window.activeTextEditor;
+    if (!ed) return;
+    const hasSelection = !ed.selection.isEmpty;
+    const selectedText = hasSelection ? ed.document.getText(ed.selection) : "";
+    const line = ed.selection.active.line + 1;
+    const uri = vscode.workspace.asRelativePath(ed.document.uri);
+    const instruction = await vscode.window.showInputBox({
+      prompt: hasSelection ? `Arc inline edit — selected code in ${uri}` : `Arc inline edit — ${uri} at line ${line}`,
+      placeHolder: "Describe the edit to make (Esc to cancel)",
+    });
+    if (!instruction) return;
+    const codeContext = hasSelection
+      ? `Selected code (lines ${ed.selection.start.line + 1}-${ed.selection.end.line + 1}):\n\`\`\`${ed.document.languageId}\n${selectedText}\n\`\`\``
+      : `Cursor at line ${line}. No selection — infer the relevant surrounding code from the file.`;
+    const prompt = `Inline edit request for ${uri}.\n${codeContext}\n\nInstruction: ${instruction}\n\nEdit ${uri} directly using file.edit to satisfy the instruction. Keep changes minimal and scoped to this request.`;
+    await sendToArc(prompt);
+  });
   context.subscriptions.push(
     vscode.languages.registerCodeActionsProvider("*", {
       provideCodeActions(document, range, ctx) {
