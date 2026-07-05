@@ -5,6 +5,7 @@ export * from "./routing/handoff.js";
 export * from "./providers/transport.js";
 export * from "./providers/catalog.js";
 export * from "./providers/capability-tracker.js";
+export * from "./providers/retry.js";
 export * from "./edit/apply.js";
 export * from "./edit/editor.js";
 export * from "./edit/diff-format.js";
