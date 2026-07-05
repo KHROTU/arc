@@ -622,6 +622,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor",
       "browser.console", "browser.network", "browser.domSnapshot",
       "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage",
+      "browser.newTab", "browser.switchTab", "browser.closeTab", "browser.listTabs", "browser.intercept", "browser.unintercept",
       "mcp.call", "mcp.create", "mcp.remove", "mcp.toggle",
       "mcp.resources/list", "mcp.resources/read", "mcp.prompts/list", "mcp.prompts/get",
       "subagent.spawn", "handoff", "clarification.askUser",

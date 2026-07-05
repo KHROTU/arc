@@ -1,22 +1,28 @@
 import * as path from "node:path";
 export interface BrowserAdapter {
-  navigate(url: string): Promise<{ ok: boolean; output: string }>;
-  click(selector: string): Promise<{ ok: boolean; output: string }>;
-  type(selector: string, text: string): Promise<{ ok: boolean; output: string }>;
-  screenshot(outPath?: string, fullPage?: boolean, type?: "png" | "jpeg"): Promise<{ ok: boolean; output: string }>;
-  evaluate(script: string): Promise<{ ok: boolean; output: string }>;
-  readDom(): Promise<{ ok: boolean; output: string }>;
-  readPage(): Promise<{ ok: boolean; output: string }>;
-  hover(selector: string): Promise<{ ok: boolean; output: string }>;
-  scroll(pixels?: number, selector?: string): Promise<{ ok: boolean; output: string }>;
-  waitFor(selector?: string, urlPattern?: string, state?: "networkidle" | "load" | "domcontentloaded"): Promise<{ ok: boolean; output: string }>;
-  drag(fromSelector: string, toSelector: string): Promise<{ ok: boolean; output: string }>;
-  dialog(accept: boolean, promptText?: string): Promise<{ ok: boolean; output: string }>;
-  runCode(code: string): Promise<{ ok: boolean; output: string }>;
+  navigate(url: string, tabId?: string): Promise<{ ok: boolean; output: string }>;
+  click(selector: string, tabId?: string): Promise<{ ok: boolean; output: string }>;
+  type(selector: string, text: string, tabId?: string): Promise<{ ok: boolean; output: string }>;
+  screenshot(outPath?: string, fullPage?: boolean, type?: "png" | "jpeg", tabId?: string): Promise<{ ok: boolean; output: string }>;
+  evaluate(script: string, tabId?: string): Promise<{ ok: boolean; output: string }>;
+  readDom(tabId?: string): Promise<{ ok: boolean; output: string }>;
+  readPage(tabId?: string): Promise<{ ok: boolean; output: string }>;
+  hover(selector: string, tabId?: string): Promise<{ ok: boolean; output: string }>;
+  scroll(pixels?: number, selector?: string, tabId?: string): Promise<{ ok: boolean; output: string }>;
+  waitFor(selector?: string, urlPattern?: string, state?: "networkidle" | "load" | "domcontentloaded", tabId?: string): Promise<{ ok: boolean; output: string }>;
+  drag(fromSelector: string, toSelector: string, tabId?: string): Promise<{ ok: boolean; output: string }>;
+  dialog(accept: boolean, promptText?: string, tabId?: string): Promise<{ ok: boolean; output: string }>;
+  runCode(code: string, tabId?: string): Promise<{ ok: boolean; output: string }>;
   close(): Promise<void>;
-  consoleLog(): string[];
-  networkLog(): string[];
-  domSnapshot(): string;
+  consoleLog(tabId?: string): string[];
+  networkLog(tabId?: string): string[];
+  domSnapshot(tabId?: string): string;
+  newTab(url?: string): Promise<{ ok: boolean; output: string; tabId?: string }>;
+  switchTab(tabId: string): Promise<{ ok: boolean; output: string }>;
+  closeTab(tabId: string): Promise<{ ok: boolean; output: string }>;
+  listTabs(): Promise<{ ok: boolean; output: string; tabs?: { id: string; url: string; active: boolean }[] }>;
+  intercept(pattern: string, mock?: { status?: number; body?: string; contentType?: string; block?: boolean }): Promise<{ ok: boolean; output: string }>;
+  unintercept(pattern: string): Promise<{ ok: boolean; output: string }>;
 }
 export type BrowserKind = "chromium" | "firefox";
 interface ConsoleEntry { level: string; text: string; location: string; ts: number }
@@ -25,8 +31,19 @@ interface MinimalPlaywright {
   chromium?: { launch: (opts: { headless?: boolean }) => Promise<PlaywrightBrowser> };
   firefox?: { launch: (opts: { headless?: boolean }) => Promise<PlaywrightBrowser> };
 }
+interface PlaywrightRoute {
+  request(): { url(): string };
+  abort(): Promise<void>;
+  fulfill(opts: { status?: number; contentType?: string; body?: string }): Promise<void>;
+  continue(): Promise<void>;
+}
+interface PlaywrightContext {
+  newPage(): Promise<PlaywrightPage>;
+  route(pattern: string, handler: (route: PlaywrightRoute) => unknown): Promise<void>;
+  unroute(pattern: string): Promise<void>;
+}
 interface PlaywrightBrowser {
-  newContext(): Promise<{ newPage(): Promise<PlaywrightPage> }>;
+  newContext(): Promise<PlaywrightContext>;
   close(): Promise<void>;
 }
 interface PlaywrightPage {
@@ -43,8 +60,11 @@ interface PlaywrightPage {
   accessibility: { snapshot(): Promise<unknown> };
   content(): Promise<string>;
   on(event: string, fn: (...args: unknown[]) => void): void;
+  url(): string;
+  close(): Promise<void>;
 }
 const MAX_LOG_ENTRIES = 50;
+interface TabState { id: string; page: PlaywrightPage; consoleLog: ConsoleEntry[]; networkLog: NetworkEntry[] }
 export async function createBrowser(kind: BrowserKind = "chromium", headless = true): Promise<BrowserAdapter> {
   let pw: MinimalPlaywright;
   try {
@@ -56,127 +76,164 @@ export async function createBrowser(kind: BrowserKind = "chromium", headless = t
   if (!launcher) return stubAdapter("Requested browser launcher is not present in the installed Playwright bundle.");
   const browser = await launcher.launch({ headless });
   const ctx = await browser.newContext();
-  const page = await ctx.newPage();
-  const consoleLog: ConsoleEntry[] = [];
-  const networkLog: NetworkEntry[] = [];
+  const tabs = new Map<string, TabState>();
+  const interceptRules = new Map<string, { status?: number; body?: string; contentType?: string; block?: boolean }>();
+  let activeTabId = "";
+  let tabSeq = 0;
   let dialogAction: { accept: boolean; promptText?: string } | null = null;
-  page.on("dialog", (d: any) => {
-    const action = dialogAction ?? { accept: false };
-    dialogAction = null;
-    if (action.accept) {
-      if (action.promptText !== undefined) d.accept(action.promptText);
-      else d.accept();
-    } else {
-      d.dismiss();
-    }
-  });
-  page.on("console", (msg: any) => {
-    if (consoleLog.length >= MAX_LOG_ENTRIES) consoleLog.shift();
-    consoleLog.push({
-      level: msg.type() ?? "log",
-      text: msg.text()?.slice(0, 500) ?? "",
-      location: msg.location()?.url ?? "",
-      ts: Date.now(),
+  function attachTab(page: PlaywrightPage): TabState {
+    const id = `tab-${++tabSeq}`;
+    const tab: TabState = { id, page, consoleLog: [], networkLog: [] };
+    page.on("dialog", (d: any) => {
+      const action = dialogAction ?? { accept: false };
+      dialogAction = null;
+      if (action.accept) {
+        if (action.promptText !== undefined) d.accept(action.promptText);
+        else d.accept();
+      } else {
+        d.dismiss();
+      }
     });
-  });
-  page.on("requestfinished", (req: any) => {
-    if (networkLog.length >= MAX_LOG_ENTRIES) networkLog.shift();
-    const timing = req.timing() ?? {};
-    networkLog.push({
-      url: req.url()?.slice(0, 300) ?? "",
-      method: req.method() ?? "GET",
-      status: req.response()?.status() ?? 0,
-      timing: timing.responseEnd ?? timing.startTime ?? 0,
-      ts: Date.now(),
+    page.on("console", (msg: any) => {
+      if (tab.consoleLog.length >= MAX_LOG_ENTRIES) tab.consoleLog.shift();
+      tab.consoleLog.push({
+        level: msg.type() ?? "log",
+        text: msg.text()?.slice(0, 500) ?? "",
+        location: msg.location()?.url ?? "",
+        ts: Date.now(),
+      });
     });
-  });
-  function captureSummary(): string {
+    page.on("requestfinished", (req: any) => {
+      void (async () => {
+        if (tab.networkLog.length >= MAX_LOG_ENTRIES) tab.networkLog.shift();
+        const timing = req.timing() ?? {};
+        const res = await req.response().catch(() => null);
+        tab.networkLog.push({
+          url: req.url()?.slice(0, 300) ?? "",
+          method: req.method() ?? "GET",
+          status: res?.status() ?? 0,
+          timing: timing.responseEnd ?? timing.startTime ?? 0,
+          ts: Date.now(),
+        });
+      })();
+    });
+    tabs.set(id, tab);
+    return tab;
+  }
+  const firstPage = await ctx.newPage();
+  const firstTab = attachTab(firstPage);
+  activeTabId = firstTab.id;
+  function resolveTab(tabId?: string): TabState | undefined {
+    if (tabId) return tabs.get(tabId);
+    return tabs.get(activeTabId);
+  }
+  function captureSummary(tab: TabState): string {
     const parts: string[] = [];
-    if (consoleLog.length) {
-      parts.push("--- Console (last " + consoleLog.length + ") ---");
-      for (const c of consoleLog) parts.push(`[${c.level}] ${c.text}${c.location ? " (" + c.location + ")" : ""}`);
+    if (tab.consoleLog.length) {
+      parts.push("--- Console (last " + tab.consoleLog.length + ") ---");
+      for (const c of tab.consoleLog) parts.push(`[${c.level}] ${c.text}${c.location ? " (" + c.location + ")" : ""}`);
     }
-    if (networkLog.length) {
-      parts.push("--- Network (last " + networkLog.length + ") ---");
-      for (const n of networkLog) parts.push(`${n.method} ${n.status} ${n.url} ${n.timing}ms`);
+    if (tab.networkLog.length) {
+      parts.push("--- Network (last " + tab.networkLog.length + ") ---");
+      for (const n of tab.networkLog) parts.push(`${n.method} ${n.status} ${n.url} ${n.timing}ms`);
     }
     return parts.join("\n");
   }
   const adapter: BrowserAdapter = {
-    async navigate(url) {
+    async navigate(url, tabId) {
+      const tab = resolveTab(tabId);
+      if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
       try {
-        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15_000 });
-        const cap = captureSummary();
+        await tab.page.goto(url, { waitUntil: "domcontentloaded", timeout: 15_000 });
+        const cap = captureSummary(tab);
         return { ok: true, output: `Navigated to ${url}${cap ? "\n\n" + cap : ""}` };
       } catch (e) { return { ok: false, output: `Navigation failed: ${(e as Error).message}` }; }
     },
-    async click(selector) {
+    async click(selector, tabId) {
+      const tab = resolveTab(tabId);
+      if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
       try {
-        await page.click(selector, { timeout: 5_000 });
-        const cap = captureSummary();
+        await tab.page.click(selector, { timeout: 5_000 });
+        const cap = captureSummary(tab);
         return { ok: true, output: `Clicked ${selector}${cap ? "\n\n" + cap : ""}` };
       } catch (e) { return { ok: false, output: `Click failed: ${(e as Error).message}` }; }
     },
-    async type(selector, text) {
+    async type(selector, text, tabId) {
+      const tab = resolveTab(tabId);
+      if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
       try {
-        await page.fill(selector, text, { timeout: 5_000 });
-        const cap = captureSummary();
+        await tab.page.fill(selector, text, { timeout: 5_000 });
+        const cap = captureSummary(tab);
         return { ok: true, output: `Typed into ${selector}${cap ? "\n\n" + cap : ""}` };
       } catch (e) { return { ok: false, output: `Type failed: ${(e as Error).message}` }; }
     },
-    async screenshot(outPath, fullPage, type) {
+    async screenshot(outPath, fullPage, type, tabId) {
+      const tab = resolveTab(tabId);
+      if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
       try {
         const p = outPath || path.join(process.cwd(), `arc-shot-${Date.now()}.${type || "png"}`);
-        await page.screenshot({ path: p, fullPage: fullPage ?? false, type: type || "png" });
-        const cap = captureSummary();
+        await tab.page.screenshot({ path: p, fullPage: fullPage ?? false, type: type || "png" });
+        const cap = captureSummary(tab);
         return { ok: true, output: `Saved ${p}${cap ? "\n\n" + cap : ""}` };
       } catch (e) { return { ok: false, output: `Screenshot failed: ${(e as Error).message}` }; }
     },
-    async evaluate(script) {
+    async evaluate(script, tabId) {
+      const tab = resolveTab(tabId);
+      if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
       try {
-        const result = await page.evaluate(script);
+        const result = await tab.page.evaluate(script);
         return { ok: true, output: typeof result === "string" ? result : JSON.stringify(result, null, 2) ?? String(result) };
       } catch (e) { return { ok: false, output: `Eval failed: ${(e as Error).message}` }; }
     },
-    async readDom() {
+    async readDom(tabId) {
+      const tab = resolveTab(tabId);
+      if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
       try {
-        const a11y = await page.accessibility.snapshot();
+        const a11y = await tab.page.accessibility.snapshot();
         return { ok: true, output: JSON.stringify(a11y, null, 2) };
       } catch (e) { return { ok: false, output: `Accessibility snapshot failed: ${(e as Error).message}` }; }
     },
-    async hover(selector) {
+    async hover(selector, tabId) {
+      const tab = resolveTab(tabId);
+      if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
       try {
-        await page.hover(selector, { timeout: 5_000 });
+        await tab.page.hover(selector, { timeout: 5_000 });
         return { ok: true, output: `Hovered ${selector}` };
       } catch (e) { return { ok: false, output: `Hover failed: ${(e as Error).message}` }; }
     },
-    async scroll(pixels, selector) {
+    async scroll(pixels, selector, tabId) {
+      const tab = resolveTab(tabId);
+      if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
       try {
         if (selector) {
-          await page.evaluate(`(function(){const el=document.querySelector("${selector.replace(/"/g, '\\"')}");if(el)el.scrollIntoView({behavior:"smooth",block:"center"});})()`);
+          await tab.page.evaluate(`(function(){const el=document.querySelector("${selector.replace(/"/g, '\\"')}");if(el)el.scrollIntoView({behavior:"smooth",block:"center"});})()`);
           return { ok: true, output: `Scrolled to ${selector}` };
         }
-        await page.evaluate(`window.scrollBy(0, ${pixels ?? 300})`);
+        await tab.page.evaluate(`window.scrollBy(0, ${pixels ?? 300})`);
         return { ok: true, output: `Scrolled by ${pixels ?? 300}px` };
       } catch (e) { return { ok: false, output: `Scroll failed: ${(e as Error).message}` }; }
     },
-    async waitFor(selector, urlPattern, state) {
+    async waitFor(selector, urlPattern, state, tabId) {
+      const tab = resolveTab(tabId);
+      if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
       try {
         if (selector) {
-          await page.waitForSelector(selector, { state: "visible", timeout: 10_000 });
+          await tab.page.waitForSelector(selector, { state: "visible", timeout: 10_000 });
           return { ok: true, output: `Selector "${selector}" appeared` };
         }
         if (urlPattern) {
-          await page.waitForURL(urlPattern, { timeout: 10_000 });
+          await tab.page.waitForURL(urlPattern, { timeout: 10_000 });
           return { ok: true, output: `URL matched "${urlPattern}"` };
         }
-        await page.waitForLoadState(state ?? "networkidle");
+        await tab.page.waitForLoadState(state ?? "networkidle");
         return { ok: true, output: `Page reached state "${state ?? "networkidle"}"` };
       } catch (e) { return { ok: false, output: `Wait failed: ${(e as Error).message}` }; }
     },
-    async drag(fromSelector, toSelector) {
+    async drag(fromSelector, toSelector, tabId) {
+      const tab = resolveTab(tabId);
+      if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
       try {
-        await page.dragAndDrop(fromSelector, toSelector, { timeout: 10_000 });
+        await tab.page.dragAndDrop(fromSelector, toSelector, { timeout: 10_000 });
         return { ok: true, output: `Dragged ${fromSelector} onto ${toSelector}` };
       } catch (e) { return { ok: false, output: `Drag failed: ${(e as Error).message}` }; }
     },
@@ -184,24 +241,80 @@ export async function createBrowser(kind: BrowserKind = "chromium", headless = t
       dialogAction = { accept, promptText };
       return { ok: true, output: accept ? (promptText !== undefined ? `Dialog will be accepted with "${promptText}".` : "Dialog will be accepted.") : "Dialog will be dismissed." };
     },
-    async runCode(code) {
+    async runCode(code, tabId) {
+      const tab = resolveTab(tabId);
+      if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
       try {
         const fn = new Function("page", code) as (page: unknown) => Promise<unknown>;
-        const result = await fn(page);
+        const result = await fn(tab.page);
         return { ok: true, output: typeof result === "string" ? result : JSON.stringify(result, null, 2) ?? String(result) };
       } catch (e) { return { ok: false, output: `Playwright code failed: ${(e as Error).message}` }; }
     },
-    async readPage() {
+    async readPage(tabId) {
+      const tab = resolveTab(tabId);
+      if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
       try {
-        const html = await page.content() as string;
-        const text = (await page.evaluate("document.body?.innerText ?? ''")) as string;
+        const html = await tab.page.content() as string;
+        const text = (await tab.page.evaluate("document.body?.innerText ?? ''")) as string;
         return { ok: true, output: (text || html).slice(0, 4000) };
       } catch (e) { return { ok: false, output: `Read page failed: ${(e as Error).message}` }; }
     },
     async close() { await browser.close().catch(() => undefined); },
-    consoleLog() { return consoleLog.map((c) => `[${c.level}] ${c.text}`); },
-    networkLog() { return networkLog.map((n) => `${n.method} ${n.status} ${n.url} ${n.timing}ms`); },
-    domSnapshot() { return captureSummary(); },
+    consoleLog(tabId) { const tab = resolveTab(tabId); return tab ? tab.consoleLog.map((c) => `[${c.level}] ${c.text}`) : []; },
+    networkLog(tabId) { const tab = resolveTab(tabId); return tab ? tab.networkLog.map((n) => `${n.method} ${n.status} ${n.url} ${n.timing}ms`) : []; },
+    domSnapshot(tabId) { const tab = resolveTab(tabId); return tab ? captureSummary(tab) : ""; },
+    async newTab(url) {
+      try {
+        const page = await ctx.newPage();
+        const tab = attachTab(page);
+        activeTabId = tab.id;
+        if (url) await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15_000 });
+        return { ok: true, output: `Opened new tab '${tab.id}'${url ? ` at ${url}` : ""}.`, tabId: tab.id };
+      } catch (e) { return { ok: false, output: `Failed to open tab: ${(e as Error).message}` }; }
+    },
+    async switchTab(tabId) {
+      const tab = tabs.get(tabId);
+      if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
+      activeTabId = tabId;
+      return { ok: true, output: `Switched to tab '${tabId}'.` };
+    },
+    async closeTab(tabId) {
+      const tab = tabs.get(tabId);
+      if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
+      await tab.page.close().catch(() => undefined);
+      tabs.delete(tabId);
+      if (activeTabId === tabId) {
+        const next = tabs.keys().next().value as string | undefined;
+        if (next) activeTabId = next;
+      }
+      return { ok: true, output: `Closed tab '${tabId}'.` };
+    },
+    async listTabs() {
+      const list = [...tabs.values()].map((t) => ({ id: t.id, url: t.page.url(), active: t.id === activeTabId }));
+      const output = list.length ? list.map((t) => `${t.active ? "*" : " "} ${t.id} ${t.url}`).join("\n") : "(no open tabs)";
+      return { ok: true, output, tabs: list };
+    },
+    async intercept(pattern, mock) {
+      try {
+        const rule = mock ?? {};
+        interceptRules.set(pattern, rule);
+        await ctx.route(pattern, async (route: PlaywrightRoute) => {
+          const active = interceptRules.get(pattern);
+          if (!active) { await route.continue(); return; }
+          if (active.block) { await route.abort(); return; }
+          await route.fulfill({ status: active.status ?? 200, contentType: active.contentType ?? "application/json", body: active.body ?? "" });
+        });
+        return { ok: true, output: `Intercepting requests matching '${pattern}'${rule.block ? " (blocking)" : ""}.` };
+      } catch (e) { return { ok: false, output: `Intercept failed: ${(e as Error).message}` }; }
+    },
+    async unintercept(pattern) {
+      if (!interceptRules.has(pattern)) return { ok: false, output: `No active interception for '${pattern}'.` };
+      try {
+        interceptRules.delete(pattern);
+        await ctx.unroute(pattern);
+        return { ok: true, output: `Stopped intercepting '${pattern}'.` };
+      } catch (e) { return { ok: false, output: `Unintercept failed: ${(e as Error).message}` }; }
+    },
   };
   return adapter;
 }
@@ -224,5 +337,11 @@ function stubAdapter(message: string): BrowserAdapter {
     consoleLog() { return []; },
     networkLog() { return []; },
     domSnapshot() { return message; },
+    async newTab() { return { ok: false, output: message }; },
+    async switchTab() { return { ok: false, output: message }; },
+    async closeTab() { return { ok: false, output: message }; },
+    async listTabs() { return { ok: false, output: message, tabs: [] }; },
+    async intercept() { return { ok: false, output: message }; },
+    async unintercept() { return { ok: false, output: message }; },
   };
 }
