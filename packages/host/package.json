@@ -1,6 +1,10 @@
 {
   "name": "@arc/host",
+<<<<<<< HEAD
   "version": "0.4.13",
+=======
+  "version": "0.5.0",
+>>>>>>> dev
   "private": true,
   "type": "commonjs",
   "main": "dist/index.js",

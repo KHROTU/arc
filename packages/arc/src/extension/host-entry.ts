@@ -15,6 +15,12 @@ import {
   type HostMsg, type WebviewMsg, type ModelDescriptor, type ProviderConfig, type ProcessStep, type ApprovalsConfig,
   Indexer, HashEmbeddingBackend, OllamaEmbeddingBackend, DEFAULT_EMBEDDING_MODELS,
   type IndexProgress, type EmbeddingBackend,
+  IndexWatcher,
+  FileContextTracker,
+  completeSamplingRequest,
+  type SamplingCreateMessageParams,
+  listBackgroundProcesses,
+  auditLogPath, verifyAuditLogFile,
 } from "@arc/host";
 import { initDiscordRpcSpoof, reportAgentActivity, reportAgentIdle } from "./discord-rpc.js";
 const SECRET_PREFIX = "arc.apiKey.";
@@ -28,6 +34,8 @@ let modeRegistry: ModeRegistry;
 let skillRegistry: SkillRegistry;
 let skillRegistryReady: Promise<void>;
 let ruleRegistry: RuleRegistry;
+let ruleWatcherDispose: (() => void) | undefined;
+let fileContextTracker: FileContextTracker;
 let persist: () => void;
 let persistAsync: () => Promise<void>;
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
@@ -55,6 +63,29 @@ let browser: BrowserAdapter | undefined;
 let browserPromise: Promise<BrowserAdapter> | undefined;
 let browserIdleTimer: ReturnType<typeof setTimeout> | undefined;
 const BROWSER_IDLE_MS = 5 * 60 * 1000;
+<<<<<<< HEAD
+=======
+let inlineCommentController: vscode.CommentController | undefined;
+const inlineChatSessions = new Map<vscode.CommentThread, Session>();
+const mcpSamplingAllowedServers = new Set<string>();
+const inlineHeaderComments = new Map<vscode.CommentThread, InlineComment>();
+const inlineChatModelChoice = new Map<vscode.CommentThread, ModelDescriptor>();
+const inlineCommentThreadByComment = new WeakMap<vscode.Comment, vscode.CommentThread>();
+class InlineComment implements vscode.Comment {
+  constructor(
+    public body: string | vscode.MarkdownString,
+    public mode: vscode.CommentMode,
+    public author: vscode.CommentAuthorInformation,
+    public contextValue?: string,
+  ) {}
+}
+function updateLastInlineComment(thread: vscode.CommentThread, body: string): void {
+  const comments = thread.comments.slice(0, -1) as InlineComment[];
+  const md = new vscode.MarkdownString(body);
+  md.isTrusted = false;
+  thread.comments = [...comments, new InlineComment(md, vscode.CommentMode.Preview, { name: "Arc" })];
+}
+>>>>>>> dev
 function resetBrowserIdleTimer(): void {
   clearTimeout(browserIdleTimer);
   browserIdleTimer = setTimeout(() => {
@@ -77,7 +108,21 @@ function getBrowser(): Promise<BrowserAdapter> {
 let searchIndexer: Indexer | undefined;
 let searchProgress: IndexProgress = { filesScanned: 0, filesIndexed: 0, chunksEmbedded: 0, errors: 0 };
 let searchAbort: AbortController | undefined;
+<<<<<<< HEAD
 let approvalsConfig: ApprovalsConfig = { ...DEFAULT_APPROVALS };
+=======
+let indexWatcher: IndexWatcher | undefined;
+let indexWatcherSaveTimer: ReturnType<typeof setTimeout> | undefined;
+let autoReindexTimer: ReturnType<typeof setInterval> | undefined;
+let approvalsConfig: ApprovalsConfig = { ...DEFAULT_APPROVALS };
+let pendingAgentState: { messages: unknown[]; steps: unknown[]; mode: string; todoItems: unknown[] } | undefined;
+function webviewResourceRoots(context: vscode.ExtensionContext): vscode.Uri[] {
+  return [
+    vscode.Uri.joinPath(context.extensionUri, "dist"),
+    vscode.Uri.joinPath(context.extensionUri, "assets"),
+  ];
+}
+>>>>>>> dev
 export function activate(context: vscode.ExtensionContext) {
   ctxRef = context;
   log = vscode.window.createOutputChannel("Arc");
@@ -85,16 +130,38 @@ export function activate(context: vscode.ExtensionContext) {
   modeRegistry = new ModeRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
   skillRegistry = new SkillRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
   ruleRegistry = new RuleRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
+<<<<<<< HEAD
+=======
+  fileContextTracker = new FileContextTracker({ dbPath: path.join(getWorkspaceArcDir(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()), "context.db") });
+>>>>>>> dev
   Promise.allSettled([
     modeRegistry.load(),
     skillRegistry.load().then(() => { skillRegistryReady = Promise.resolve(); }),
     ruleRegistry.load(),
+<<<<<<< HEAD
+=======
+    fileContextTracker.load(),
+>>>>>>> dev
   ]).then((results) => {
     for (const r of results) {
       if (r.status === "rejected") {
         log.appendLine(`[arc] Registry load failed: ${(r.reason as Error)?.stack ?? r.reason}`);
       }
     }
+<<<<<<< HEAD
+=======
+    ruleWatcherDispose = ruleRegistry.watch((diff) => {
+      const parts: string[] = [];
+      if (diff.added.length) parts.push(`added: ${diff.added.join(", ")}`);
+      if (diff.changed.length) parts.push(`changed: ${diff.changed.join(", ")}`);
+      if (diff.removed.length) parts.push(`removed: ${diff.removed.join(", ")}`);
+      const note = `[Rules updated] ${parts.join("; ")}`;
+      log.appendLine(`[arc] ${note}`);
+      for (const s of [sidebarSession, ...fullscreenSessions.values()]) {
+        s.agent?.injectSystemNote?.(note);
+      }
+    });
+>>>>>>> dev
   });
   try {
     registerViewsAndCommands(context);
@@ -111,6 +178,12 @@ export function activate(context: vscode.ExtensionContext) {
 function registerViewsAndCommands(context: vscode.ExtensionContext) {
   const prideMode: PrideMode = vscode.workspace.getConfiguration().get<PrideMode>("arc.appearance.prideLogo", "june") ?? "june";
   const logo = pickLogo(prideMode);
+<<<<<<< HEAD
+=======
+  inlineCommentController = vscode.comments.createCommentController("arc.inlineChat", "Arc Inline Chat");
+  inlineCommentController.options = { prompt: "Describe the edit to make", placeHolder: "e.g. Extract this into a helper function" };
+  context.subscriptions.push(inlineCommentController);
+>>>>>>> dev
   void vscode.commands.executeCommand("setContext", "arc.isPrideMonth", logo.kind === "pride");
   const sidebarProvider: vscode.WebviewViewProvider = {
     async resolveWebviewView(webviewView: vscode.WebviewView) {
@@ -118,11 +191,10 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
         sidebarSession.view = webviewView;
         webviewView.webview.options = {
           enableScripts: true,
-          localResourceRoots: [vscode.Uri.file(context.extensionPath)],
+          localResourceRoots: webviewResourceRoots(context),
         };
         webviewView.webview.html = getWebviewHtml(webviewView.webview, context.extensionUri, "sidebar");
         wireWebview(webviewView.webview, sidebarSession);
-        void ensureAgent(sidebarSession);
       } catch (err) {
         log.appendLine(`[arc] view resolve failed: ${(err as Error)?.stack ?? err}`);
       }
@@ -161,6 +233,196 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
   vscode.commands.registerCommand("arc.managePrompts", async () => {
     openPrompt();
   });
+  vscode.commands.registerCommand("arc.auditLog.export", async () => {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const src = auditLogPath(root);
+    try {
+      await fs.access(src);
+    } catch {
+      void vscode.window.showInformationMessage("No audit log has been recorded for this workspace yet.");
+      return;
+    }
+    const dest = await vscode.window.showSaveDialog({
+      defaultUri: vscode.Uri.file(`arc-audit-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`),
+      filters: { "Audit log": ["jsonl"] },
+    });
+    if (!dest) return;
+    await fs.copyFile(src, dest.fsPath);
+    void vscode.window.showInformationMessage(`Audit log exported to ${dest.fsPath}`);
+  });
+  vscode.commands.registerCommand("arc.auditLog.verify", async () => {
+    const picked = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      filters: { "Audit log": ["jsonl"] },
+      openLabel: "Verify",
+    });
+    if (!picked?.length) return;
+    const result = await verifyAuditLogFile(picked[0].fsPath);
+    if (result.ok) {
+      void vscode.window.showInformationMessage(`Audit log verified: ${result.entries} entries, hash chain intact.`);
+    } else {
+      void vscode.window.showErrorMessage(`Audit log verification FAILED at sequence ${result.brokenAtSeq}: ${result.reason}`);
+    }
+  });
+  vscode.commands.registerCommand("arc.explainSelection", async () => {
+    if (!ctxRef) return;
+    const ed = vscode.window.activeTextEditor;
+    if (!ed || ed.selection.isEmpty) return;
+    const text = ed.document.getText(ed.selection);
+    const uri = vscode.workspace.asRelativePath(ed.document.uri);
+    const prompt = `Explain the following code from ${uri}:\n\n\`\`\`${ed.document.languageId}\n${text}\n\`\`\``;
+    await sendToArc(prompt);
+  });
+  vscode.commands.registerCommand("arc.fixSelection", async (uri?: vscode.Uri, range?: vscode.Range, diagnostics?: vscode.Diagnostic[]) => {
+    if (!ctxRef) return;
+    const doc = uri ? await vscode.workspace.openTextDocument(uri) : vscode.window.activeTextEditor?.document;
+    if (!doc) return;
+    const ed = vscode.window.activeTextEditor;
+    const effectiveRange = range ?? (ed && !ed.selection.isEmpty ? new vscode.Range(ed.selection.start, ed.selection.end) : undefined);
+    if (!effectiveRange) return;
+    const lineRange = effectiveRange.isEmpty ? doc.lineAt(effectiveRange.start.line).range : effectiveRange;
+    const text = doc.getText(lineRange);
+    const relUri = vscode.workspace.asRelativePath(doc.uri);
+    const diags = diagnostics ?? vscode.languages.getDiagnostics(doc.uri).filter((d) => !!lineRange.intersection(d.range));
+    const diagText = diags.length
+      ? `\n\nDiagnostics in range:\n${diags.map((d) => `- [${vscode.DiagnosticSeverity[d.severity]}] ${d.message} (line ${d.range.start.line + 1})`).join("\n")}`
+      : "";
+    const prompt = `Fix the following code from ${relUri}:\n\n\`\`\`${doc.languageId}\n${text}\n\`\`\`${diagText}`;
+    await sendToArc(prompt);
+  });
+  vscode.commands.registerCommand("arc.inlineChat", async () => {
+    if (!ctxRef || !inlineCommentController) return;
+    const ed = vscode.window.activeTextEditor;
+    if (!ed) return;
+    const range = ed.selection.isEmpty
+      ? new vscode.Range(ed.selection.active.line, 0, ed.selection.active.line, 0)
+      : new vscode.Range(ed.selection.start, ed.selection.end);
+    const thread = inlineCommentController.createCommentThread(ed.document.uri, range, []);
+    thread.label = "Arc";
+    thread.canReply = true;
+    thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+    thread.contextValue = "arcInlineThread";
+    const currentModel = inlineChatModelChoice.get(thread) ?? registry?.getCurrent();
+    const header = new InlineComment(
+      new vscode.MarkdownString(""),
+      vscode.CommentMode.Preview,
+      { name: currentModel?.label ?? "Select a model" },
+      "arcModelHeader",
+    );
+    inlineHeaderComments.set(thread, header);
+    inlineCommentThreadByComment.set(header, thread);
+    thread.comments = [header];
+  });
+  vscode.commands.registerCommand("arc.inlineChat.pickModel", async (comment: vscode.Comment) => {
+    const thread = inlineCommentThreadByComment.get(comment);
+    if (!thread || !registry) return;
+    const modelList = registry.list();
+    if (!modelList.length) {
+      void vscode.window.showInformationMessage("No models configured yet. Add one in Arc settings.");
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(
+      modelList.map((m) => ({ label: m.label, description: m.tier, model: m })),
+      { title: "Switch model for this inline edit" },
+    );
+    if (!picked) return;
+    inlineChatModelChoice.set(thread, picked.model);
+    const session = inlineChatSessions.get(thread);
+    if (session?.agent) session.agent.setModelOverride(picked.model);
+    const header = new InlineComment(
+      new vscode.MarkdownString(""),
+      vscode.CommentMode.Preview,
+      { name: picked.model.label },
+      "arcModelHeader",
+    );
+    inlineHeaderComments.set(thread, header);
+    inlineCommentThreadByComment.set(header, thread);
+    thread.comments = [header, ...thread.comments.slice(1)];
+  });
+  vscode.commands.registerCommand("arc.inlineChat.submit", async (reply: vscode.CommentReply) => {
+    const thread = reply.thread;
+    const instruction = reply.text.trim();
+    if (!instruction) return;
+    const doc = await vscode.workspace.openTextDocument(thread.uri);
+    const hasSelection = !thread.range.isEmpty;
+    const selectedText = hasSelection ? doc.getText(thread.range) : "";
+    const line = thread.range.start.line + 1;
+    const uriLabel = vscode.workspace.asRelativePath(thread.uri);
+    const userComment = new InlineComment(instruction, vscode.CommentMode.Preview, { name: "You" });
+    const pendingComment = new InlineComment(new vscode.MarkdownString("_Arc is thinking..._"), vscode.CommentMode.Preview, { name: "Arc" });
+    thread.comments = [...thread.comments, userComment, pendingComment];
+    let session = inlineChatSessions.get(thread);
+    if (!session) {
+      session = { id: `inline-${Date.now()}-${Math.random().toString(36).slice(2)}`, agent: undefined as unknown as Agent, steps: [], messages: [] };
+      inlineChatSessions.set(thread, session);
+    }
+    await initReady;
+    const agent = await ensureAgent(session);
+    if (!agent) {
+      updateLastInlineComment(thread, "Arc is unavailable right now.");
+      return;
+    }
+    const chosenModel = inlineChatModelChoice.get(thread);
+    if (chosenModel) agent.setModelOverride(chosenModel);
+    const codeContext = hasSelection
+      ? `Selected code (lines ${thread.range.start.line + 1}-${thread.range.end.line + 1}):\n\`\`\`${doc.languageId}\n${selectedText}\n\`\`\``
+      : (() => {
+          const cursorLine = thread.range.start.line;
+          const startLine = Math.max(0, cursorLine - 15);
+          const endLine = Math.min(doc.lineCount - 1, cursorLine + 15);
+          const windowText = doc.getText(new vscode.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length));
+          return `Cursor at line ${line} (no selection). Surrounding code (lines ${startLine + 1}-${endLine + 1}), use file.read for more if needed:\n\`\`\`${doc.languageId}\n${windowText}\n\`\`\``;
+        })();
+    const prompt = `Inline edit request for ${uriLabel}.\n${codeContext}\n\nInstruction: ${instruction}\n\nEdit ${uriLabel} directly using file.edit to satisfy the instruction. The SEARCH block must match the file's on-disk content exactly (re-read the file with file.read first if unsure). Keep changes minimal and scoped to this request.`;
+    try {
+      await agent.send(prompt);
+      const lastAssistant = [...session.messages].reverse().find((m) => (m as { role?: string }).role === "assistant" && (m as { content?: string }).content);
+      const editedFiles = new Set<string>();
+      for (const step of session.steps) {
+        const s = step as { type?: string; toolName?: string; filePath?: string; args?: Record<string, unknown> };
+        if (s.type === "tool" && (s.toolName === "file.edit" || s.toolName === "file.write")) {
+          const p = s.filePath ?? (s.args?.path as string | undefined);
+          if (p) editedFiles.add(p);
+        }
+      }
+      const summaryParts: string[] = [];
+      if (lastAssistant) summaryParts.push(String((lastAssistant as { content?: string }).content ?? ""));
+      if (editedFiles.size) summaryParts.push(`\n**Edited:** ${[...editedFiles].join(", ")}`);
+      updateLastInlineComment(thread, summaryParts.join("\n").trim() || "Done.");
+    } catch (err) {
+      updateLastInlineComment(thread, `Error: ${(err as Error).message}`);
+    }
+  });
+  vscode.commands.registerCommand("arc.inlineChat.cancel", (thread: vscode.CommentThread) => {
+    const session = inlineChatSessions.get(thread);
+    if (session) {
+      chatHistory?.remove(session.id);
+      inlineChatSessions.delete(thread);
+    }
+    inlineHeaderComments.delete(thread);
+    inlineChatModelChoice.delete(thread);
+    thread.dispose();
+  });
+  context.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider("*", {
+      provideCodeActions(document, range, ctx) {
+        const actions: vscode.CodeAction[] = [];
+        if (!range.isEmpty) {
+          const explain = new vscode.CodeAction("Explain with Arc", vscode.CodeActionKind.Empty);
+          explain.command = { command: "arc.explainSelection", title: "Explain with Arc" };
+          actions.push(explain);
+        }
+        if (ctx.diagnostics.length) {
+          const fix = new vscode.CodeAction(`Fix with Arc: ${ctx.diagnostics[0].message}`.slice(0, 80), vscode.CodeActionKind.QuickFix);
+          fix.command = { command: "arc.fixSelection", title: "Fix with Arc", arguments: [document.uri, range, [...ctx.diagnostics]] };
+          fix.diagnostics = [...ctx.diagnostics];
+          fix.isPreferred = true;
+          actions.push(fix);
+        }
+        return actions;
+      },
+    }, { providedCodeActionKinds: [vscode.CodeActionKind.Empty, vscode.CodeActionKind.QuickFix] }),
+  );
   void vscode.commands.executeCommand("setContext", "arc.showProblems", false);
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(DIFF_PREVIEW_SCHEME, {
@@ -226,11 +488,30 @@ async function initializeAsync(context: vscode.ExtensionContext) {
       void vscode.commands.executeCommand("setContext", "arc.isPrideMonth", logo.kind === "pride");
     }
     if (e.affectsConfiguration("arc")) persist();
+    if (e.affectsConfiguration("arc.indexing.autoWatch") || e.affectsConfiguration("arc.search.enabled")) {
+      startIndexWatcherIfEnabled();
+    }
+    if (e.affectsConfiguration("arc.search.autoReindex")) {
+      scheduleAutoReindex();
+    }
   }));
   store = new CheckpointStore({ dir: context.globalStorageUri.fsPath });
   lsp = new LspBridge(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
   mcp = new McpAggregator();
   mcp.setPersistence(() => persistMcpConfig(mcp, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()));
+  mcp.setRoots((vscode.workspace.workspaceFolders ?? []).map((f) => ({ uri: f.uri.toString(), name: f.name })));
+  mcp.setSamplingHandler(async (serverName, params) => {
+    if (!mcpSamplingAllowedServers.has(serverName)) {
+      const pick = await vscode.window.showWarningMessage(
+        `MCP server '${serverName}' wants to send a prompt to your configured model (sampling). Allow?`,
+        { modal: true },
+        "Allow Once", "Always Allow",
+      );
+      if (pick === "Always Allow") mcpSamplingAllowedServers.add(serverName);
+      else if (pick !== "Allow Once") throw new Error("Sampling request denied by user.");
+    }
+    return completeSamplingRequest(registry, params as SamplingCreateMessageParams, { proxyUrl: resolveProxy("providerUrl") ?? resolveProxy("url") });
+  });
   mcp.onChange(() => {
     const list = mcp.listServers().map((s) => ({ name: s.name, enabled: s.enabled, transport: s.transport.type, toolCount: s.tools.length }));
     for (const webview of getAllWebviews()) {
@@ -240,23 +521,39 @@ async function initializeAsync(context: vscode.ExtensionContext) {
   setNotifier(makeVSCodeNotifier());
   initDiscordRpcSpoof(context);
   const savedState = context.globalState.get<{ messages: unknown[]; steps: unknown[]; mode: string; todoItems: unknown[] }>("arc.agentState");
+  pendingAgentState = savedState;
   const currentChat = chatHistory.ensure(chatHistory.current());
   sidebarSession.id = currentChat.id;
   chatSessions.set(currentChat.id, sidebarSession);
-  void ensureAgent(sidebarSession).then(async (agent) => {
-    if (agent && savedState?.messages?.length) {
-      agent.restore(savedState as any).catch(() => {});
-      context.globalState.update("arc.agentState", undefined);
-    }
-  });
   persist();
   setTimeout(() => { void tryLoadIndex(); }, 2000);
+<<<<<<< HEAD
+=======
+  scheduleAutoReindex();
+>>>>>>> dev
   initResolve?.();
   setTimeout(() => {
     void hydrateMcp(mcp, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()).catch((err) => {
       log.appendLine(`[arc] MCP hydration failed: ${(err as Error)?.stack ?? err}`);
     });
   }, 3000);
+<<<<<<< HEAD
+=======
+}
+async function waitForSidebarView(timeoutMs = 3000): Promise<void> {
+  const start = Date.now();
+  while (!sidebarSession.view && Date.now() - start < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+async function sendToArc(prompt: string): Promise<void> {
+  await vscode.commands.executeCommand("arc.openSidebar");
+  await waitForSidebarView();
+  await initReady;
+  const agent = await ensureAgent(sidebarSession);
+  if (!agent) return;
+  await agent.send(prompt);
+>>>>>>> dev
 }
 async function openFullscreen(): Promise<vscode.Webview | undefined> {
   if (!ctxRef) return;
@@ -265,8 +562,7 @@ async function openFullscreen(): Promise<vscode.Webview | undefined> {
   }
   const panel = vscode.window.createWebviewPanel("arc.fullscreen", "Arc", vscode.ViewColumn.One, {
     enableScripts: true,
-    retainContextWhenHidden: true,
-    localResourceRoots: [vscode.Uri.file(ctxRef.extensionPath)],
+    localResourceRoots: webviewResourceRoots(ctxRef),
   });
   const prideMode: PrideMode = vscode.workspace.getConfiguration().get<PrideMode>("arc.appearance.prideLogo", "june") ?? "june";
   const logoFile = pickLogo(prideMode).file;
@@ -277,7 +573,6 @@ async function openFullscreen(): Promise<vscode.Webview | undefined> {
   const session: Session = { id: chatId, panel, agent: undefined as unknown as Agent, steps: [], messages: [] };
   fullscreenSessions.set(mapKey, session);
   wireWebview(panel.webview, session);
-  void ensureAgent(session);
   panel.onDidDispose(() => {
     fullscreenSessions.delete(mapKey);
     chatSessions.delete(chatId);
@@ -305,7 +600,6 @@ function newTask() {
   if (sidebarSession.agent) {
     sidebarSession.agent = undefined as unknown as Agent;
     sidebarSession.agentReady = undefined;
-    void ensureAgent(sidebarSession);
   }
   if (sidebarSession.view) {
     sidebarSession.view.webview.postMessage({ type: "chat/current", chatId: sidebarSession.id });
@@ -519,6 +813,44 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       if (!idx) return [];
       const hits = await idx.search(query, k ?? 10);
       return hits.map((h: { file: string; start: number; end: number; score: number; text: string }) => ({ file: h.file, start: h.start, end: h.end, score: h.score, snippet: h.text }));
+<<<<<<< HEAD
+=======
+    },
+    describeImage: (dataUrl: string) => describeToolImage(dataUrl, registry?.getCurrent?.()),
+    executeNotebookCell: async (relPath: string, cellIndex: number) => {
+      try {
+        const uri = resolveWorkspaceFileUri(relPath);
+        if (!uri) return { ok: false, output: `Could not resolve notebook path: ${relPath}` };
+        const notebook = await vscode.workspace.openNotebookDocument(uri);
+        if (cellIndex < 0 || cellIndex >= notebook.cellCount) {
+          return { ok: false, output: `Cell index ${cellIndex} out of range (notebook has ${notebook.cellCount} cell(s)).` };
+        }
+        const target = notebook.cellAt(cellIndex);
+        if (target.kind !== vscode.NotebookCellKind.Code) {
+          return { ok: false, output: `Cell ${cellIndex} is not a code cell.` };
+        }
+        await vscode.commands.executeCommand("notebook.cell.execute", { ranges: [{ start: cellIndex, end: cellIndex + 1 }], document: uri });
+        const deadline = Date.now() + 30_000;
+        while (Date.now() < deadline) {
+          const cell = notebook.cellAt(cellIndex);
+          if (cell.executionSummary?.success !== undefined) break;
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        const finalCell = notebook.cellAt(cellIndex);
+        const parts: string[] = [];
+        const images: string[] = [];
+        for (const out of finalCell.outputs) {
+          for (const item of out.items) {
+            if (item.mime.startsWith("image/")) images.push(`data:${item.mime};base64,${Buffer.from(item.data).toString("base64")}`);
+            else parts.push(Buffer.from(item.data).toString("utf-8"));
+          }
+        }
+        const ok = finalCell.executionSummary?.success !== false;
+        return { ok, output: parts.join("\n").trim() || (ok ? "(cell executed with no text output)" : "Cell execution failed."), images };
+      } catch (e: unknown) {
+        return { ok: false, output: `Failed to execute cell: ${(e as Error).message}` };
+      }
+>>>>>>> dev
     },
     describeImage: (dataUrl: string) => describeToolImage(dataUrl, registry?.getCurrent?.()),
   };
@@ -597,6 +929,10 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor",
       "browser.console", "browser.network", "browser.domSnapshot",
       "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage",
+<<<<<<< HEAD
+=======
+      "browser.newTab", "browser.switchTab", "browser.closeTab", "browser.listTabs", "browser.intercept", "browser.unintercept",
+>>>>>>> dev
       "mcp.call", "mcp.create", "mcp.remove", "mcp.toggle",
       "mcp.resources/list", "mcp.resources/read", "mcp.prompts/list", "mcp.prompts/get",
       "subagent.spawn", "handoff", "clarification.askUser",
@@ -608,6 +944,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       "rule.list", "rule.read", "rule.create",
       "git.diffStaged", "git.diffUnstaged", "git.changedFiles", "git.branchDiff", "git.commitMessage",
       "session.exportTrace",
+      "notebook.read", "notebook.editCell", "notebook.addCell", "notebook.deleteCell", "notebook.execute",
     ]),
     workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(),
     mode: "code",
@@ -615,10 +952,34 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     approvalsConfig,
     reasoningEffort: (vscode.workspace.getConfiguration().get<string>("arc.reasoning.effort", "high") ?? "high") as "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
     isMain: true,
+    verifyMode: (vscode.workspace.getConfiguration().get<string>("arc.verify.mode", "default") ?? "default") as "none" | "default" | "custom",
+    verifyMaxRetries: vscode.workspace.getConfiguration().get<number>("arc.verify.customMaxRetries", 3),
     proxyUrl: resolveProxy("url"),
     proxyProvider: resolveProxy("providerUrl"),
     toolContext,
+<<<<<<< HEAD
     approveShell: async (description, meta) => {
+=======
+    fileContextTracker,
+    getBrowserTabs: async () => {
+      if (!browser) return [];
+      const r = await browser.listTabs();
+      return r.tabs ?? [];
+    },
+    getBackgroundProcesses: () => listBackgroundProcesses(),
+    restoreBrowserTabs: async (tabs) => {
+      if (!tabs.length) return;
+      const b = await getBrowser();
+      for (const t of tabs) {
+        await b.newTab(t.url);
+      }
+    },
+    approveShell: async (description, meta) => {
+      if (!session.view && !session.panel) {
+        const choice = await vscode.window.showWarningMessage(description, { modal: true }, "Allow");
+        return choice === "Allow";
+      }
+>>>>>>> dev
       const id = String(++approvalId);
       const promise = new Promise<boolean>((resolve) => {
         pendingApprovals.set(id, { resolve, session });
@@ -651,6 +1012,16 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     },
     initialMessages: chatHistory?.getMessages(session.id) as ChatMessage[] ?? [],
   });
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+  const prefixes = await loadApprovalsMemory(root);
+  for (const entry of prefixes) {
+    session.agent.addCommandPrefix(entry.prefix);
+  }
+  if (session === sidebarSession && pendingAgentState?.messages?.length) {
+    session.agent.restore(pendingAgentState as any).catch(() => {});
+    pendingAgentState = undefined;
+    void ctxRef.globalState.update("arc.agentState", undefined);
+  }
   return session.agent;
 }
 function broadcast(session: Session, msg: HostMsg) {
@@ -722,11 +1093,9 @@ function switchToChat(chatId: string, webview: vscode.Webview) {
   }
   chatTotals.set(chatId, { cost: 0, promptTokens: 0, completionTokens: 0, window: 0 });
   pushContextStats(webview, chatId);
-  void ensureAgent(sidebarSession);
   for (const [, s] of fullscreenSessions) {
     s.agent = undefined as unknown as Agent;
     s.agentReady = undefined;
-    void ensureAgent(s);
   }
 }
 function pushContextStats(webview: vscode.Webview, chatId: string) {
@@ -737,10 +1106,10 @@ function pushContextStats(webview: vscode.Webview, chatId: string) {
   const usedPct = window > 0 ? Math.min(100, (tokens / window) * 100) : 0;
   webview.postMessage({ type: "context/stats", usedPct, tokens, window, cost: totals.cost });
 }
-async function reindexWorkspace(webview: vscode.Webview) {
+async function reindexWorkspace(webview?: vscode.Webview) {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!root) {
-    webview.postMessage({ type: "error", message: "No workspace folder to index." });
+    webview?.postMessage({ type: "error", message: "No workspace folder to index." });
     return;
   }
   searchAbort?.abort();
@@ -781,6 +1150,7 @@ async function reindexWorkspace(webview: vscode.Webview) {
   if (indexPath && searchIndexer && searchProgress.filesIndexed > 0) {
     try { await searchIndexer.save(indexPath); } catch {  }
   }
+  startIndexWatcherIfEnabled();
 }
 async function walkWorkspace(root: string): Promise<string[]> {
   const include = [
@@ -844,6 +1214,49 @@ function getIndexPath(): string | undefined {
   const dir = path.join(ctxRef.globalStorageUri.fsPath, "index");
   return path.join(dir, `${hash}.arcx`);
 }
+function stopIndexWatcher(): void {
+  indexWatcher?.stop();
+  indexWatcher = undefined;
+  clearTimeout(indexWatcherSaveTimer);
+}
+function stopAutoReindexSchedule(): void {
+  clearInterval(autoReindexTimer);
+  autoReindexTimer = undefined;
+}
+function scheduleAutoReindex(): void {
+  stopAutoReindexSchedule();
+  const cfg = vscode.workspace.getConfiguration();
+  const mode = cfg.get<string>("arc.search.autoReindex", "off");
+  if (mode !== "hourly" && mode !== "daily") return;
+  const intervalMs = mode === "hourly" ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+  autoReindexTimer = setInterval(() => {
+    if (!vscode.workspace.getConfiguration().get<boolean>("arc.search.enabled", true)) return;
+    void reindexWorkspace();
+  }, intervalMs);
+}
+function startIndexWatcherIfEnabled(): void {
+  stopIndexWatcher();
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!root || !searchIndexer) return;
+  const cfg = vscode.workspace.getConfiguration();
+  const enabled = cfg.get<boolean>("arc.search.enabled", true);
+  const autoWatch = cfg.get<boolean>("arc.indexing.autoWatch", true);
+  if (!enabled || !autoWatch) return;
+  indexWatcher = new IndexWatcher({
+    root,
+    indexer: searchIndexer,
+    onUpdate: ({ updated, removed }) => {
+      searchProgress.filesIndexed += updated.length;
+      broadcastAll({ type: "search/indexUpdated", updated, removed });
+      clearTimeout(indexWatcherSaveTimer);
+      indexWatcherSaveTimer = setTimeout(() => {
+        const indexPath = getIndexPath();
+        if (indexPath && searchIndexer) void searchIndexer.save(indexPath).catch(() => {});
+      }, 3000);
+    },
+  });
+  indexWatcher.start();
+}
 async function tryLoadIndex(): Promise<void> {
   const indexPath = getIndexPath();
   if (!indexPath) return;
@@ -867,6 +1280,7 @@ async function tryLoadIndex(): Promise<void> {
   try {
     searchIndexer = await Indexer.load(indexPath, be);
     searchProgress = { filesScanned: searchIndexer.getIndex().size(), filesIndexed: searchIndexer.getIndex().size(), chunksEmbedded: searchIndexer.getIndex().size(), errors: 0 };
+    startIndexWatcherIfEnabled();
   } catch {
     searchIndexer = undefined;
   }
@@ -913,16 +1327,6 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           webview.postMessage({ type: "session/steps", steps: session.steps });
           broadcastChatList(webview);
           pushContextStats(webview, session.id);
-          {
-            const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-            const agent = await ensureAgent(session);
-            if (agent) {
-              const prefixes = await loadApprovalsMemory(root);
-              for (const entry of prefixes) {
-                agent.addCommandPrefix(entry.prefix);
-              }
-            }
-          }
           break;
         }
         case "chat/send":
@@ -933,7 +1337,6 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             session.steps = [];
             session.agent = undefined as unknown as Agent;
             session.agentReady = undefined;
-            void ensureAgent(session);
             persist?.();
             void persistAsync?.();
             broadcastChatListAll();
@@ -1084,6 +1487,33 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             if (modeDef) {
               broadcast(session, { type: "session/message", message: { id: `mode-${Date.now()}`, role: "system", content: `Switched to **${msg.mode}** mode — ${modeDef.description}`, ts: Date.now() }, sessionId: session.id });
             }
+          }
+          break;
+        }
+        case "mode/list": {
+          if (modeRegistry) {
+            const modes = modeRegistry.list().map((m) => ({ ...m, source: modeRegistry.sourceOf(m.slug) ?? "workspace" as const }));
+            webview.postMessage({ type: "mode/list", modes });
+          }
+          break;
+        }
+        case "mode/save": {
+          if (modeRegistry) {
+            try {
+              await modeRegistry.save(msg.mode, msg.scope ?? "workspace");
+              const modes = modeRegistry.list().map((m) => ({ ...m, source: modeRegistry.sourceOf(m.slug) ?? "workspace" as const }));
+              webview.postMessage({ type: "mode/list", modes });
+            } catch (e) {
+              webview.postMessage({ type: "error", message: `Failed to save mode: ${(e as Error).message}` });
+            }
+          }
+          break;
+        }
+        case "mode/delete": {
+          if (modeRegistry) {
+            await modeRegistry.delete(msg.slug, msg.scope ?? "workspace");
+            const modes = modeRegistry.list().map((m) => ({ ...m, source: modeRegistry.sourceOf(m.slug) ?? "workspace" as const }));
+            webview.postMessage({ type: "mode/list", modes });
           }
           break;
         }
@@ -1296,6 +1726,27 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           } catch {  }
           break;
         }
+<<<<<<< HEAD
+=======
+        case "diff/accept": {
+          if (session.agent) session.agent.injectSystemNote(`User accepted the edit to ${msg.filePath}.`);
+          break;
+        }
+        case "diff/reject": {
+          const fileUri = resolveWorkspaceFileUri(msg.filePath);
+          if (fileUri) {
+            try {
+              const beforeContent = buildBeforeContentFromHunks(msg.hunks);
+              await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(beforeContent));
+            } catch (e) {
+              webview.postMessage({ type: "error", message: `Failed to revert ${msg.filePath}: ${(e as Error).message}` });
+              break;
+            }
+          }
+          if (session.agent) session.agent.injectSystemNote(`User rejected the edit to ${msg.filePath}. The file has been reverted to its previous content. Do not reapply this edit unless asked again.`);
+          break;
+        }
+>>>>>>> dev
         case "ui/openPrompt":
           void vscode.commands.executeCommand("arc.managePrompts");
           break;
@@ -1576,7 +2027,11 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
 </head>
 <body>
   <div id="root" data-mode="${mode}" data-mono="${monoLogo}" data-pride="${prideLogo}" data-mono-text="${monoLogoText}" data-pride-active="${isPride}" data-tool-tree="${toolTree}" data-version="${extVersion}"></div>
+<<<<<<< HEAD
   <script nonce="${nonce}" src="${scriptUri}"></script>
+=======
+  <script type="module" nonce="${nonce}" src="${scriptUri}"></script>
+>>>>>>> dev
 </body>
 </html>`;
 }
@@ -1646,10 +2101,15 @@ function getAllWebviews(): vscode.Webview[] {
   }
   return out;
 }
-export function deactivate() {
+export async function deactivate() {
   if (sidebarSession.agent && sidebarSession.agent.getMessages()?.length) {
-    void ctxRef?.globalState.update("arc.agentState", sidebarSession.agent.snapshot());
+    const snap = await sidebarSession.agent.snapshotWithBrowser();
+    await ctxRef?.globalState.update("arc.agentState", snap);
   }
+  stopIndexWatcher();
+  ruleWatcherDispose?.();
+  stopAutoReindexSchedule();
+  void fileContextTracker?.save();
   void mcp?.dispose();
   void browser?.close();
 }

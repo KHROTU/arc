@@ -2,8 +2,13 @@ import { AsyncEventQueue, readableToAsyncIterable } from "../util/stream.js";
 import { makeProxyDispatcher } from "../util/proxy.js";
 import { fromApiToolName, toApiToolName, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
 import { caps } from "./capability-tracker.js";
+<<<<<<< HEAD
 const UNSUPPORTED_PARAM_RE = /does not support|unsupported.*param(?:eter)?|unknown.*param(?:eter)?|invalid.*param(?:eter)?/i;
 const RETRY_DELAYS = [1000, 3000, 7000];
+=======
+import { withRetry, policyFor } from "./retry.js";
+const UNSUPPORTED_PARAM_RE = /does not support|unsupported.*param(?:eter)?|unknown.*param(?:eter)?|invalid.*param(?:eter)?/i;
+>>>>>>> dev
 export const openAICompatibleTransport: Transport & { withBase: (base: string) => Transport } = {
   kind: "openai",
   withBase(base) {
@@ -63,19 +68,29 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
     headers["x-title"] = "Arc";
   }
   const MAX_ATTEMPTS = 2;
+<<<<<<< HEAD
   const RATE_LIMIT_RETRIES = 3;
+=======
+  const policy = policyFor(req.provider.kind);
+>>>>>>> dev
   let res!: Response;
   let lastText = "";
   let skipReasoning = false;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const body = buildBody(skipReasoning);
+<<<<<<< HEAD
     for (let rlAttempt = 0; rlAttempt <= RATE_LIMIT_RETRIES; rlAttempt++) {
       res = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
+=======
+    res = await withRetry(
+      () => fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
+>>>>>>> dev
         method: "POST",
         headers,
         body: JSON.stringify(body),
         signal: req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000),
         ...(req.proxyUrl ? { dispatcher: makeProxyDispatcher(req.proxyUrl) } : {}),
+<<<<<<< HEAD
       });
       if (res.ok && res.body) break;
       lastText = await res.text().catch(() => "");
@@ -85,6 +100,12 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
       }
       break;
     }
+=======
+      }),
+      policy,
+    );
+    if (!res.ok) lastText = await res.text().catch(() => "");
+>>>>>>> dev
     if (res.ok && res.body) break;
     if (res.status === 400 && UNSUPPORTED_PARAM_RE.test(lastText)) {
       if (eff && lastText.includes("reasoning_effort")) {

@@ -1,10 +1,18 @@
 import * as fs from "node:fs/promises";
+import * as fsSync from "node:fs";
 import * as path from "node:path";
 import { getArcDir, getWorkspaceArcDir } from "../arc-dir.js";
 import type { RuleEntry } from "./types.js";
+export interface RuleDiff {
+  added: string[];
+  removed: string[];
+  changed: string[];
+}
 export class RuleRegistry {
   private rules = new Map<string, RuleEntry>();
   private workspaceRoot: string;
+  private watchers: fsSync.FSWatcher[] = [];
+  private watchTimer: ReturnType<typeof setTimeout> | undefined;
   constructor(workspaceRoot?: string) {
     this.workspaceRoot = workspaceRoot ?? "";
   }
@@ -35,6 +43,55 @@ export class RuleRegistry {
     await fs.writeFile(path.join(dir, `${name}.md`), content, "utf-8");
     this.rules.set(name, { name, glob, description, body, scope });
   }
+  watch(onChange?: (diff: RuleDiff) => void, debounceMs = 300): () => void {
+    const dirs = [
+      this.workspaceRoot ? path.join(getWorkspaceArcDir(this.workspaceRoot), "rules") : undefined,
+      path.join(getArcDir(), "rules"),
+    ].filter((d): d is string => !!d);
+    const reload = async () => {
+      const before = new Map(this.rules);
+      try {
+        await this.load();
+      } catch {
+        this.rules = before;
+        return;
+      }
+      const diff = diffRules(before, this.rules);
+      if (diff.added.length || diff.removed.length || diff.changed.length) onChange?.(diff);
+    };
+    const schedule = () => {
+      clearTimeout(this.watchTimer);
+      this.watchTimer = setTimeout(() => { reload().catch(() => {}); }, debounceMs);
+    };
+    for (const dir of dirs) {
+      try {
+        fsSync.mkdirSync(dir, { recursive: true });
+        const w = fsSync.watch(dir, { recursive: true }, () => schedule());
+        this.watchers.push(w);
+      } catch {
+      }
+    }
+    return () => this.stopWatching();
+  }
+  stopWatching(): void {
+    for (const w of this.watchers) { try { w.close(); } catch {} }
+    this.watchers = [];
+    clearTimeout(this.watchTimer);
+  }
+}
+function diffRules(before: Map<string, RuleEntry>, after: Map<string, RuleEntry>): RuleDiff {
+  const added: string[] = [];
+  const removed: string[] = [];
+  const changed: string[] = [];
+  for (const [name, rule] of after) {
+    const prev = before.get(name);
+    if (!prev) added.push(name);
+    else if (prev.body !== rule.body || prev.glob !== rule.glob || prev.description !== rule.description) changed.push(name);
+  }
+  for (const name of before.keys()) {
+    if (!after.has(name)) removed.push(name);
+  }
+  return { added, removed, changed };
 }
 function parseRule(name: string, raw: string, scope: "workspace" | "global"): RuleEntry | undefined {
   const fm = extractYaml(raw);

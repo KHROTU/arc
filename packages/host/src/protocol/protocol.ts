@@ -247,12 +247,14 @@ export type HostMsg =
   | { type: "provider/list"; providers: ProviderConfig[] }
   | { type: "config/get"; value: unknown; inReplyTo: string }
   | { type: "mcp/list"; servers: { name: string; enabled: boolean; transport: "stdio" | "http"; toolCount: number }[] }
+  | { type: "mode/list"; modes: { slug: string; roleDefinition: string; allowedTools: string[]; writeGlob?: string; description: string; whenToUse: string; model?: string; source: "builtin" | "workspace" | "global" }[] }
   | { type: "chat/searchResults"; results: { id: string; title: string; matches: string[] }[] }
   | { type: "ui/showSettings" }
   | { type: "ui/showSearch" }
   | { type: "approval/request"; id: string; description: string; kind: "shell" | "destructive"; command?: string }
   | { type: "autoApproveState"; active: boolean }
   | { type: "search/indexProgress"; filesScanned: number; filesIndexed: number; chunksEmbedded: number; errors: number }
+  | { type: "search/indexUpdated"; updated: string[]; removed: string[] }
   | { type: "mcp/testResult"; server?: string; output: string }
   | { type: "mcp/traffic"; server: string; dir: string; msg: string }
   | { type: "memory/list"; memories: { index: number; category: string; content: string; createdAt: string }[] }
@@ -311,6 +313,9 @@ export type WebviewMsg =
   | { type: "search/reindex" }
   | { type: "model/bindUpdate"; modelId: string; providerId: string; remoteModel?: string }
   | { type: "mode/select"; mode: string }
+  | { type: "mode/list" }
+  | { type: "mode/save"; mode: { slug: string; roleDefinition: string; allowedTools: string[]; writeGlob?: string; description: string; whenToUse: string; model?: string }; scope?: "workspace" | "global" }
+  | { type: "mode/delete"; slug: string; scope?: "workspace" | "global" }
   | { type: "autoApprove/toggle" }
   | { type: "approval/response"; id: string; allowed: boolean; rememberCommand?: string; rememberPrefix?: string }
   | { type: "approval/setPreset"; preset: string }
@@ -320,4 +325,6 @@ export type WebviewMsg =
   | { type: "chat/editMessage"; messageId: string; newContent: string; content?: string }
   | { type: "memory/list" }
   | { type: "memory/delete"; index: number }
-  | { type: "hooks/list" };
+  | { type: "hooks/list" }
+  | { type: "diff/accept"; stepId: string; filePath: string }
+  | { type: "diff/reject"; stepId: string; filePath: string; hunks: DiffHunk[] };

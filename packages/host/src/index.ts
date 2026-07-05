@@ -5,6 +5,11 @@ export * from "./routing/handoff.js";
 export * from "./providers/transport.js";
 export * from "./providers/catalog.js";
 export * from "./providers/capability-tracker.js";
+<<<<<<< HEAD
+=======
+export * from "./providers/retry.js";
+export { applyPromptCaching } from "./providers/anthropic.js";
+>>>>>>> dev
 export * from "./edit/apply.js";
 export * from "./edit/editor.js";
 export * from "./edit/diff-format.js";
@@ -24,6 +29,7 @@ export * from "./agent/agent.js";
 export * from "./agent/subagent.js";
 export * from "./mcp/mcp.js";
 export * from "./mcp/client.js";
+export * from "./mcp/sampling.js";
 export * from "./browser/browser.js";
 export * from "./lsp/bridge.js";
 export * from "./log/notifier.js";
@@ -36,4 +42,12 @@ export * from "./search/vector-index.js";
 export * from "./search/indexer.js";
 export * from "./hooks/hooks.js";
 export * from "./search/watcher.js";
+<<<<<<< HEAD
 export * from "./util/dep-graph.js";
+=======
+export * from "./util/dep-graph.js";
+export * from "./context/tracker.js";
+export * from "./verify/verify.js";
+export * from "./audit/audit.js";
+export * from "./notebook/notebook.js";
+>>>>>>> dev

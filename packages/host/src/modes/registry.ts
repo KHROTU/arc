@@ -63,9 +63,10 @@ export class ModeRegistry {
       ? (parsed.allowedTools as string[])
       : base?.allowedTools ?? [];
     const writeGlob = (parsed.writeGlob as string) ?? base?.writeGlob;
+    const model = (parsed.model as string) ?? base?.model;
     if (!roleDefinition && allowedTools.length === 0) return undefined;
     if (!roleDefinition && base) {
-      return { ...base, writeGlob: writeGlob ?? base.writeGlob, description, whenToUse };
+      return { ...base, writeGlob: writeGlob ?? base.writeGlob, description, whenToUse, model: model ?? base.model };
     }
     return {
       slug,
@@ -74,6 +75,7 @@ export class ModeRegistry {
       writeGlob,
       description,
       whenToUse,
+      model,
     };
   }
   get(slug: string): Mode | undefined {
@@ -94,6 +96,46 @@ export class ModeRegistry {
     }
     return this.defaultSlug();
   }
+  async save(mode: Mode, scope: "workspace" | "global" = "workspace"): Promise<void> {
+    if (!mode.slug.trim()) throw new Error("Mode slug is required.");
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(mode.slug)) throw new Error("Mode slug must be lowercase alphanumeric with hyphens only.");
+    if (!mode.roleDefinition.trim()) throw new Error("Mode prompt (roleDefinition) is required.");
+    if (!mode.allowedTools.length) throw new Error("At least one allowed tool is required.");
+    const dir = scope === "global" ? path.join(getArcDir(), "modes") : path.join(getWorkspaceArcDir(this.workspaceRoot), "modes");
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `${mode.slug}.toml`), serializeMode(mode), "utf-8");
+    this.modes.set(mode.slug, mode);
+    this.sourceMap.set(mode.slug, scope);
+  }
+  async delete(slug: string, scope: "workspace" | "global" = "workspace"): Promise<void> {
+    const dir = scope === "global" ? path.join(getArcDir(), "modes") : path.join(getWorkspaceArcDir(this.workspaceRoot), "modes");
+    try {
+      await fs.unlink(path.join(dir, `${slug}.toml`));
+    } catch {
+    }
+    const base = DEFAULT_MODES.find((m) => m.slug === slug);
+    if (base) {
+      this.modes.set(slug, { ...base });
+      this.sourceMap.set(slug, "builtin");
+    } else {
+      this.modes.delete(slug);
+      this.sourceMap.delete(slug);
+    }
+  }
+}
+function serializeMode(mode: Mode): string {
+  const lines: string[] = [];
+  lines.push(`slug = "${escapeToml(mode.slug)}"`);
+  lines.push(`roleDefinition = "${escapeToml(mode.roleDefinition)}"`);
+  lines.push(`description = "${escapeToml(mode.description)}"`);
+  lines.push(`whenToUse = "${escapeToml(mode.whenToUse)}"`);
+  if (mode.writeGlob) lines.push(`writeGlob = "${escapeToml(mode.writeGlob)}"`);
+  if (mode.model) lines.push(`model = "${escapeToml(mode.model)}"`);
+  lines.push(`allowedTools = [${mode.allowedTools.map((t) => `"${escapeToml(t)}"`).join(", ")}]`);
+  return lines.join("\n") + "\n";
+}
+function escapeToml(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
 }
 function parseSimpleToml(raw: string): Record<string, unknown> {
   const result: Record<string, unknown> = {};

@@ -13,6 +13,8 @@ import { tools as builtinTools, type ToolContext, killActiveProcesses, checkWrit
 import { buildToolSpecs, isMcpToolSpec, parseMcpToolSpec } from "./tool-specs.js";
 import { SubagentRunner } from "./subagent.js";
 import { runHooks } from "../hooks/hooks.js";
+import { loadVerifyConfig, runVerification, type VerifyConfig } from "../verify/verify.js";
+import { appendAuditEntry } from "../audit/audit.js";
 import type { ModeRegistry } from "../modes/index.js";
 import { type ApprovalsConfig, type SessionApprovals, type ApproveShellMeta, DEFAULT_APPROVALS, initSession, resolveApproval } from "../approvals/index.js";
 import type { ChatMessage, ModelDescriptor, ToolCall, TurnUsage, ExecutionEvent } from "../protocol/protocol.js";
@@ -56,6 +58,12 @@ export interface AgentOptions {
   proxyProvider?: string;
   proxyWeb?: string;
   proxyShell?: string;
+  fileContextTracker?: import("../context/tracker.js").FileContextTracker;
+  verifyMode?: "none" | "default" | "custom";
+  verifyMaxRetries?: number;
+  getBrowserTabs?: () => Promise<{ id: string; url: string; active: boolean }[]>;
+  getBackgroundProcesses?: () => { id: string; command: string }[];
+  restoreBrowserTabs?: (tabs: { url: string }[]) => Promise<void>;
 }
 export class Agent {
   private messages: ChatMessage[] = [];
@@ -79,11 +87,18 @@ export class Agent {
   private mcpReverse: Map<string, { server: string; tool: string }> = new Map();
   private timeline: ExecutionEvent[] = [];
   private readonly TIMELINE_MAX = 2000;
+  private verifyAttempts = 0;
+  private verifyConfigPromise?: Promise<VerifyConfig | undefined>;
+  private getVerifyConfig(): Promise<VerifyConfig | undefined> {
+    if (!this.verifyConfigPromise) this.verifyConfigPromise = loadVerifyConfig(this.opts.workspaceRoot);
+    return this.verifyConfigPromise;
+  }
   private pushTimeline(ev: ExecutionEvent): void {
     this.timeline.push(ev);
     if (this.timeline.length > this.TIMELINE_MAX) {
       this.timeline = this.timeline.slice(-this.TIMELINE_MAX);
     }
+    void appendAuditEntry(this.opts.workspaceRoot, ev.type, ev).catch(() => {});
   }
   getTimeline(): ExecutionEvent[] { return this.timeline.slice(); }
   private async persistPlan(): Promise<void> {
@@ -108,6 +123,7 @@ export class Agent {
     this.userRequestedMode = opts.userRequestedMode;
     this.sessionApprovals = initSession();
     const modeDef = opts.modeRegistry.get(this.currentMode);
+    this.applyModeModelOverride(modeDef);
     const modeRole = modeDef?.roleDefinition ?? "";
     const fullPrompt = modeRole ? `${modeRole}\n\n---\n\n${opts.systemPrompt}` : opts.systemPrompt;
     if (fullPrompt) {
@@ -120,8 +136,19 @@ export class Agent {
   private getCurrentModel(): ModelDescriptor | undefined {
     return this.opts.modelOverride ?? this.registry.getCurrent();
   }
+  getModel(): ModelDescriptor | undefined {
+    return this.getCurrentModel();
+  }
+  setModelOverride(model: ModelDescriptor | undefined): void {
+    this.opts.modelOverride = model;
+  }
   private resolveProviderProxy(): string | undefined {
     return this.opts.proxyProvider || this.opts.proxyUrl;
+  }
+  private applyModeModelOverride(modeDef: import("../modes/index.js").Mode | undefined): void {
+    if (!modeDef?.model) return;
+    const found = this.registry.list().find((m) => m.id === modeDef.model);
+    if (found) this.opts.modelOverride = found;
   }
   getCurrentMode(): string { return this.currentMode; }
   getModeRegistry(): ModeRegistry { return this.opts.modeRegistry; }
@@ -130,15 +157,50 @@ export class Agent {
   getTodo() { return this.todoItems.slice(); }
   getUsage() { return this.usageByModel; }
   getHandoffs() { return this.handoffs.slice(); }
-  snapshot(): { messages: ChatMessage[]; steps: ProcessStep[]; mode: string; todoItems: TodoItem[] } {
-    return { messages: this.messages.slice(), steps: this.steps.slice(), mode: this.currentMode, todoItems: this.todoItems.slice() };
+  injectSystemNote(text: string): void {
+    if (!text) return;
+    const m: ChatMessage = { id: randomUUID(), role: "system", content: text, ts: Date.now() };
+    this.messages.push(m);
+    this.sink.message(m);
   }
-  async restore(snapshot: { messages: ChatMessage[]; steps?: ProcessStep[]; mode?: string; todoItems?: TodoItem[] }): Promise<void> {
+  snapshot(): { messages: ChatMessage[]; steps: ProcessStep[]; mode: string; todoItems: TodoItem[]; browserTabs?: { url: string }[]; backgroundProcesses?: { command: string }[] } {
+    const backgroundProcesses = this.opts.getBackgroundProcesses?.().map((p) => ({ command: p.command }));
+    return {
+      messages: this.messages.slice(),
+      steps: this.steps.slice(),
+      mode: this.currentMode,
+      todoItems: this.todoItems.slice(),
+      ...(backgroundProcesses?.length ? { backgroundProcesses } : {}),
+    };
+  }
+  async snapshotWithBrowser(): Promise<{ messages: ChatMessage[]; steps: ProcessStep[]; mode: string; todoItems: TodoItem[]; browserTabs?: { url: string }[]; backgroundProcesses?: { command: string }[] }> {
+    const base = this.snapshot();
+    if (!this.opts.getBrowserTabs) return base;
+    try {
+      const tabs = await this.opts.getBrowserTabs();
+      const browserTabs = tabs.filter((t) => t.url && t.url !== "about:blank").map((t) => ({ url: t.url }));
+      return browserTabs.length ? { ...base, browserTabs } : base;
+    } catch {
+      return base;
+    }
+  }
+  async restore(snapshot: { messages: ChatMessage[]; steps?: ProcessStep[]; mode?: string; todoItems?: TodoItem[]; browserTabs?: { url: string }[]; backgroundProcesses?: { command: string }[] }): Promise<void> {
     this.messages = snapshot.messages;
     this.steps = snapshot.steps ?? [];
     this.currentMode = snapshot.mode ?? "code";
     this.todoItems = snapshot.todoItems ?? [];
     this.sessionStarted = true;
+    if (snapshot.backgroundProcesses?.length) {
+      const list = snapshot.backgroundProcesses.map((p) => `- ${p.command}`).join("\n");
+      const note = `The following background process(es) were running before the editor restarted and were NOT resumed (they terminate when the extension host stops):\n${list}\nRestart them with shell.backgroundRun if the task still needs them.`;
+      this.messages.push({ id: randomUUID(), role: "system", content: note, ts: Date.now() });
+    }
+    if (snapshot.browserTabs?.length && this.opts.restoreBrowserTabs) {
+      try {
+        await this.opts.restoreBrowserTabs(snapshot.browserTabs);
+      } catch {
+      }
+    }
   }
   toggleAutoApprove(): boolean {
     this.sessionApprovals.autoApproveAll = !this.sessionApprovals.autoApproveAll;
@@ -153,6 +215,7 @@ export class Agent {
     if (!modeDef) return `Unknown mode '${slug}'`;
     this.currentMode = slug;
     this.userRequestedMode = slug;
+    this.applyModeModelOverride(modeDef);
     const output = `Switched to '${slug}' mode.\n\n${modeDef.roleDefinition}`;
     this.messages.push({ id: randomUUID(), role: "system", content: output, ts: Date.now() });
     return output;
@@ -183,6 +246,7 @@ export class Agent {
   }
   async send(text: string, attachments?: { uri: string; preview?: string }[], images?: string[]): Promise<void> {
     if (this.active) throw new Error("Agent is already running");
+    this.verifyAttempts = 0;
     if (!this.sessionStarted) {
       this.sessionStarted = true;
       runHooks({
@@ -867,6 +931,7 @@ export class Agent {
       const oldMode = this.currentMode;
       this.currentMode = slug;
       this.userRequestedMode = slug;
+      this.applyModeModelOverride(targetMode);
       this.pushTimeline({ type: "mode_switch", turnId, from: oldMode, to: slug, ts: Date.now() });
       const output = `Switched from '${oldMode}' to '${slug}' mode.\n\n## ${slug} mode\n\n${targetMode.roleDefinition}`;
       this.appendToolOutput(tc.id, `Switched to ${slug} mode.`, true);
@@ -999,7 +1064,7 @@ export class Agent {
         this.pushTimeline({ type: "checkpoint_snapshot", turnId, fileCount: filesToSnapshot.length || 1, ts: Date.now() });
 } catch {  }
     }
-    if (tc.name === "file.edit" || tc.name === "file.write") {
+    if (WRITE_TOOLS.has(tc.name)) {
       const writeFilePath = String(tc.args.path);
       if (modeDef?.writeGlob) {
         const check = checkWriteGlob(writeFilePath, modeDef.writeGlob);
@@ -1032,7 +1097,11 @@ export class Agent {
         }
       }
     }
+<<<<<<< HEAD
     const hookTools = new Set(["shell.run", "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage", "web.fetch", "web.search", "mcp.call", "file.edit", "file.write", "file.read", "subagent.spawn", "handoff"]);
+=======
+    const hookTools = new Set(["shell.run", "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage", "web.fetch", "web.search", "mcp.call", "file.edit", "file.write", "file.read", "subagent.spawn", "handoff", "notebook.editCell", "notebook.addCell", "notebook.deleteCell", "notebook.execute"]);
+>>>>>>> dev
     if (hookTools.has(tc.name)) {
       const decisions = await runHooks({
         event: "pre.tool",
@@ -1116,7 +1185,11 @@ export class Agent {
         }
       }
     });
-    if (result.touchedFiles && result.touchedFiles.length && this.opts.toolContext.summaryForFiles) {
+    if (result.touchedFiles && result.touchedFiles.length && this.opts.fileContextTracker) {
+      const kind = isEditOrWrite ? "edit" : "read";
+      for (const f of result.touchedFiles) this.opts.fileContextTracker.touch(f, kind);
+    }
+    if (result.touchedFiles && result.touchedFiles.length && isEditOrWrite && this.opts.toolContext.summaryForFiles) {
       const summary = await this.opts.toolContext.summaryForFiles(result.touchedFiles);
       if (summary.text) {
         const fbId = `lsp-fb-${randomUUID()}`;
@@ -1128,6 +1201,28 @@ export class Agent {
           toolCallId: tc.id,
           ts: Date.now(),
         });
+      }
+    }
+    if (result.ok && result.touchedFiles && result.touchedFiles.length && isEditOrWrite) {
+      const verifyMode = this.opts.verifyMode ?? "default";
+      const verifyConfig = verifyMode === "none" ? undefined : await this.getVerifyConfig();
+      if (verifyConfig && verifyConfig.commands.length) {
+        const maxRetries = verifyMode === "custom" && this.opts.verifyMaxRetries != null ? this.opts.verifyMaxRetries : verifyConfig.maxRetries;
+        const verifyResult = await runVerification(this.opts.workspaceRoot, verifyConfig, result.touchedFiles);
+        if (!verifyResult.ok) {
+          this.verifyAttempts++;
+          const failing = verifyResult.results.filter((r) => !r.ok);
+          const report = failing.map((r) => `[${r.name}] FAILED\n${r.output}`).join("\n\n");
+          const exhausted = this.verifyAttempts >= maxRetries;
+          const note = exhausted
+            ? `Verification failed after ${this.verifyAttempts} attempt(s) (max ${maxRetries}). Stop retrying automatically and report the remaining failures to the user:\n\n${report}`
+            : `Post-edit verification failed (attempt ${this.verifyAttempts}/${maxRetries}). Fix the issues below before continuing:\n\n${report}`;
+          const vfId = `verify-fb-${randomUUID()}`;
+          this.openStep({ id: vfId, type: "tool", title: exhausted ? "Verification failed (retries exhausted)" : "Verification failed", output: note });
+          this.messages.push({ id: randomUUID(), role: "tool", content: note, toolCallId: tc.id, ts: Date.now() });
+        } else {
+          this.verifyAttempts = 0;
+        }
       }
     }
   }
@@ -1371,6 +1466,12 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
       case "browser.hover": return `Failed to hover ${clip(String(args.selector ?? ""))}`;
       case "browser.scroll": return `Failed to scroll ${args.selector ? "to " + String(args.selector) : ""}`;
       case "browser.waitFor": return `Wait failed for ${args.selector ?? args.url ?? args.state ?? "condition"}`;
+      case "browser.newTab": return `Failed to open new tab${args.url ? " for " + clip(String(args.url)) : ""}`;
+      case "browser.switchTab": return `Failed to switch to tab ${args.tabId ?? ""}`;
+      case "browser.closeTab": return `Failed to close tab ${args.tabId ?? ""}`;
+      case "browser.listTabs": return "Failed to list browser tabs";
+      case "browser.intercept": return `Failed to intercept ${clip(String(args.pattern ?? ""))}`;
+      case "browser.unintercept": return `Failed to remove interception for ${clip(String(args.pattern ?? ""))}`;
       case "mcp.call": return `Failed MCP ${args.server ?? ""}/${args.tool ?? ""}`;
       case "mcp.create": return `Failed to register MCP server ${args.name ?? ""}`;
       case "mcp.remove": return `Failed to remove MCP server ${args.name ?? ""}`;
@@ -1407,6 +1508,11 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
       case "browser.domSnapshot": return "Failed to read browser snapshot";
       case "test.run": return "Tests failed";
       case "session.exportTrace": return "Failed to export trace";
+      case "notebook.read": return `Failed to read notebook ${path}`;
+      case "notebook.editCell": return `Failed to edit cell ${args.cellIndex ?? ""} in ${path}`;
+      case "notebook.addCell": return `Failed to add cell to ${path}`;
+      case "notebook.deleteCell": return `Failed to delete cell ${args.cellIndex ?? ""} from ${path}`;
+      case "notebook.execute": return `Failed to execute cell ${args.cellIndex ?? ""} in ${path}`;
       default: return `Failed: ${name}`;
     }
   }
@@ -1445,6 +1551,12 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
     case "browser.hover": return `Hovered ${clip(String(args.selector ?? ""))}`;
     case "browser.scroll": return `Scrolled ${args.selector ? "to " + String(args.selector) : ""}`;
     case "browser.waitFor": return `Waited for ${args.selector ?? args.url ?? args.state ?? "condition"}`;
+    case "browser.newTab": return `Opened new tab${args.url ? " for " + clip(String(args.url)) : ""}`;
+    case "browser.switchTab": return `Switched to tab ${args.tabId ?? ""}`;
+    case "browser.closeTab": return `Closed tab ${args.tabId ?? ""}`;
+    case "browser.listTabs": return "Listed browser tabs";
+    case "browser.intercept": return `Intercepting ${clip(String(args.pattern ?? ""))}`;
+    case "browser.unintercept": return `Stopped intercepting ${clip(String(args.pattern ?? ""))}`;
     case "mcp.call": return `Called ${args.server ?? ""}/${args.tool ?? ""}`;
     case "mcp.create": return `Registered MCP server ${args.name ?? ""}`;
     case "mcp.remove": return `Removed MCP server ${args.name ?? ""}`;
@@ -1483,13 +1595,22 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
     case "browser.domSnapshot": return "Read browser snapshot";
     case "test.run": return `Ran tests${args.scope ? " (" + String(args.scope) + ")" : ""}`;
     case "session.exportTrace": return "Exported session trace";
+    case "notebook.read": return args.cellIndex !== undefined ? `Read cell ${args.cellIndex} of ${cleanFilePath(path)}` : `Read notebook ${cleanFilePath(path)}`;
+    case "notebook.editCell": return `Edited cell ${args.cellIndex ?? ""} in ${cleanFilePath(path)}`;
+    case "notebook.addCell": return `Added a cell to ${cleanFilePath(path)}`;
+    case "notebook.deleteCell": return `Deleted cell ${args.cellIndex ?? ""} from ${cleanFilePath(path)}`;
+    case "notebook.execute": return `Executed cell ${args.cellIndex ?? ""} in ${cleanFilePath(path)}`;
     default: return name;
   }
 }
 const READ_TOOLS = new Set(["file.read", "file.grep", "file.glob", "file.semanticSearch"]);
-const WRITE_TOOLS = new Set(["file.edit", "file.write"]);
+const WRITE_TOOLS = new Set(["file.edit", "file.write", "notebook.editCell", "notebook.addCell", "notebook.deleteCell"]);
 const SHELL_TOOLS = new Set(["shell.run", "shell.backgroundRun", "shell.check", "shell.write", "shell.customRun", "shell.editCustomRun", "shell.runCustomRun"]);
+<<<<<<< HEAD
 const BROWSER_TOOLS = new Set(["browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor", "browser.console", "browser.network", "browser.domSnapshot", "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage"]);
+=======
+const BROWSER_TOOLS = new Set(["browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor", "browser.console", "browser.network", "browser.domSnapshot", "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage", "browser.newTab", "browser.switchTab", "browser.closeTab", "browser.listTabs", "browser.intercept", "browser.unintercept"]);
+>>>>>>> dev
 const MCP_TOOLS = new Set(["mcp.call", "mcp.create", "mcp.remove", "mcp.toggle", "mcp.resources/list", "mcp.resources/read", "mcp.prompts/list", "mcp.prompts/get"]);
 const GIT_TOOLS = new Set(["git.diffStaged", "git.diffUnstaged", "git.changedFiles", "git.branchDiff", "git.commitMessage"]);
 function categoryForTool(name: string): string | undefined {
@@ -1532,6 +1653,12 @@ function prettyToolSummary(name: string, args: Record<string, unknown>): string 
     case "browser.runCode": return "Run Playwright code";
     case "browser.readPage": return "Read page content";
     case "browser.close": return "Close browser";
+    case "browser.newTab": return `Open new tab${args.url ? " for " + clip(String(args.url)) : ""}`;
+    case "browser.switchTab": return `Switch to tab ${args.tabId ?? ""}`;
+    case "browser.closeTab": return `Close tab ${args.tabId ?? ""}`;
+    case "browser.listTabs": return "List browser tabs";
+    case "browser.intercept": return `Intercept ${clip(String(args.pattern ?? ""))}`;
+    case "browser.unintercept": return `Stop intercepting ${clip(String(args.pattern ?? ""))}`;
     case "web.fetch": return `Fetch ${clip(String(args.url ?? ""))}`;
     case "web.search": return `Search for ${clip(String(args.query ?? ""), 40)}`;
     case "mcp.call": return `MCP ${args.server ?? ""}/${args.tool ?? ""}`;
@@ -1547,6 +1674,11 @@ function prettyToolSummary(name: string, args: Record<string, unknown>): string 
     case "browser.network": return "Browser network";
     case "browser.domSnapshot": return "Browser snapshot";
     case "test.run": return "Run tests";
+    case "notebook.read": return args.cellIndex !== undefined ? `Read notebook cell ${args.cellIndex}` : "List notebook cells";
+    case "notebook.editCell": return `Edit notebook cell ${args.cellIndex ?? ""}`;
+    case "notebook.addCell": return "Add notebook cell";
+    case "notebook.deleteCell": return `Delete notebook cell ${args.cellIndex ?? ""}`;
+    case "notebook.execute": return `Execute notebook cell ${args.cellIndex ?? ""}`;
     default: return name;
   }
 }

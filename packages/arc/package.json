@@ -1,8 +1,13 @@
 {
   "name": "arc-code",
   "displayName": "Arc",
+<<<<<<< HEAD
   "description": "0.23 MB agentic coding assistant. 150+ providers with tiered model routing, failover, and multi-model subagents.",
   "version": "0.4.13",
+=======
+  "description": "0.24 MB agentic coding assistant. 150+ providers with tiered model routing, failover, and multi-model subagents.",
+  "version": "0.5.0",
+>>>>>>> dev
   "publisher": "khrotu",
   "license": "Apache-2.0",
   "repository": {
@@ -54,6 +59,7 @@
     "color": "#0d1117",
     "theme": "dark"
   },
+<<<<<<< HEAD
   "activationEvents": [
     "onStartupFinished",
     "onView:arc-sidebar",
@@ -69,6 +75,17 @@
     "onCommand:arc.manageMcp",
     "onCommand:arc.managePrompts",
     "onCommand:arc.openPlayground"
+=======
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.css",
+    "assets/arc-logo-mono.png",
+    "assets/arc-logo-mono.svg",
+    "assets/arc-logo-pride.svg",
+    "assets/arc-logo-mono-text.svg",
+    "LICENSE*",
+    "package.json"
+>>>>>>> dev
   ],
   "contributes": {
     "viewsContainers": {
@@ -161,9 +178,58 @@
         "category": "Arc"
       },
       {
+<<<<<<< HEAD
         "command": "arc.openPlayground",
         "title": "Open Component Playground",
         "category": "Arc"
+=======
+        "command": "arc.auditLog.export",
+        "title": "Export Audit Log",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.auditLog.verify",
+        "title": "Verify Audit Log",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.openPlayground",
+        "title": "Open Component Playground",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.explainSelection",
+        "title": "Explain with Arc",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.fixSelection",
+        "title": "Fix with Arc",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.inlineChat",
+        "title": "Inline Chat",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.inlineChat.submit",
+        "title": "Send to Arc",
+        "category": "Arc",
+        "enablement": "!commentIsEmpty"
+      },
+      {
+        "command": "arc.inlineChat.cancel",
+        "title": "Discard",
+        "category": "Arc",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "arc.inlineChat.pickModel",
+        "title": "Switch Model",
+        "category": "Arc",
+        "icon": "$(arrow-swap)"
+>>>>>>> dev
       }
     ],
     "menus": {
@@ -211,6 +277,62 @@
         {
           "command": "arc.managePrompts",
           "when": "true"
+<<<<<<< HEAD
+=======
+        },
+        {
+          "command": "arc.auditLog.export",
+          "when": "true"
+        },
+        {
+          "command": "arc.auditLog.verify",
+          "when": "true"
+        },
+        {
+          "command": "arc.explainSelection",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "arc.fixSelection",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "arc.inlineChat",
+          "when": "editorTextFocus"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "arc.explainSelection",
+          "when": "editorHasSelection",
+          "group": "arc@1"
+        },
+        {
+          "command": "arc.fixSelection",
+          "when": "editorHasSelection",
+          "group": "arc@2"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "arc.inlineChat.submit",
+          "group": "inline",
+          "when": "commentController == arc.inlineChat"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "arc.inlineChat.cancel",
+          "group": "navigation",
+          "when": "commentController == arc.inlineChat"
+        }
+      ],
+      "comments/comment/title": [
+        {
+          "command": "arc.inlineChat.pickModel",
+          "group": "navigation",
+          "when": "commentController == arc.inlineChat && comment == arcModelHeader"
+>>>>>>> dev
         }
       ]
     },
@@ -234,6 +356,15 @@
         "command": "arc.newTask",
         "key": "ctrl+shift+n",
         "mac": "cmd+shift+n"
+<<<<<<< HEAD
+=======
+      },
+      {
+        "command": "arc.inlineChat",
+        "key": "ctrl+l",
+        "mac": "cmd+l",
+        "when": "editorTextFocus"
+>>>>>>> dev
       }
     ],
     "configuration": {
@@ -346,6 +477,27 @@
           "default": 0.15,
           "description": "Safety margin reserved for model output (fraction of window)."
         },
+        "arc.verify.mode": {
+          "type": "string",
+          "enum": [
+            "none",
+            "default",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "Never run post-edit verification commands, even if .arc/verify.toml defines them.",
+            "Use the retry count defined in .arc/verify.toml (falls back to 3 if unset).",
+            "Override the retry count with arc.verify.customMaxRetries."
+          ],
+          "default": "default",
+          "description": "Controls how post-edit verification (running configured verify commands after file edits) retries on failure."
+        },
+        "arc.verify.customMaxRetries": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "description": "Number of retry attempts for post-edit verification when arc.verify.mode is 'custom'."
+        },
         "arc.search.enabled": {
           "type": "boolean",
           "default": true,
@@ -374,6 +526,21 @@
           "type": "string",
           "default": "http://127.0.0.1:11434",
           "description": "Ollama base URL for the semantic embedding backend."
+        },
+        "arc.indexing.autoWatch": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically keep the semantic search index up to date using a filesystem watcher (with a polling fallback) after the initial index build. Disable to opt out (equivalent to --no-watch)."
+        },
+        "arc.search.autoReindex": {
+          "type": "string",
+          "enum": [
+            "off",
+            "hourly",
+            "daily"
+          ],
+          "default": "off",
+          "description": "Periodically trigger a full workspace reindex on a schedule, in addition to the live IndexWatcher. 'off' disables scheduled reindexing."
         },
         "arc.titleGeneration.method": {
           "type": "string",

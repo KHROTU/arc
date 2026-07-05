@@ -7,6 +7,7 @@ import { getSkillsDir } from "../arc-dir.js";
 import { runPreWriteHooks, runPostEditHooks } from "../hooks/hooks.js";
 import { getSandboxArgs } from "../sandbox/sandbox.js";
 import { makeProxyDispatcher } from "../util/proxy.js";
+import { parseNotebook, serializeNotebook, listCells, readCell, editCellSource, addCell, deleteCell } from "../notebook/notebook.js";
 import type { SandboxProfile } from "../sandbox/sandbox.js";
 import type { DiffHunk } from "../protocol/process.js";
 const pexec = promisify(exec);
@@ -23,10 +24,17 @@ async function resolveBrowser(src: BrowserSource | undefined): Promise<BrowserAd
   if (!src) return undefined;
   return typeof src === "function" ? await src() : src;
 }
-interface BgProcess { proc: ChildProcess; stdout: string; stderr: string; exited: boolean; exitCode: number | undefined; }
+interface BgProcess { proc: ChildProcess; command: string; stdout: string; stderr: string; exited: boolean; exitCode: number | undefined; }
 const bgProcesses = new Map<string, BgProcess>();
 let bgIds = 0;
 const activeProcesses = new Set<ChildProcess>();
+export function listBackgroundProcesses(): { id: string; command: string; exited: boolean }[] {
+  const out: { id: string; command: string; exited: boolean }[] = [];
+  for (const [id, bg] of bgProcesses) {
+    if (!bg.exited) out.push({ id, command: bg.command, exited: bg.exited });
+  }
+  return out;
+}
 export function killActiveProcesses(): { count: number; pids: number[] } {
   const pids: number[] = [];
   let count = 0;
@@ -96,6 +104,7 @@ async function runSingleCommand(
 import type { ApprovalsConfig, SessionApprovals, ApproveShellMeta } from "../approvals/index.js";
 import type { SkillRegistry } from "../skills/index.js";
 import type { RuleRegistry } from "../rules/index.js";
+import type { FileContextTracker } from "../context/tracker.js";
 export interface ToolContext {
   root: string;
   approvalsConfig: ApprovalsConfig;
@@ -120,6 +129,11 @@ export interface ToolContext {
   proxyShell?: string;
   semanticSearch?: (query: string, k?: number) => Promise<{ file: string; start: number; end: number; score: number; snippet: string }[]>;
   describeImage?: (dataUrl: string) => Promise<string>;
+<<<<<<< HEAD
+=======
+  fileContextTracker?: FileContextTracker;
+  executeNotebookCell?: (path: string, cellIndex: number) => Promise<{ ok: boolean; output: string; images?: string[] }>;
+>>>>>>> dev
 }
 export interface ToolResult {
   ok: boolean;
@@ -163,12 +177,20 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
           const sizeLabel = buf.length < 1024 ? `${buf.length}B` : `${(buf.length / 1024).toFixed(1)}KB`;
           if (ctx.describeImage) {
             const description = await ctx.describeImage(base64);
+<<<<<<< HEAD
             return { ok: true, output: `Read image: ${filePath.split(/[/\\]/).pop()} (${mime}, ${sizeLabel})\n${description}`, filePath };
+=======
+            return { ok: true, output: `Read image: ${filePath.split(/[/\\]/).pop()} (${mime}, ${sizeLabel})\n${description}`, filePath, touchedFiles: [filePath] };
+>>>>>>> dev
           }
           return {
             ok: true,
             output: `Read image: ${filePath.split(/[/\\]/).pop()} (${mime}, ${sizeLabel})`,
             filePath,
+<<<<<<< HEAD
+=======
+            touchedFiles: [filePath],
+>>>>>>> dev
             images: [{ type: "image_url", image_url: { url: dataUrl } }],
           };
         } catch (e) {
@@ -178,7 +200,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const offset = args.offset ? Number(args.offset) : undefined;
       const limit = args.limit ? Number(args.limit) : undefined;
       const body = await ed.read(String(args.path), { offset, limit });
-      return { ok: true, output: body, filePath: String(args.path) };
+      return { ok: true, output: body, filePath: String(args.path), touchedFiles: [String(args.path)] };
     },
   },
   "file.edit": {
@@ -309,7 +331,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
         const proxyEnv = shellEnv(ctx.proxyShell || ctx.proxyUrl);
         const proc = spawn(cmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...(proxyEnv ? { env: { ...process.env, ...proxyEnv } } : {}) });
         activeProcesses.add(proc);
-        const bg: BgProcess = { proc, stdout: "", stderr: "", exited: false, exitCode: undefined };
+        const bg: BgProcess = { proc, command: cmd, stdout: "", stderr: "", exited: false, exitCode: undefined };
         const id = String(bgIds++);
         bgProcesses.set(id, bg);
         const onChunk = ctx.onChunk;
@@ -503,13 +525,28 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       return { ok: true, output: `Todo list updated (${items.length} items).`, todoState: { items } };
     },
   },
+<<<<<<< HEAD
   "browser.navigate": { description: "Navigate the browser. Args: { url }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.navigate(String(a.url)) : { ok: false, output: "Browser not available." }; } },
   "browser.click": { description: "Click a selector. Args: { selector }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.click(String(a.selector)) : { ok: false, output: "Browser not available." }; } },
   "browser.type": { description: "Type into a selector. Args: { selector, text }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.type(String(a.selector), String(a.text)) : { ok: false, output: "Browser not available." }; } },
   "browser.screenshot": { description: "Take a screenshot. Args: { path?, fullPage?, type? }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.screenshot(a.path ? String(a.path) : undefined, !!a.fullPage, (a.type === "jpeg" ? "jpeg" : "png")) : { ok: false, output: "Browser not available." }; } },
   "browser.evaluate": { description: "Run JS in the page. Args: { script }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.evaluate(String(a.script)) : { ok: false, output: "Browser not available." }; } },
   "browser.readDom": { description: "Read the page's accessibility tree. Args: {} ", fn: async (_a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.readDom() : { ok: false, output: "Browser not available." }; } },
+=======
+  "browser.navigate": { description: "Navigate the browser. Args: { url, tabId? }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.navigate(String(a.url), a.tabId ? String(a.tabId) : undefined) : { ok: false, output: "Browser not available." }; } },
+  "browser.click": { description: "Click a selector. Args: { selector, tabId? }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.click(String(a.selector), a.tabId ? String(a.tabId) : undefined) : { ok: false, output: "Browser not available." }; } },
+  "browser.type": { description: "Type into a selector. Args: { selector, text, tabId? }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.type(String(a.selector), String(a.text), a.tabId ? String(a.tabId) : undefined) : { ok: false, output: "Browser not available." }; } },
+  "browser.screenshot": { description: "Take a screenshot. Args: { path?, fullPage?, type?, tabId? }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.screenshot(a.path ? String(a.path) : undefined, !!a.fullPage, (a.type === "jpeg" ? "jpeg" : "png"), a.tabId ? String(a.tabId) : undefined) : { ok: false, output: "Browser not available." }; } },
+  "browser.evaluate": { description: "Run JS in the page. Args: { script, tabId? }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.evaluate(String(a.script), a.tabId ? String(a.tabId) : undefined) : { ok: false, output: "Browser not available." }; } },
+  "browser.readDom": { description: "Read the page's accessibility tree. Args: { tabId? }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.readDom(a.tabId ? String(a.tabId) : undefined) : { ok: false, output: "Browser not available." }; } },
+>>>>>>> dev
   "browser.close": { description: "Close the browser. Args: {}", fn: async (_a, ctx) => { const b = await resolveBrowser(ctx.browser); if (b) await b.close(); return { ok: true, output: "Browser closed." }; } },
+  "browser.newTab": { description: "Open a new browser tab, optionally navigating to a URL. Args: { url? }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.newTab(a.url ? String(a.url) : undefined) : { ok: false, output: "Browser not available." }; } },
+  "browser.switchTab": { description: "Switch the active tab used by browser tools that omit tabId. Args: { tabId }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.switchTab(String(a.tabId ?? "")) : { ok: false, output: "Browser not available." }; } },
+  "browser.closeTab": { description: "Close a browser tab. Args: { tabId }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.closeTab(String(a.tabId ?? "")) : { ok: false, output: "Browser not available." }; } },
+  "browser.listTabs": { description: "List open browser tabs. Args: {}", fn: async (_a, ctx) => { const b = await resolveBrowser(ctx.browser); return b ? b.listTabs() : { ok: false, output: "Browser not available." }; } },
+  "browser.intercept": { description: "Intercept requests matching a URL glob pattern. Args: { pattern, status?, body?, contentType?, block? }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); if (!b) return { ok: false, output: "Browser not available." }; const pattern = String(a.pattern ?? ""); if (!pattern) return { ok: false, output: "No pattern provided." }; return b.intercept(pattern, { status: a.status ? Number(a.status) : undefined, body: a.body ? String(a.body) : undefined, contentType: a.contentType ? String(a.contentType) : undefined, block: !!a.block }); } },
+  "browser.unintercept": { description: "Stop intercepting a previously registered pattern. Args: { pattern }", fn: async (a, ctx) => { const b = await resolveBrowser(ctx.browser); if (!b) return { ok: false, output: "Browser not available." }; return b.unintercept(String(a.pattern ?? "")); } },
   "web.fetch": {
     description: "Fetch raw text content from a web URL. Args: { url }",
     fn: async (args, ctx) => {
@@ -808,23 +845,23 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     },
   },
   "browser.hover": {
-    description: "Hover over an element matching a CSS selector.",
+    description: "Hover over an element matching a CSS selector. Args: { selector, tabId? }",
     fn: async (args, ctx) => {
       const b = await resolveBrowser(ctx.browser);
       if (!b) return { ok: false, output: "Browser not available." };
-      return b.hover(String(args.selector ?? ""));
+      return b.hover(String(args.selector ?? ""), args.tabId ? String(args.tabId) : undefined);
     },
   },
   "browser.scroll": {
-    description: "Scroll the page by pixel offset or to a selector.",
+    description: "Scroll the page by pixel offset or to a selector. Args: { pixels?, selector?, tabId? }",
     fn: async (args, ctx) => {
       const b = await resolveBrowser(ctx.browser);
       if (!b) return { ok: false, output: "Browser not available." };
-      return b.scroll(args.pixels ? Number(args.pixels) : undefined, args.selector ? String(args.selector) : undefined);
+      return b.scroll(args.pixels ? Number(args.pixels) : undefined, args.selector ? String(args.selector) : undefined, args.tabId ? String(args.tabId) : undefined);
     },
   },
   "browser.waitFor": {
-    description: "Wait for a selector, URL change, or network idle.",
+    description: "Wait for a selector, URL change, or network idle. Args: { selector?, url?, state?, tabId? }",
     fn: async (args, ctx) => {
       const b = await resolveBrowser(ctx.browser);
       if (!b) return { ok: false, output: "Browser not available." };
@@ -832,33 +869,192 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
         args.selector ? String(args.selector) : undefined,
         args.url ? String(args.url) : undefined,
         args.state ? String(args.state) as "networkidle" | "load" | "domcontentloaded" : undefined,
+        args.tabId ? String(args.tabId) : undefined,
       );
     },
   },
   "browser.console": {
-    description: "Read the browser's console log (last 50 entries). Args: {}",
-    fn: async (_args, ctx) => {
+    description: "Read the browser's console log (last 50 entries). Args: { tabId? }",
+    fn: async (args, ctx) => {
       const b = await resolveBrowser(ctx.browser);
       if (!b) return { ok: false, output: "Browser not available." };
-      const logs = b.consoleLog();
+      const logs = b.consoleLog(args.tabId ? String(args.tabId) : undefined);
       return { ok: true, output: logs.length ? logs.join("\n") : "(no console output)" };
     },
   },
   "browser.network": {
-    description: "Read the browser's network request log (last 50 entries). Args: {}",
-    fn: async (_args, ctx) => {
+    description: "Read the browser's network request log (last 50 entries). Args: { tabId? }",
+    fn: async (args, ctx) => {
       const b = await resolveBrowser(ctx.browser);
       if (!b) return { ok: false, output: "Browser not available." };
-      const logs = b.networkLog();
+      const logs = b.networkLog(args.tabId ? String(args.tabId) : undefined);
       return { ok: true, output: logs.length ? logs.join("\n") : "(no network requests)" };
     },
   },
   "browser.domSnapshot": {
-    description: "Get a combined snapshot of the browser's DOM state, console log, and network log. Args: {}",
-    fn: async (_args, ctx) => {
+    description: "Get a combined snapshot of the browser's DOM state, console log, and network log. Args: { tabId? }",
+    fn: async (args, ctx) => {
       const b = await resolveBrowser(ctx.browser);
       if (!b) return { ok: false, output: "Browser not available." };
-      return { ok: true, output: b.domSnapshot() || "(empty snapshot)" };
+      return { ok: true, output: b.domSnapshot(args.tabId ? String(args.tabId) : undefined) || "(empty snapshot)" };
+    },
+  },
+  "browser.drag": {
+    description: "Drag an element onto another element. Args: { from, to, tabId? }",
+    fn: async (a, ctx) => {
+      const b = await resolveBrowser(ctx.browser);
+      return b ? b.drag(String(a.from), String(a.to), a.tabId ? String(a.tabId) : undefined) : { ok: false, output: "Browser not available." };
+    },
+  },
+  "browser.dialog": {
+    description: "Set how the next browser dialog (alert/confirm/prompt) is handled. Args: { accept, promptText? }",
+    fn: async (a, ctx) => {
+      const b = await resolveBrowser(ctx.browser);
+      return b ? b.dialog(a.accept !== false, a.promptText ? String(a.promptText) : undefined) : { ok: false, output: "Browser not available." };
+    },
+  },
+  "browser.runCode": {
+    description: "Run a Playwright code snippet against the page. The code receives the `page` object. Args: { code, tabId? }",
+    fn: async (a, ctx) => {
+      const b = await resolveBrowser(ctx.browser);
+      return b ? b.runCode(String(a.code), a.tabId ? String(a.tabId) : undefined) : { ok: false, output: "Browser not available." };
+    },
+  },
+  "browser.readPage": {
+    description: "Read the plain text content of the current page. Args: { tabId? }",
+    fn: async (a, ctx) => {
+      const b = await resolveBrowser(ctx.browser);
+      return b ? b.readPage(a.tabId ? String(a.tabId) : undefined) : { ok: false, output: "Browser not available." };
+    },
+  },
+  "notebook.read": {
+    description: "Read a Jupyter notebook (.ipynb). Without cellIndex, lists every cell (index, type, source preview, whether it has output). With cellIndex, returns that cell's full source and (for code cells) its text/image output.",
+    fn: async (args, ctx) => {
+      const filePath = String(args.path);
+      const ed = new FileEditor(ctx.root);
+      let raw: string;
+      try {
+        raw = await ed.read(filePath);
+      } catch (e: unknown) {
+        return { ok: false, output: `Failed to read ${filePath}: ${(e as Error).message}` };
+      }
+      let doc;
+      try {
+        doc = parseNotebook(raw);
+      } catch (e: unknown) {
+        return { ok: false, output: (e as Error).message };
+      }
+      const cellIndex = args.cellIndex !== undefined ? Number(args.cellIndex) : undefined;
+      if (cellIndex === undefined) {
+        const cells = listCells(doc);
+        if (!cells.length) return { ok: true, output: "(empty notebook)" };
+        const out = cells.map((c) => `[${c.index}] (${c.cellType}${c.hasOutput ? ", has output" : ""}) ${c.preview.replace(/\n/g, " ")}`).join("\n");
+        return { ok: true, output: out };
+      }
+      try {
+        const cell = readCell(doc, cellIndex);
+        const outputText = cell.output
+          ? `\n\n--- Output ---\n${cell.output.text || "(no text output)"}${cell.output.images.length ? `\n(${cell.output.images.length} image output(s); use notebook.execute to regenerate them)` : ""}`
+          : "";
+        return { ok: true, output: `[${cell.index}] (${cell.cellType})\n${cell.source}${outputText}` };
+      } catch (e: unknown) {
+        return { ok: false, output: (e as Error).message };
+      }
+    },
+  },
+  "notebook.editCell": {
+    description: "Replace the source of a cell in a Jupyter notebook by index. Args: { path, cellIndex, source }",
+    fn: async (args, ctx) => {
+      const filePath = String(args.path);
+      const cellIndex = Number(args.cellIndex);
+      const source = String(args.source ?? "");
+      const ed = new FileEditor(ctx.root);
+      let raw: string;
+      try {
+        raw = await ed.read(filePath);
+      } catch (e: unknown) {
+        return { ok: false, output: `Failed to read ${filePath}: ${(e as Error).message}` };
+      }
+      let doc;
+      try {
+        doc = parseNotebook(raw);
+      } catch (e: unknown) {
+        return { ok: false, output: (e as Error).message };
+      }
+      let updated;
+      try {
+        updated = editCellSource(doc, cellIndex, source);
+      } catch (e: unknown) {
+        return { ok: false, output: (e as Error).message };
+      }
+      const full = ed.resolve(filePath);
+      await fs.writeFile(full, serializeNotebook(updated), "utf-8");
+      return { ok: true, output: `Updated cell ${cellIndex} in ${filePath}`, touchedFiles: [filePath], filePath };
+    },
+  },
+  "notebook.addCell": {
+    description: "Insert a new cell into a Jupyter notebook at the given index (existing cells shift down). Args: { path, index, cellType, source }",
+    fn: async (args, ctx) => {
+      const filePath = String(args.path);
+      const index = Number(args.index);
+      const cellType = String(args.cellType ?? "code") as "code" | "markdown" | "raw";
+      const source = String(args.source ?? "");
+      const ed = new FileEditor(ctx.root);
+      let raw: string;
+      try {
+        raw = await ed.read(filePath);
+      } catch (e: unknown) {
+        return { ok: false, output: `Failed to read ${filePath}: ${(e as Error).message}` };
+      }
+      let doc;
+      try {
+        doc = parseNotebook(raw);
+      } catch (e: unknown) {
+        return { ok: false, output: (e as Error).message };
+      }
+      const updated = addCell(doc, index, cellType, source);
+      const full = ed.resolve(filePath);
+      await fs.writeFile(full, serializeNotebook(updated), "utf-8");
+      return { ok: true, output: `Inserted a new ${cellType} cell at index ${index} in ${filePath}`, touchedFiles: [filePath], filePath };
+    },
+  },
+  "notebook.deleteCell": {
+    description: "Delete a cell from a Jupyter notebook by index. Args: { path, cellIndex }",
+    fn: async (args, ctx) => {
+      const filePath = String(args.path);
+      const cellIndex = Number(args.cellIndex);
+      const ed = new FileEditor(ctx.root);
+      let raw: string;
+      try {
+        raw = await ed.read(filePath);
+      } catch (e: unknown) {
+        return { ok: false, output: `Failed to read ${filePath}: ${(e as Error).message}` };
+      }
+      let doc;
+      try {
+        doc = parseNotebook(raw);
+      } catch (e: unknown) {
+        return { ok: false, output: (e as Error).message };
+      }
+      let updated;
+      try {
+        updated = deleteCell(doc, cellIndex);
+      } catch (e: unknown) {
+        return { ok: false, output: (e as Error).message };
+      }
+      const full = ed.resolve(filePath);
+      await fs.writeFile(full, serializeNotebook(updated), "utf-8");
+      return { ok: true, output: `Deleted cell ${cellIndex} from ${filePath}`, touchedFiles: [filePath], filePath };
+    },
+  },
+  "notebook.execute": {
+    description: "Execute a code cell using the workspace's active Jupyter kernel and return its text/image output. Args: { path, cellIndex }",
+    fn: async (args, ctx) => {
+      if (!ctx.executeNotebookCell) return { ok: false, output: "Notebook execution is not available in this environment." };
+      const filePath = String(args.path);
+      const cellIndex = Number(args.cellIndex);
+      const r = await ctx.executeNotebookCell(filePath, cellIndex);
+      return { ok: r.ok, output: r.output, touchedFiles: r.ok ? [filePath] : [], filePath };
     },
   },
   "browser.drag": {

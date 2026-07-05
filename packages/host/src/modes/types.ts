@@ -5,5 +5,6 @@ export interface Mode {
   writeGlob?: string;
   description: string;
   whenToUse: string;
+  model?: string;
 }
 export type ModeSource = "builtin" | "workspace" | "global";
