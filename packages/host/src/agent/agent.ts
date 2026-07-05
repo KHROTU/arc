@@ -13,6 +13,7 @@ import { tools as builtinTools, type ToolContext, killActiveProcesses, checkWrit
 import { buildToolSpecs, isMcpToolSpec, parseMcpToolSpec } from "./tool-specs.js";
 import { SubagentRunner } from "./subagent.js";
 import { runHooks } from "../hooks/hooks.js";
+import { loadVerifyConfig, runVerification, type VerifyConfig } from "../verify/verify.js";
 import type { ModeRegistry } from "../modes/index.js";
 import { type ApprovalsConfig, type SessionApprovals, type ApproveShellMeta, DEFAULT_APPROVALS, initSession, resolveApproval } from "../approvals/index.js";
 import type { ChatMessage, ModelDescriptor, ToolCall, TurnUsage, ExecutionEvent } from "../protocol/protocol.js";
@@ -80,6 +81,12 @@ export class Agent {
   private mcpReverse: Map<string, { server: string; tool: string }> = new Map();
   private timeline: ExecutionEvent[] = [];
   private readonly TIMELINE_MAX = 2000;
+  private verifyAttempts = 0;
+  private verifyConfigPromise?: Promise<VerifyConfig | undefined>;
+  private getVerifyConfig(): Promise<VerifyConfig | undefined> {
+    if (!this.verifyConfigPromise) this.verifyConfigPromise = loadVerifyConfig(this.opts.workspaceRoot);
+    return this.verifyConfigPromise;
+  }
   private pushTimeline(ev: ExecutionEvent): void {
     this.timeline.push(ev);
     if (this.timeline.length > this.TIMELINE_MAX) {
@@ -190,6 +197,7 @@ export class Agent {
   }
   async send(text: string, attachments?: { uri: string; preview?: string }[], images?: string[]): Promise<void> {
     if (this.active) throw new Error("Agent is already running");
+    this.verifyAttempts = 0;
     if (!this.sessionStarted) {
       this.sessionStarted = true;
       runHooks({
@@ -1141,6 +1149,26 @@ export class Agent {
         });
       }
     }
+    if (result.ok && result.touchedFiles && result.touchedFiles.length && isEditOrWrite) {
+      const verifyConfig = await this.getVerifyConfig();
+      if (verifyConfig && verifyConfig.commands.length) {
+        const verifyResult = await runVerification(this.opts.workspaceRoot, verifyConfig, result.touchedFiles);
+        if (!verifyResult.ok) {
+          this.verifyAttempts++;
+          const failing = verifyResult.results.filter((r) => !r.ok);
+          const report = failing.map((r) => `[${r.name}] FAILED\n${r.output}`).join("\n\n");
+          const exhausted = this.verifyAttempts >= verifyConfig.maxRetries;
+          const note = exhausted
+            ? `Verification failed after ${this.verifyAttempts} attempt(s) (max ${verifyConfig.maxRetries}). Stop retrying automatically and report the remaining failures to the user:\n\n${report}`
+            : `Post-edit verification failed (attempt ${this.verifyAttempts}/${verifyConfig.maxRetries}). Fix the issues below before continuing:\n\n${report}`;
+          const vfId = `verify-fb-${randomUUID()}`;
+          this.openStep({ id: vfId, type: "tool", title: exhausted ? "Verification failed (retries exhausted)" : "Verification failed", output: note });
+          this.messages.push({ id: randomUUID(), role: "tool", content: note, toolCallId: tc.id, ts: Date.now() });
+        } else {
+          this.verifyAttempts = 0;
+        }
+      }
+    }
   }
   askFromSubagent(question: string, options: string[], parentModel?: import("../protocol/protocol.js").ModelDescriptor): Promise<string> {
     return this.askModel(question, options, parentModel);
@@ -1586,4 +1614,4 @@ function renderForSummary(msgs: ChatMessage[]): string {
     }
   }
   return out.join("\n");
-}
+}
