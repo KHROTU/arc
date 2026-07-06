@@ -28,7 +28,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "vscode-uri": "3.0.8",
     "diff": "5.2.2"
   },
   "devDependencies": {

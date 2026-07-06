@@ -24,7 +24,9 @@ if (!root) {
     const version = root.getAttribute("data-version") || "0.0.0";
     const isPride = root.getAttribute("data-pride-active") === "true";
     const toolTree = (root.getAttribute("data-tool-tree") as "auto" | "collapsed") || "auto";
-    createRoot(root).render(<App mode={mode} monoLogo={mono} prideLogo={pride} monoLogoText={monoText} prideActive={isPride} toolTreeMode={toolTree} version={version} />);
+    let providerCatalog: { kind: string; label: string; tags: string[]; defaultBaseUrl?: string }[] = [];
+    try { providerCatalog = JSON.parse(root.getAttribute("data-catalog") || "[]"); } catch { }
+    createRoot(root).render(<App mode={mode} monoLogo={mono} prideLogo={pride} monoLogoText={monoText} prideActive={isPride} toolTreeMode={toolTree} version={version} providerCatalog={providerCatalog} />);
   } catch (err) {
     root.innerHTML = `<pre style="color:#f88;padding:20px;white-space:pre-wrap;font:12px monospace">${(err as Error)?.stack ?? String(err)}</pre>`;
   }

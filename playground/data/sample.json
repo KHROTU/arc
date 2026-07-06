@@ -2,67 +2,39 @@
   "project": "Arc Playground",
   "metadata": {
     "created": "2026-06-12",
+    "updated": "2026-07-07",
     "author": "Arc",
-    "tags": ["testing", "agent", "tools"]
+    "tags": ["testing", "agent", "tools", "full-coverage"]
   },
   "items": [
-    {
-      "id": 1,
-      "name": "Read this file",
-      "tool": "file.read",
-      "status": "pending"
-    },
-    {
-      "id": 2,
-      "name": "Edit utils.ts",
-      "tool": "file.edit",
-      "status": "pending"
-    },
-    {
-      "id": 3,
-      "name": "Write output file",
-      "tool": "file.write",
-      "status": "pending"
-    },
-    {
-      "id": 4,
-      "name": "Run demo script",
-      "tool": "shell.run",
-      "status": "pending"
-    },
-    {
-      "id": 5,
-      "name": "Check diagnostics",
-      "tool": "lsp.problems",
-      "status": "pending"
-    },
-    {
-      "id": 6,
-      "name": "Fetch a web URL",
-      "tool": "webfetch",
-      "status": "pending"
-    },
-    {
-      "id": 7,
-      "name": "Run slow script with timeout",
-      "tool": "shell.run",
-      "status": "pending"
-    },
-    {
-      "id": 8,
-      "name": "Edit file then run after command",
-      "tool": "file.edit",
-      "status": "pending"
-    },
-    {
-      "id": 9,
-      "name": "Write file then run after command",
-      "tool": "file.write",
-      "status": "pending"
-    }
+    { "id": 1, "name": "Read this file", "tool": "file.read", "status": "pending" },
+    { "id": 2, "name": "Edit utils.ts", "tool": "file.edit", "status": "pending" },
+    { "id": 3, "name": "Write output file", "tool": "file.write", "status": "pending" },
+    { "id": 4, "name": "Run demo script", "tool": "shell.run", "status": "pending" },
+    { "id": 5, "name": "Check diagnostics", "tool": "lsp.problems", "status": "pending" },
+    { "id": 6, "name": "Fetch a web URL", "tool": "web.fetch", "status": "pending" },
+    { "id": 7, "name": "Run slow script with timeout", "tool": "shell.run", "status": "pending" },
+    { "id": 8, "name": "Edit file then run after", "tool": "file.edit", "status": "pending" },
+    { "id": 9, "name": "Write file then run after", "tool": "file.write", "status": "pending" },
+    { "id": 10, "name": "Search semantically", "tool": "file.semanticSearch", "status": "pending" },
+    { "id": 11, "name": "Create custom run pipeline", "tool": "shell.customRun", "status": "pending" },
+    { "id": 12, "name": "Run custom run pipeline", "tool": "shell.runCustomRun", "status": "pending" },
+    { "id": 13, "name": "Run tests", "tool": "test.run", "status": "pending" },
+    { "id": 14, "name": "Search the web", "tool": "web.search", "status": "pending" },
+    { "id": 15, "name": "Compare checkpoints", "tool": "checkpoint.compare", "status": "pending" },
+    { "id": 16, "name": "Switch to plan mode", "tool": "mode.switch", "status": "pending" },
+    { "id": 17, "name": "Read demo skill", "tool": "skill.read", "status": "pending" },
+    { "id": 18, "name": "Load demo skill", "tool": "skill.use", "status": "pending" },
+    { "id": 19, "name": "Add memory entry", "tool": "memory.add", "status": "pending" },
+    { "id": 20, "name": "List rules", "tool": "rule.list", "status": "pending" },
+    { "id": 21, "name": "Read notebook cells", "tool": "notebook.read", "status": "pending" },
+    { "id": 22, "name": "Export execution trace", "tool": "session.exportTrace", "status": "pending" },
+    { "id": 23, "name": "Check staged diff", "tool": "git.diffStaged", "status": "pending" },
+    { "id": 24, "name": "List changed files", "tool": "git.changedFiles", "status": "pending" }
   ],
   "settings": {
     "maxRetries": 3,
-    "verbose": false
+    "verbose": false,
+    "runAfterVerification": true
   }
 }

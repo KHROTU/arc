@@ -23,7 +23,7 @@ const host = {
   treeShaking: true,
   legalComments: isProd ? "none" : "inline",
   logLevel: "info",
-  ...(isProd ? { drop: ["console", "debugger"], pure: ["console.log", "console.debug", "console.info"] } : {}),
+  ...(isProd ? { drop: ["console", "debugger"] } : {}),
   plugins: [
     {
       name: "skip-playwright",
@@ -51,7 +51,7 @@ const webview = {
   treeShaking: true,
   legalComments: isProd ? "none" : "inline",
   logLevel: "info",
-  ...(isProd ? { drop: ["console", "debugger"], pure: ["console.log", "console.debug", "console.info"] } : {}),
+  ...(isProd ? { drop: ["console", "debugger"] } : {}),
   plugins: [
     {
       name: "css",

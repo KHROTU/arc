@@ -13,7 +13,7 @@ Arc is built for speed and precision. It combines a sophisticated multi-model or
 
 | Extension | VSIX Size (as of July 7th, 2026) |
 | :--- | :--- |
-| **Arc** | **0.24 MB** |
+| **Arc** | **0.20 MB** |
 | Cline | 10.18 MB |
 | BLACKBOXAI Agent | 20.15 MB |
 | Roo Code | 30.11 MB |
