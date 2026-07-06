@@ -1,6 +1,7 @@
 export * from "./protocol/index.js";
 export * from "./routing/registry.js";
 export * from "./routing/router.js";
+export * from "./routing/performance.js";
 export * from "./routing/handoff.js";
 export * from "./providers/transport.js";
 export * from "./providers/catalog.js";

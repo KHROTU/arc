@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getWorkspaceArcDir } from "../arc-dir.js";
 import { ModelRegistry } from "../routing/registry.js";
-import { pickProvider, routeWithFailover, recordSuccess, estimateCost } from "../routing/router.js";
+import { pickProvider, routeStream, recordSuccess, estimateCost } from "../routing/router.js";
 import { transportFor } from "../providers/transport.js";
 import { CheckpointStore } from "../checkpoint/store.js";
 import { compactAsync, decideCompaction, CompactionTracker } from "../compaction/compaction.js";
@@ -440,7 +440,7 @@ export class Agent {
         return;
       }
       let usedProvider: import("../providers/transport.js").StreamRequest["provider"] | undefined;
-      const stream = await routeWithFailover(this.registry, model, (decision) => {
+      const stream = await routeStream(this.registry, model, (decision) => {
         usedProvider = decision.provider;
         const t = transportFor(decision.provider);
         return t.stream({
@@ -452,7 +452,7 @@ export class Agent {
           proxyUrl: this.resolveProviderProxy(),
           reasoningEffort: this.opts.reasoningEffort,
         });
-      });
+      }, { rerank: true });
       let text = "";
       let thinking = "";
       const toolCalls: ToolCall[] = [];

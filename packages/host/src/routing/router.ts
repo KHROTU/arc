@@ -1,35 +1,19 @@
 import type { ModelDescriptor, ModelTier, ProviderConfig, ProviderRef, TurnUsage } from "../protocol/protocol.js";
 import type { ModelRegistry } from "./registry.js";
-export interface ProviderCallRequest {
-  model: ModelDescriptor;
-  provider: ProviderConfig;
-  attempt: number;
-  skipRecentFailures: boolean;
+import type { StreamEvent, StreamHandle } from "../providers/transport.js";
+import { AsyncEventQueue } from "../util/stream.js";
+import { perf } from "./performance.js";
+export class StallError extends Error {
+  constructor(msg: string, public readonly providerId: string, public readonly timeoutMs: number) {
+    super(msg); this.name = "StallError";
+  }
 }
+export type { StreamEvent, StreamHandle };
 export interface RoutingDecision {
   model: ModelDescriptor;
   provider: ProviderConfig;
   attempt: number;
 }
-class FailureCache {
-  private failedAt = new Map<string, number>(); 
-  fail(key: string) {
-    this.failedAt.set(key, Date.now());
-  }
-  clear(key: string) {
-    this.failedAt.delete(key);
-  }
-  isRecentlyFailed(key: string, withinMs = 30_000) {
-    const t = this.failedAt.get(key);
-    if (!t) return false;
-    if (Date.now() - t > withinMs) {
-      this.failedAt.delete(key);
-      return false;
-    }
-    return true;
-  }
-}
-const failures = new FailureCache();
 export function pickForTier(
   registry: ModelRegistry,
   tier: ModelTier,
@@ -44,67 +28,170 @@ export function pickForTier(
 export function pickProvider(
   registry: ModelRegistry,
   model: ModelDescriptor,
+  opts?: { rerank?: boolean },
 ): { provider: ProviderConfig; ref: ProviderRef } | undefined {
-  const refs = registry.providersFor(model.id);
-  if (refs.length === 0) return undefined;
-  const totalWeight = refs.reduce((s, r) => s + (r.weight ?? 0), 0);
-  if (totalWeight > 0) {
-    const candidates = refs.filter((r) => !failures.isRecentlyFailed(`${model.id}:${r.id}`));
-    const pool = candidates.length ? candidates : refs;
-    const w = pool.reduce((s, r) => s + (r.weight ?? 0), 0) || 1;
-    let pick = Math.random() * w;
-    for (const r of pool) {
-      pick -= r.weight ?? 0;
-      if (pick <= 0) {
-        const p = registry.resolveProvider(r);
-        if (p) return { provider: p, ref: r };
-      }
+  let refs = registry.providersFor(model.id);
+  const len = refs.length;
+  if (!len) return undefined;
+  if (len === 1) {
+    const pr = registry.resolveProvider(refs[0]);
+    return pr ? { provider: pr, ref: refs[0] } : undefined;
+  }
+  if (opts?.rerank) {
+    refs = [...refs].sort((a, b) => {
+      const d = perf.score(b.id, model.id) - perf.score(a.id, model.id);
+      return d !== 0 ? d : a.priority - b.priority;
+    });
+  }
+  const tw = refs.reduce((s, r) => s + (r.weight ?? 0), 0);
+  if (tw > 0) {
+    const ok: ProviderRef[] = [];
+    let okWeight = 0;
+    for (let i = 0; i < refs.length; i++) {
+      const r = refs[i];
+      if (!perf.isOpen(r.id, model.id)) { ok.push(r); okWeight += r.weight ?? 0; }
+    }
+    const pool = ok.length ? ok : refs;
+    const w = ok.length ? okWeight : tw;
+    let p = Math.random() * w;
+    for (let i = 0; i < pool.length; i++) {
+      const r = pool[i];
+      p -= r.weight ?? 0;
+      if (p <= 0) { const pr = registry.resolveProvider(r); if (pr) return { provider: pr, ref: r }; }
     }
   }
-  for (const r of refs) {
-    if (failures.isRecentlyFailed(`${model.id}:${r.id}`)) continue;
-    const p = registry.resolveProvider(r);
-    if (p) return { provider: p, ref: r };
+  for (let i = 0; i < refs.length; i++) {
+    const r = refs[i];
+    if (perf.isOpen(r.id, model.id)) continue;
+    const pr = registry.resolveProvider(r);
+    if (pr) return { provider: pr, ref: r };
   }
-  const p = registry.resolveProvider(refs[0]);
-  return p ? { provider: p, ref: refs[0] } : undefined;
+  const pr = registry.resolveProvider(refs[0]);
+  return pr ? { provider: pr, ref: refs[0] } : undefined;
+}
+export function recordFailure(modelId: string, providerId: string): void {
+  perf.recordFailure(providerId, modelId);
+}
+export function recordSuccess(modelId: string, providerId: string): void {
+  perf.recordSuccess(providerId, modelId);
+}
+export function recordStall(modelId: string, providerId: string): void {
+  perf.recordStall(providerId, modelId);
+}
+export function resetFailures(): void { perf.clearCircuitBreakers(); }
+function* orderedRefs(registry: ModelRegistry, model: ModelDescriptor, rerank?: boolean): Generator<ProviderRef> {
+  const refs = registry.providersFor(model.id);
+  if (!refs.length) return;
+  const sorted = rerank
+    ? [...refs].sort((a, b) => {
+        const d = perf.score(b.id, model.id) - perf.score(a.id, model.id);
+        return d !== 0 ? d : a.priority - b.priority;
+      })
+    : refs;
+  for (let i = 0; i < sorted.length; i++) yield sorted[i];
+}
+async function tryEach<T>(
+  registry: ModelRegistry,
+  model: ModelDescriptor,
+  fn: (ref: ProviderRef, prov: ProviderConfig, attempt: number) => Promise<T>,
+  opts?: { rerank?: boolean },
+): Promise<T> {
+  let lastErr: unknown;
+  let attempt = 0;
+  for (const ref of orderedRefs(registry, model, opts?.rerank)) {
+    const prov = registry.resolveProvider(ref);
+    if (!prov) continue;
+    const t0 = Date.now();
+    try {
+      const out = await fn(ref, prov, attempt++);
+      perf.recordSuccess(ref.id, model.id, Date.now() - t0);
+      return out;
+    } catch (e) {
+      lastErr = e;
+      perf.recordFailure(ref.id, model.id);
+      if (e instanceof StallError) perf.recordStall(ref.id, model.id);
+    }
+  }
+  throw new Error(`All providers for ${model.id} failed: ${(lastErr as Error)?.message ?? lastErr}`);
 }
 export async function routeWithFailover<T>(
   registry: ModelRegistry,
   model: ModelDescriptor,
-  invoke: (decision: RoutingDecision) => Promise<T>,
+  invoke: (d: RoutingDecision) => Promise<T>,
 ): Promise<T> {
-  const refs = registry.providersFor(model.id);
-  if (refs.length === 0) throw new Error(`Model ${model.id} has no enabled providers.`);
-  let lastErr: unknown;
-  for (let i = 0; i < refs.length; i++) {
-    const r = refs[i];
-    const p = registry.resolveProvider(r);
-    if (!p) continue;
+  return tryEach(registry, model, (_r, p, n) => invoke({ model, provider: p, attempt: n }));
+}
+export interface ResilientOptions {
+  stallMs?: number;
+  firstByteMs?: number;
+  rerank?: boolean;
+}
+const MIN_STALL_MS = 5_000;
+const MAX_STALL_MS = 30_000;
+const MIN_FB_MS = 10_000;
+const MAX_FB_MS = 45_000;
+const DEFAULT_STALL_MS = 15_000;
+const DEFAULT_FB_MS = 30_000;
+function timeoutFor(pid: string, mid: string, userMs: number | undefined, minMs: number, maxMs: number, defaultMs: number): number {
+  if (userMs !== undefined) return userMs;
+  const lat = perf.latency(pid, mid);
+  if (!lat) return defaultMs;
+  const adaptive = Math.round(lat * 3);
+  return Math.max(minMs, Math.min(maxMs, adaptive));
+}
+function wrapStall(handle: StreamHandle, pid: string, stallMs: number, firstByteMs: number): StreamHandle {
+  const q = new AsyncEventQueue<StreamEvent>();
+  let dead = false;
+  let sTimer: ReturnType<typeof setTimeout> | undefined;
+  let fbTimer: ReturnType<typeof setTimeout> | undefined;
+  let got = false;
+  const kill = () => { if (sTimer) { clearTimeout(sTimer); sTimer = undefined; } if (fbTimer) { clearTimeout(fbTimer); fbTimer = undefined; } };
+  const onStall = () => {
+    kill();
+    if (dead) return;
+    dead = true;
+    q.push({ type: "error", message: `Provider ${pid} stalled (${stallMs}ms)` });
+    handle.abort();
+    q.close();
+  };
+  void (async () => {
     try {
-      const out = await invoke({ model, provider: p, attempt: i });
-      failures.clear(`${model.id}:${r.id}`);
-      return out;
+      fbTimer = setTimeout(() => {
+        if (!got && !dead) {
+          q.push({ type: "error", message: `Provider ${pid} timed out (${firstByteMs}ms)` });
+          handle.abort(); q.close();
+        }
+      }, firstByteMs);
+      for await (const ev of handle.events) {
+        if (dead) break;
+        if (!got) { got = true; if (fbTimer) { clearTimeout(fbTimer); fbTimer = undefined; } }
+        q.push(ev);
+        if (ev.type === "done" || ev.type === "error") { kill(); q.close(); return; }
+        if (sTimer) clearTimeout(sTimer);
+        sTimer = setTimeout(onStall, stallMs);
+      }
     } catch (e) {
-      lastErr = e;
-      failures.fail(`${model.id}:${r.id}`);
-    }
-  }
-  throw new Error(
-    `All providers for model ${model.id} failed: ${(lastErr as Error)?.message ?? lastErr}`,
-  );
+      if (!dead) q.push({ type: "error", message: (e as Error).message });
+    } finally { kill(); q.close(); }
+  })();
+  return { events: q, abort: () => { dead = true; kill(); handle.abort(); q.close(); } };
 }
-export function recordFailure(modelId: string, providerId: string) {
-  failures.fail(`${modelId}:${providerId}`);
-}
-export function recordSuccess(modelId: string, providerId: string) {
-  failures.clear(`${modelId}:${providerId}`);
+export async function routeStream(
+  registry: ModelRegistry,
+  model: ModelDescriptor,
+  create: (d: RoutingDecision) => Promise<StreamHandle>,
+  opts?: ResilientOptions,
+): Promise<StreamHandle> {
+  return tryEach(registry, model, async (ref, prov, n) => {
+    const stallMs = timeoutFor(ref.id, model.id, opts?.stallMs, MIN_STALL_MS, MAX_STALL_MS, DEFAULT_STALL_MS);
+    const fbMs = timeoutFor(ref.id, model.id, opts?.firstByteMs, MIN_FB_MS, MAX_FB_MS, DEFAULT_FB_MS);
+    const raw = await create({ model, provider: prov, attempt: n });
+    return wrapStall(raw, ref.id, stallMs, fbMs);
+  }, { rerank: opts?.rerank });
 }
 export function estimateCost(model: ModelDescriptor, usage: { prompt: number; completion: number; thinking?: number }): number {
-  const thinking = usage.thinking ?? 0;
-  return (usage.prompt / 1_000_000) * model.costPer1mIn
-       + (usage.completion / 1_000_000) * model.costPer1mOut
-       + (thinking / 1_000_000) * model.costPer1mOut;
+  const t = usage.thinking ?? 0;
+  return (usage.prompt / 1_000_000) * model.costPer1mIn + (usage.completion / 1_000_000) * model.costPer1mOut + (t / 1_000_000) * model.costPer1mOut;
 }
 export function emptyUsage(): TurnUsage {
   return { prompt: 0, completion: 0, thinking: 0, cost: 0 };

@@ -11,7 +11,7 @@ Arc is built for speed and precision. It combines a sophisticated multi-model or
 
 ## Efficiency
 
-| Extension | VSIX Size (as of July 5th, 2026) |
+| Extension | VSIX Size (as of July 7th, 2026) |
 | :--- | :--- |
 | **Arc** | **0.24 MB** |
 | Cline | 10.18 MB |
