@@ -21,6 +21,12 @@ The clean snapshot lives at `C:/Users/khrot/Desktop/Work/arc/scripts/playground-
 ## Structure
 
 ```
+.arc/         Arc configuration directory
+  mcp.json    Single MCP server: context7
+  skills/     Skill definitions (skill.read, skill.use)
+    demo-skill.md  Conventions for working in the playground
+  rules/      Rule definitions (rule.read, rule.list)
+    test-rule.md   No destructive commands policy
 src/          TypeScript source files with intentional issues for LSP tools
   index.ts    Entry point — has a type mismatch and unused import (lsp.problems)
   config.json Configuration to read and modify (file.read, file.edit)
@@ -29,86 +35,156 @@ src/          TypeScript source files with intentional issues for LSP tools
 web/          Static HTML page for browser tools
   index.html       Page for browser.navigate / browser.readDom / browser.click / browser.screenshot
   script.js        JS wired to the HTML (browser.evaluate)
-  handoff-designs.html  Handoff banner design concept gallery
- scripts/      Shell commands
-   demo.ps1    PowerShell script to run (shell.run)
-   slow.ps1    Long-running script for timeout parameter testing
-   interactive.ps1  Interactive script waiting on stdin (shell.backgroundRun, shell.check, shell.write)
-   build.ps1   Simulated build script for runAfter parameter testing
-   lint.ps1    Simulated lint check for customRun chaining
-   check.ps1   Simulated test run for customRun chaining
+scripts/      Shell commands
+  demo.ps1    PowerShell script to run (shell.run)
+  slow.ps1    Long-running script for timeout parameter testing
+  interactive.ps1  Interactive script waiting on stdin (shell.backgroundRun, shell.check, shell.write)
+  build.ps1   Simulated build script for runAfter parameter testing
+  lint.ps1    Simulated lint check for customRun chaining
+  check.ps1   Simulated test run for customRun chaining
 data/         Text and structured data
   sample.json  Nested JSON to read and traverse
-  todo.txt     Plain text to read and edit (file.read, file.edit, file.write)
-  urls.txt     List of URLs for webfetch tool testing
+  todo.txt     Plain text task checklist
+  urls.txt     URLs for webfetch and web.search queries
+test/         Test files
+  example.test.ts    Vitest test suite (test.run); has a REPLACE_ME test that fails until fixed
+  checkpoint-compare-a.md  Initial state fixture for checkpoint.compare
+  checkpoint-compare-b.md  Modified state fixture for checkpoint.compare
+notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteCell/execute
 ```
 
-## What to test
+## Tool Coverage Matrix
 
-| Tool | File / Action |
-|------|---------------|
-| file.read | Read `data/sample.json`, `data/todo.txt`, `src/config.json` |
-| file.edit | Edit `src/utils.ts` — replace `REPLACE_ME` with actual content |
-| file.write | Write a new file `data/output.txt` with results |
-| shell.run | Run `scripts/demo.ps1` (prints env info + file listing) |
-| shell.run (timeout) | Run `scripts/slow.ps1` with `timeout=3` (should be killed) and `timeout=-1` (should complete) |
-| webfetch | Fetch `https://example.com` and verify HTML content |
-| webfetch (error) | Fetch `https://httpbin.org/status/404` (expect 404) |
-| file.edit (runAfter) | Edit `src/utils.ts` with `runAfter: "pwsh scripts/build.ps1"` |
-| file.write (runAfter) | Write `data/generated.txt` with `runAfter: "pwsh scripts/build.ps1"` |
-| lsp.problems | Check workspace-wide diagnostics (src/index.ts has deliberate issues) |
+### File Tools
+
+| Tool | Action |
+|------|--------|
+| file.read | Read `data/sample.json`, `data/todo.txt`, `src/config.json`; test offset/limit |
+| file.edit | Replace `REPLACE_ME` in `src/utils.ts`; test runAfter with `scripts/build.ps1` |
+| file.write | Write `data/output.txt`, `data/generated.txt`; test runAfter |
+| file.grep | Grep for `REPLACE_ME`, `export function`, `import`; test include pattern |
+| file.glob | Glob `**/*.ts`, `src/**/*`, `scripts/*.ps1`, `**/*.md` |
+| file.semanticSearch | Search for "conventions", "destructive commands", "REPLACE_ME sentinel" |
+
+### Shell Tools
+
+| Tool | Action |
+|------|--------|
+| shell.run | Run `demo.ps1`; test timeout with `slow.ps1` (3s kill vs -1 complete) |
+| shell.backgroundRun | Background `slow.ps1`, `interactive.ps1` |
+| shell.check | Poll background process output and exit status |
+| shell.write | Send stdin to `interactive.ps1` |
+| shell.customRun | Create named pipeline 'full_check' (lint + build + check) |
+| shell.editCustomRun | Edit pipeline: add demo.ps1, rename to 'pipeline'; test error on nonexistent id |
+| shell.runCustomRun | Run the 'pipeline' custom run by id |
+
+### LSP Tools
+
+| Tool | Action |
+|------|--------|
+| lsp.problems | Check workspace-wide diagnostics (`src/index.ts` has type mismatch + unused import) |
 | lsp.problemsFor | Check `src/index.ts` and `src/style.css` individually |
-| todo.write | Set a 3-step plan: inspect → fix → verify |
+
+### Web Tools
+
+| Tool | Action |
+|------|--------|
+| web.fetch | Fetch `https://example.com`, `httpbin.org/html`, `httpbin.org/json`; test 404 + DNS errors |
+| web.search | Search "Arc agentic coding assistant", "TypeScript type narrowing" |
+
+### Browser Tools
+
+| Tool | Action |
+|------|--------|
 | browser.navigate | Navigate to `web/index.html` |
-| browser.readDom | Read the accessibility tree of the loaded page |
-| browser.click / type | Interact with the form on the page |
+| browser.readDom | Read accessibility tree of loaded page |
+| browser.readPage | Read page text content |
+| browser.click | Click the form buttons |
+| browser.type | Type into form inputs |
 | browser.screenshot | Capture the page |
-| browser.evaluate | Run JS in the page context |
-| browser.close | Close the browser |
-| subagent.spawn | Spawn a subagent to count lines in `src/` |
-| subagent.spawn (batch) | Spawn 3 subagents in parallel: count lines in `src/index.ts`, `src/utils.ts`, `src/style.css` |
-| subagent.spawn (rules) | Spawn a subagent with `blockedCommands: ["rm", "del"]` — subagent attempts a blocked command and approval routes to parent |
-| handoff | Escalate to a heavier model for a complex reasoning step |
-| clarification.askUser | Ask whether to keep or delete a generated file |
-| file.grep | Grep for `REPLACE_ME` across workspace, `export function` in `*.ts`, `import` in `src/*.ts` |
-| file.glob | Glob `**/*.ts`, `src/**/*`, `scripts/*.ps1` |
-| shell.backgroundRun | Run `slow.ps1` in background, poll with shell.check |
-| shell.check | Poll a background process for output and exit status |
-| shell.write | Send input to `interactive.ps1` via stdin after backgroundRun |
-| shell.customRun | Create a named pipeline: `pwsh scripts/lint.ps1`, `pwsh scripts/build.ps1`, `pwsh scripts/check.ps1` |Persists to `~/.arc/skills/`. Verify the JSON file appears. |
-| shell.customRun (overwrite) | Create the same name again — expect "already exists" error. Create again with `overwrite:true` — succeeds. |
-| shell.editCustomRun | Edit the previously-created run by id: add a command, rename it |
-| shell.editCustomRun (error) | Edit a non-existent id — expect "no custom run found" error |
-| checkpoint.revert | After a file.edit that touches `src/utils.ts`, revert to the checkpoint for that turn. Verify the file goes back to its pre-edit state. |
+| browser.evaluate | Run JS in page context |
+| browser.console | Read browser console messages |
+| browser.network | Read network request log |
+| browser.domSnapshot | Get full page snapshot |
+| browser.drag | Drag from one selector to another |
+| browser.dialog | Handle browser dialogs (alert, confirm, prompt) |
+| browser.runCode | Run arbitrary Playwright code |
+| browser.hover | Hover over a selector |
+| browser.scroll | Scroll to a selector or by pixels |
+| browser.waitFor | Wait for selector, URL, or state |
+| browser.newTab / switchTab / closeTab / listTabs | Tab management |
+| browser.intercept / unintercept | Network request interception |
+| browser.close | Close browser |
 
-## New Parameter Coverage
+### MCP Tools
 
-| Param | Tool | Test |
-|-------|------|------|
-| `timeout` (seconds) | shell.run | Run `slow.ps1` with tight and generous limits |
-| `runAfter` (command) | file.edit | Run `build.ps1` automatically after an edit |
-| `runAfter` (command) | file.write | Run `build.ps1` automatically after writing |
-| `offset`, `limit` (lines) | file.read | Read `utils.ts` L1-5, `sample.json` L2-11, `index.ts` L8 only |
-| `include` (pattern) | file.grep | Grep `*.ts` files only vs `*.json` files only |
-| `batch` (array) | subagent.spawn | Spawn multiple subagents in one turn, collect all results |
-| `rules.blockedCommands` | subagent.spawn | Block specific shell commands in subagent; approval routes to parent |
-| `rules.requireApproval` | subagent.spawn | Require parent approval for all subagent shell commands |
+| Tool | Action |
+|------|--------|
+| mcp.call | Call `context7/resolve` or `context7/query` on the context7 server |
+| mcp.create | Register a new MCP server |
+| mcp.remove | Remove an MCP server |
+| mcp.toggle | Enable/disable an MCP server |
+| mcp.resources/list | List resources on a server |
+| mcp.resources/read | Read resource by URI |
+| mcp.prompts/list | List prompts on a server |
+| mcp.prompts/get | Get prompt by name |
 
-## Tier 1: Checkpoint & Custom Run Features
+### Subagent Tools
 
-| Feature | How to test |
-|---------|-------------|
-| checkpoint.revert | Ask: "Edit src/utils.ts to add a comment at the top. Then use checkpoint.revert to undo that edit." Verify the file returns to original state. |
-| shell.customRun (create) | Ask: "Create a custom run called 'full-check' with these commands: `pwsh scripts/lint.ps1`, `pwsh scripts/build.ps1`, `pwsh scripts/check.ps1`" — verify `~/.arc/skills/full_check.json` is created. |
-| shell.customRun (overwrite) | Ask: "Try to create 'full-check' again without overwrite — then create it with overwrite:true" |
-| shell.editCustomRun (edit) | Ask: "Edit the custom run 'full_check' — add `pwsh scripts/demo.ps1` as a final command, and rename it to 'pipeline'" |
-| shell.editCustomRun (error) | Ask: "Edit a custom run with id 'nonexistent' — expect the error message about no run found" |
+| Tool | Action |
+|------|--------|
+| subagent.spawn | Single, batch (parallel), and rule-constrained subagents |
+| subagent.askParent | Subagent asks parent for clarification |
 
-## Tier 2: Subagent Features
+### Checkpoint Tools
 
-| Feature | How to test |
-|---------|-------------|
-| Subagent streaming | Spawn a subagent that reads multiple files — watch the transcript for live subagent progress in the purple-bordered card |
-| Parallel subagent batch | Ask: "Spawn 3 subagents in parallel using batch mode to count lines in src/index.ts, src/utils.ts, and src/style.css" |
-| Subagent run rules | Ask: "Spawn a subagent to list files, but block the 'rm' and 'del' commands" |
-| Collapsible chat list | Toggle the panel button in the fullscreen top bar to collapse/expand the chat list sidebar |
+| Tool | Action |
+|------|--------|
+| checkpoint.revert | Revert file edits to checkpoint state |
+| checkpoint.list | List all saved checkpoints with indices |
+| checkpoint.compare | Compare two checkpoints by index or turnId |
+
+### Mode / Skill / Memory / Rule Tools
+
+| Tool | Action |
+|------|--------|
+| mode.switch | Switch between plan/code/audit/debug modes |
+| skill.read | Read `.arc/skills/demo-skill.md` |
+| skill.use | Load skill into agent context |
+| memory.add | Add memory entry with category |
+| memory.list | List all memory entries |
+| memory.edit | Edit memory by index |
+| memory.delete | Delete memory by index |
+| rule.list | List `.arc/rules/` entries |
+| rule.read | Read `test-rule.md` |
+| rule.create | Create a new rule |
+
+### Git Tools
+
+| Tool | Action |
+|------|--------|
+| git.changedFiles | List files changed since last commit |
+| git.diffUnstaged | Read unstaged diff |
+| git.diffStaged | Read staged diff |
+| git.branchDiff | Diff current branch vs base |
+| git.commitMessage | Generate commit message from diff |
+
+### Notebook Tools
+
+| Tool | Action |
+|------|--------|
+| notebook.read | List cells / read specific cell by index |
+| notebook.editCell | Edit cell source (fix REPLACE_ME in cell 1) |
+| notebook.addCell | Add new code cell |
+| notebook.deleteCell | Delete cell by index |
+| notebook.execute | Execute cell and return output |
+
+### Other Tools
+
+| Tool | Action |
+|------|--------|
+| todo.write | Set multi-step plans |
+| test.run | Run `test/example.test.ts` (vitest) |
+| handoff | Escalate to a heavier model tier |
+| clarification.askUser | Ask whether to keep/delete a file |
+| session.exportTrace | Export full session execution trace as markdown + JSON |

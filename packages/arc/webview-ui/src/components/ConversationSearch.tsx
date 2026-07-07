@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Search, X, History, ArrowRight } from "lucide-react";
+import { Search, X, History, ArrowRight } from "./icons";
 import type { RpcClient } from "../rpc";
 type SearchResult = { id: string; title: string; matches: string[] };
 type Props = {

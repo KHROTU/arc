@@ -1,13 +1,48 @@
 {
   "app": {
     "name": "Arc Agent Playground",
-    "version": "0.3.0",
+    "version": "0.5.0",
     "debug": true
   },
   "features": {
-    "tools": ["file.read", "file.edit", "file.write", "file.grep", "file.glob", "shell.run", "shell.backgroundRun", "shell.check", "shell.write", "webfetch", "lsp.problems", "browser.navigate", "todo.write", "subagent.spawn", "subagent.askParent", "handoff", "clarification.askUser"],
+    "tools": [
+      "file.read", "file.edit", "file.write", "file.grep", "file.glob",
+      "file.semanticSearch",
+      "shell.run", "shell.backgroundRun", "shell.check", "shell.write",
+      "shell.customRun", "shell.editCustomRun", "shell.runCustomRun",
+      "test.run",
+      "lsp.problems", "lsp.problemsFor",
+      "todo.write",
+      "web.fetch", "web.search",
+      "browser.navigate", "browser.readDom", "browser.click", "browser.type",
+      "browser.screenshot", "browser.evaluate", "browser.close",
+      "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage",
+      "browser.hover", "browser.scroll", "browser.waitFor",
+      "browser.console", "browser.network", "browser.domSnapshot",
+      "browser.newTab", "browser.switchTab", "browser.closeTab",
+      "browser.listTabs", "browser.intercept", "browser.unintercept",
+      "mcp.call", "mcp.create", "mcp.remove", "mcp.toggle",
+      "mcp.resources/list", "mcp.resources/read",
+      "mcp.prompts/list", "mcp.prompts/get",
+      "subagent.spawn", "subagent.askParent",
+      "handoff", "clarification.askUser",
+      "checkpoint.revert", "checkpoint.list", "checkpoint.compare",
+      "mode.switch",
+      "skill.read", "skill.use",
+      "memory.add", "memory.list", "memory.edit", "memory.delete",
+      "rule.list", "rule.read", "rule.create",
+      "git.diffStaged", "git.diffUnstaged", "git.changedFiles",
+      "git.branchDiff", "git.commitMessage",
+      "notebook.read", "notebook.editCell", "notebook.addCell",
+      "notebook.deleteCell", "notebook.execute",
+      "session.exportTrace"
+    ],
     "tiers": ["free", "light", "default", "heavy"],
-    "newParams": ["timeout", "runAfter", "offset", "limit", "include", "batch", "rules", "blockedCommands", "requireApproval"]
+    "newParams": [
+      "timeout", "runAfter", "offset", "limit", "include",
+      "batch", "rules", "blockedCommands", "requireApproval",
+      "overwrite", "mode", "category", "scope"
+    ]
   },
   "subagent": {
     "batchMode": true,

@@ -1,9 +1,9 @@
 import { useState, useEffect, memo, useCallback, useMemo } from "react";
-import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
+import { Expand, FadeSlideIn, ScaleIn, RotateArrow } from "./anim";
 import {
   ChevronRight, Bot, ArrowRight, Check, Circle, CircleDot,
   HelpCircle, CornerDownLeft, Sparkles, AlertTriangle, Terminal, ExternalLink, StopCircle, Maximize2,
-} from "lucide-react";
+} from "./icons";
 type StepType =
   | "tool_group" | "tool" | "subagent" | "handoff"
   | "todo_list" | "clarification" | "thought" | "result" | "error";
@@ -41,21 +41,11 @@ export interface ProcessStep {
   children?: ProcessStep[];
   interrupted?: boolean;
 }
-const SPRING = { type: "spring", stiffness: 450, damping: 30 } as const;
-const SPRING_BOUNCE = { type: "spring", stiffness: 420, damping: 24 } as const;
 const AnimatedNumber = memo(({ value }: { value: number }) => (
   <span className="arc-proc-count">
-    <AnimatePresence mode="popLayout" initial={false}>
-      <motion.span
-        key={value}
-        initial={{ y: "100%", opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
-        exit={{ y: "-100%", opacity: 0 }}
-        transition={SPRING}
-      >
-        {value}
-      </motion.span>
-    </AnimatePresence>
+    <span key={value} style={{ display: "inline-block", animation: "arc-slide-down-in 250ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards" }}>
+      {value}
+    </span>
   </span>
 ));
 AnimatedNumber.displayName = "AnimatedNumber";
@@ -165,12 +155,12 @@ const TodoListBlock = memo(({ todos }: { todos: TodoItem[] }) => (
       const done = todo.state === "done";
       const skipped = todo.state === "skipped";
       return (
-          <motion.li key={todo.id} className={`arc-proc-todo arc-proc-todo-${todo.state}`}>
+          <li key={todo.id} className={`arc-proc-todo arc-proc-todo-${todo.state}`}>
           <span className="arc-proc-todo-mark">
             {done ? (
-              <motion.span initial={{ scale: 0.4, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={SPRING_BOUNCE} style={{ display: "inline-flex" }}>
+              <ScaleIn>
                 <Check size={13} strokeWidth={2.5} />
-              </motion.span>
+              </ScaleIn>
             ) : active ? (
               <span className="arc-proc-todo-pulse" />
             ) : skipped ? (
@@ -180,7 +170,7 @@ const TodoListBlock = memo(({ todos }: { todos: TodoItem[] }) => (
             )}
           </span>
           <span className="arc-proc-todo-text">{todo.text}</span>
-        </motion.li>
+        </li>
       );
     })}
   </ul>
@@ -225,22 +215,14 @@ const GroupNode = memo(({ step, onOpenFile, onOpenFullscreenDiff, toolTreeMode, 
           </span>
         )}
       </button>
-      <AnimatePresence initial={false}>
-        {open && step.children && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={SPRING}
-            className="arc-proc-children-wrap"
-          >
-            <div className="arc-proc-children">
-              <span className="arc-proc-treeline" />
-              <StepList steps={step.children} onOpenFile={onOpenFile} onOpenFullscreenDiff={onOpenFullscreenDiff} toolTreeMode={toolTreeMode} resolvedDiffs={resolvedDiffs} onResolveDiff={onResolveDiff} />
-            </div>
-          </motion.div>
+      <Expand open={open && !!step.children}>
+        {step.children && (
+          <div className="arc-proc-children">
+            <span className="arc-proc-treeline" />
+            <StepList steps={step.children} onOpenFile={onOpenFile} onOpenFullscreenDiff={onOpenFullscreenDiff} toolTreeMode={toolTreeMode} resolvedDiffs={resolvedDiffs} onResolveDiff={onResolveDiff} />
+          </div>
         )}
-      </AnimatePresence>
+      </Expand>
     </div>
   );
 });
@@ -251,7 +233,7 @@ const ThoughtNode = memo(({ step }: { step: ProcessStep }) => {
   const hasContent = !!step.content;
   const showBody = hasContent && (open || !!step.pending);
   return (
-    <motion.div initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }} transition={SPRING} className="arc-proc-node arc-proc-node-thought">
+    <FadeSlideIn className="arc-proc-node arc-proc-node-thought">
       <button
         className="arc-proc-row"
         onClick={() => hasContent && setOpen((o) => !o)}
@@ -263,22 +245,16 @@ const ThoughtNode = memo(({ step }: { step: ProcessStep }) => {
           {step.pending ? <>Thinking<span className="arc-working-dots" /></> : `Thought for ${secs} seconds`}
         </span>
         {hasContent && !step.pending && (
-          <motion.span className="arc-proc-chevron" animate={{ rotate: open ? 90 : 0 }} transition={SPRING}>
-            <ChevronRight size={13} />
-          </motion.span>
+          <RotateArrow open={open} />
         )}
       </button>
-      <AnimatePresence initial={false}>
-        {showBody && (
-          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={SPRING} className="arc-proc-children-wrap">
-            <div className="arc-proc-children">
-              <span className="arc-proc-treeline" />
-              <div className="arc-proc-text is-thought">{step.content}</div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </motion.div>
+      <Expand open={showBody}>
+        <div className="arc-proc-children">
+          <span className="arc-proc-treeline" />
+          <div className="arc-proc-text is-thought">{step.content}</div>
+        </div>
+      </Expand>
+    </FadeSlideIn>
   );
 });
 ThoughtNode.displayName = "ThoughtNode";
@@ -294,7 +270,7 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, onOpenFullscre
   const hasChildren = !!step.children?.length;
   const hasDetails = hasChildren || (!isNoDetail && (!!step.command || !!step.output || !!step.content || !!step.todos || !!step.options || !!step.runAfterCommand || !!step.runAfterOutput || step.type === "handoff" || (hasDiff && !!step.diffHunks?.length)));
   return (
-    <motion.div initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }} transition={SPRING} className={`arc-proc-node arc-proc-node-${step.type}`}>
+    <FadeSlideIn className={`arc-proc-node arc-proc-node-${step.type}`}>
       <button
         className="arc-proc-row"
         onClick={() => hasDetails && onToggle()}
@@ -304,21 +280,11 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, onOpenFullscre
         <span className="arc-proc-row-mark"><StatusDot type={step.type} interrupted={step.interrupted} /></span>
         <span className="arc-proc-title">{step.title}{step.interrupted ? <span className="arc-proc-interrupted">(stopped)</span> : null}</span>
         {hasDetails && (
-          <motion.span className="arc-proc-chevron" animate={{ rotate: isActive ? 90 : 0 }} transition={SPRING}>
-            <ChevronRight size={13} />
-          </motion.span>
+          <RotateArrow open={isActive} />
         )}
       </button>
-      <AnimatePresence initial={false}>
-        {isActive && hasDetails && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={SPRING}
-            className="arc-proc-detail-wrap"
-          >
-            <div className="arc-proc-detail">
+      <Expand open={isActive && hasDetails}>
+        <div className="arc-proc-detail">
               {step.content && step.type !== "clarification" && (
                 <div className={`arc-proc-text ${step.type === "result" ? "is-result" : ""}`}>
                   {step.content}
@@ -377,10 +343,8 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, onOpenFullscre
                 </div>
               )}
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </motion.div>
+      </Expand>
+    </FadeSlideIn>
   );
 });
 ProcessNode.displayName = "ProcessNode";
@@ -444,9 +408,7 @@ export default function ArcProcessUI({ steps = [], onOpenFile, onOpenFullscreenD
     : steps;
   return (
     <div className="arc-proc">
-      <LayoutGroup>
-        <StepList steps={rendered} onOpenFile={onOpenFile} onOpenFullscreenDiff={onOpenFullscreenDiff} toolTreeMode={toolTreeMode} resolvedDiffs={resolvedDiffs} onResolveDiff={onResolveDiff} />
-      </LayoutGroup>
+      <StepList steps={rendered} onOpenFile={onOpenFile} onOpenFullscreenDiff={onOpenFullscreenDiff} toolTreeMode={toolTreeMode} resolvedDiffs={resolvedDiffs} onResolveDiff={onResolveDiff} />
     </div>
   );
 }

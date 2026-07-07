@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
-import { Search, ChevronDown } from "lucide-react";
+import { Search, ChevronDown } from "./icons";
 import type { ModelDescriptor, ModelTier } from "@arc/host/protocol";
 const TIER_ORDER: Record<ModelTier, number> = { heavy: 0, default: 1, light: 2, free: 3 };
 const TIER_LABELS: Record<ModelTier, string> = { heavy: "heavy", default: "default", light: "light", free: "free" };

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useLayoutEffect } from "react";
-import { ArrowUp, Paperclip, Square, X, ChevronDown } from "lucide-react";
+import { ArrowUp, Paperclip, Square, X, ChevronDown } from "./icons";
 type Attachment = { uri: string; preview?: string };
 type Props = {
   onSend: (text: string, attachments?: Attachment[], images?: string[]) => void;

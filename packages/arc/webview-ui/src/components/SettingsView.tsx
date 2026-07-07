@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Plus, Trash2, Plug, Braces, Cpu, KeyRound, X, Check, Info, ListChecks, Play, ShieldCheck, RefreshCw, CircleDot, AlertTriangle, Layers, Pencil } from "lucide-react";
+import { Plus, Trash2, Plug, Braces, Cpu, KeyRound, X, Check, Info, ListChecks, Play, ShieldCheck, RefreshCw, CircleDot, AlertTriangle, Layers, Pencil } from "./icons";
 import type { RpcClient, HostEvent } from "../rpc";
 import type { ModelDescriptor, ModelTier, ProviderConfig, ProviderKind } from "@arc/host/protocol";
-import { PROVIDERS } from "@arc/host/catalog";
-type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderConfig[]; monoLogoText: string; version: string };
+type ProviderSpec = { kind: ProviderKind; label: string; tags: string[]; defaultBaseUrl?: string };
+type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderConfig[]; monoLogoText: string; version: string; providerCatalog: ProviderSpec[] };
 const TIERS: ModelTier[] = ["heavy", "default", "light", "free"];
 const TIER_ORDER: Record<ModelTier, number> = { heavy: 0, default: 1, light: 2, free: 3 };
 type Tab = "models" | "providers" | "mcp" | "general" | "search" | "customize" | "modes";
@@ -16,7 +16,7 @@ const TABS: { value: Tab; label: string; icon: React.ReactNode }[] = [
   { value: "modes", label: "Modes", icon: <Layers size={15} /> },
   { value: "customize", label: "Customize", icon: <ListChecks size={15} /> },
 ];
-export default function SettingsModal({ client, onClose, models, providers, monoLogoText, version }: Props) {
+export default function SettingsModal({ client, onClose, models, providers, monoLogoText, version, providerCatalog }: Props) {
   const [tab, setTab] = useState<Tab>("models");
   const logoTextUri = monoLogoText;
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
@@ -59,7 +59,7 @@ export default function SettingsModal({ client, onClose, models, providers, mono
         <main className="arc-modal-body">
           <div className="arc-settings-inner" key={tab}>
             {tab === "models" && <ModelsTab client={client} providers={providers} models={models} onSwitchTab={setTab} />}
-            {tab === "providers" && <ProvidersTab client={client} providers={providers} models={models} />}
+            {tab === "providers" && <ProvidersTab client={client} providers={providers} models={models} providerCatalog={providerCatalog} />}
             {tab === "mcp" && <McpTab client={client} />}
             {tab === "general" && <GeneralTab client={client} />}
             {tab === "search" && <SearchTab client={client} />}
@@ -279,14 +279,14 @@ function ModelsTab({ client, providers, models, onSwitchTab }: { client: RpcClie
     </Section>
   );
 }
-function ProvidersTab({ client, providers, models }: { client: RpcClient; providers: ProviderConfig[]; models: ModelDescriptor[] }) {
+function ProvidersTab({ client, providers, models, providerCatalog }: { client: RpcClient; providers: ProviderConfig[]; models: ModelDescriptor[]; providerCatalog: ProviderSpec[] }) {
   const [adding, setAdding] = useState(false);
   const [kind, setKind] = useState<ProviderKind>("openai");
   const [label, setLabel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [providerSearch, setProviderSearch] = useState("");
-  const spec = PROVIDERS.find((p) => p.kind === kind);
+  const spec = providerCatalog.find((p) => p.kind === kind);
   const add = () => {
     if (!label.trim()) return;
     const id = label.toLowerCase().replace(/[^a-z0-9]+/g, "-") + "-" + Date.now().toString(36);
@@ -298,8 +298,8 @@ function ProvidersTab({ client, providers, models }: { client: RpcClient; provid
     setLabel(""); setBaseUrl(""); setApiKey(""); setProviderSearch(""); setAdding(false);
   };
   const filteredProviders = providerSearch.length > 0
-    ? PROVIDERS.filter((p) => fuzzyMatch(providerSearch, p.label) || fuzzyMatch(providerSearch, p.kind) || p.tags.some((t) => fuzzyMatch(providerSearch, t)))
-    : PROVIDERS;
+    ? providerCatalog.filter((p) => fuzzyMatch(providerSearch, p.label) || fuzzyMatch(providerSearch, p.kind) || p.tags.some((t) => fuzzyMatch(providerSearch, t)))
+    : providerCatalog;
   return (
     <Section
       title="Providers"

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { ChevronDown, Wrench, FileSearch, BugPlay, SearchCheck } from "lucide-react";
+import { ChevronDown, Wrench, FileSearch, BugPlay, SearchCheck } from "./icons";
 type ModeDef = { slug: string; description: string };
 const MODE_ICONS: Record<string, React.ReactNode> = {
   plan: <FileSearch size={12} />,

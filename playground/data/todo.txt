@@ -1,6 +1,7 @@
 TODO — Arc Playground Tasks
 ============================
 
+## Core Tools
 [ ] Read and parse src/config.json
 [ ] Fix the type error in src/index.ts
 [ ] Replace REPLACE_ME in src/utils.ts with an actual string
@@ -30,6 +31,16 @@ TODO — Arc Playground Tasks
 [ ] Glob for "**/*.ts" to list all TypeScript files in the workspace
 [ ] Glob for "src/**/*" to list all files under src/
 [ ] Glob for "scripts/*.ps1" to list all PowerShell scripts
+[ ] Glob for "**/*.md" to list all markdown files (new: skills + rules + README)
+
+## file.semanticSearch
+[ ] file.semanticSearch query="conventions for editing files" — should find the demo skill
+[ ] file.semanticSearch query="avoid destructive commands" — should find the test rule
+[ ] file.semanticSearch query="REPLACE_ME sentinel pattern" — should find src/utils.ts
+
+## web.search
+[ ] web.search query="Arc agentic coding assistant" — expect results with arc extension mentions
+[ ] web.search query="TypeScript type narrowing best practices" — programming results expected
 
 ## shell.backgroundRun + shell.check
 [ ] Background run scripts/slow.ps1, then shell.check to see partial output
@@ -39,6 +50,63 @@ TODO — Arc Playground Tasks
 ## shell.write (stdin)
 [ ] Background run scripts/interactive.ps1, wait for prompt via shell.check, then shell.write "Arc" to answer the prompt
 [ ] Shell.check again to verify the script echoed the answer
+
+## shell.customRun + shell.editCustomRun + shell.runCustomRun
+[ ] Create a custom run named 'full_check' with: pwsh scripts/lint.ps1, pwsh scripts/build.ps1, pwsh scripts/check.ps1
+[ ] Try to create 'full_check' again — expect 'already exists' error
+[ ] Create again with overwrite:true — succeeds
+[ ] Edit custom run 'full_check' — add pwsh scripts/demo.ps1 as final command, rename to 'pipeline'
+[ ] Edit non-existent id 'nonexistent' — expect error
+[ ] shell.runCustomRun id='pipeline' — run all commands in sequence
+
+## test.run
+[ ] test.run scope="test/example.test.ts" — run vitest tests; expect 3 passing, 1 failing (REPLACE_ME test)
+[ ] After fixing REPLACE_ME in src/utils.ts, test.run again — all tests should pass
+
+## checkpoint tools
+[ ] checkpoint.revert — after an edit to src/utils.ts, revert to restore original content
+[ ] checkpoint.list — list all saved checkpoints with indices and file counts
+[ ] checkpoint.compare indexA=1 indexB=2 — compare two checkpoints, verify diff output
+
+## mode.switch
+[ ] mode.switch slug="plan" — switch to plan mode, verify plan-oriented prompt
+[ ] mode.switch slug="code" — switch back to code mode, verify code-oriented prompt
+[ ] mode.switch slug="audit" — switch to audit mode, verify dependency graph is shown
+[ ] mode.switch slug="debug" — switch to debug mode
+
+## skill tools
+[ ] skill.read name="demo-skill" — read the skill file, verify Markdown content
+[ ] skill.use name="demo-skill" — load skill into agent context for the current task
+[ ] skill.read name="nonexistent" — expect "not found" error
+
+## memory tools
+[ ] memory.add category="preferences" content="Always run lint.ps1 after editing TypeScript files in the playground"
+[ ] memory.list — verify the new memory entry appears
+[ ] memory.edit index=0 content="Always run lint.ps1 and build.ps1 after editing TypeScript files"
+[ ] memory.delete index=0 — remove the test memory entry
+
+## rule tools
+[ ] rule.list — list existing rules (should include test-rule.md)
+[ ] rule.read name="test-rule" — read the rule content, verify no-destructive-commands policy
+[ ] rule.create name="playground-conventions" content="All generated files go in data/. Use descriptive names."
+[ ] rule.list again — verify the new rule appears
+
+## git tools
+[ ] git.changedFiles — list files changed since the last commit
+[ ] git.diffUnstaged — read unstaged diff for any modified playground files
+[ ] git.branchDiff base="main" — diff current branch against main
+[ ] git.commitMessage — generate a commit message from the current diff
+
+## notebook tools
+[ ] notebook.read path="notebook-demo.ipynb" — list all cells with indices
+[ ] notebook.read path="notebook-demo.ipynb" cellIndex=1 — read cell 1 (REPLACE_ME cell)
+[ ] notebook.editCell path="notebook-demo.ipynb" cellIndex=1 source="const result = 'fixed';" — fix the REPLACE_ME
+[ ] notebook.addCell path="notebook-demo.ipynb" cellType="code" source="console.log('added cell');"
+[ ] notebook.deleteCell path="notebook-demo.ipynb" cellIndex=3 — delete the newly added cell
+[ ] notebook.execute path="notebook-demo.ipynb" cellIndex=0 — execute cell 0 and verify output
+
+## session.exportTrace
+[ ] session.exportTrace — export the full execution trace for the current session
 
 ## Tier 2: Subagent Features
 

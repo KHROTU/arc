@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { ChevronDown, Info } from "lucide-react";
+import { ChevronDown, Info } from "./icons";
 type Effort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 const EFFORTS: { value: Effort; label: string }[] = [
   { value: "none", label: "None" },

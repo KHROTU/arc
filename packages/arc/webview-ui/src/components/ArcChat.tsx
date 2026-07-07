@@ -1,13 +1,13 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Settings, Plus, Trash2, Pencil, Maximize2, X, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search, ArrowLeft, Undo2 } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { Settings, Plus, Trash2, Pencil, Maximize2, X, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search, ArrowLeft, Undo2 } from "./icons";
+import { FadeSlideIn } from "./anim";
 import ArcProcessUI, { type ProcessStep } from "./AgentProcess";
 import Composer from "./Composer";
 import ModelPicker from "./ModelPicker";
 import ModePicker from "./ModePicker";
 import EffortPicker, { type Effort } from "./EffortPicker";
-import type { ModelDescriptor, TurnUsage, ChatMessage, ProviderConfig } from "@arc/host/protocol";
+import type { ModelDescriptor, TurnUsage, ChatMessage, ProviderConfig, ProviderKind } from "@arc/host/protocol";
 import { useArcLogo, swapOnError } from "../hooks/useArcLogo";
 import { renderMarkdown } from "../util/markdown";
 import type { RpcClient } from "../rpc";
@@ -23,6 +23,7 @@ type Props = {
   toolTreeMode: "auto" | "collapsed";
   variant: "sidebar" | "fullscreen";
   version: string;
+  providerCatalog: { kind: ProviderKind; label: string; tags: string[]; defaultBaseUrl?: string }[];
 };
 const WAVE_BAR = { transform: "scaleY(0.28)" };
 function WaveSpinner() {
@@ -51,7 +52,7 @@ function RippleSpinner() {
     </svg>
   );
 }
-export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, prideActive, toolTreeMode, variant, version }: Props) {
+export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, prideActive, toolTreeMode, variant, version, providerCatalog }: Props) {
   const logoUri = useArcLogo(monoLogo, prideLogo, prideActive);
   const [chats, setChats] = useState<ChatMeta[]>([]);
   const [activeId, setActiveId] = useState<string>("");
@@ -505,20 +506,11 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           />
         )}
         <main className="arc-main">
-          <AnimatePresence>
-            {handoff && (
-              <motion.div
-                key={handoff.from + handoff.to}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.3, ease: [0.2, 0.8, 0.2, 1] }}
-                className="arc-handoff-sep"
-              >
-                <span className="arc-handoff-sep-label">{handoff.to}</span>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          {handoff && (
+            <FadeSlideIn className="arc-handoff-sep">
+              <span className="arc-handoff-sep-label">{handoff.to}</span>
+            </FadeSlideIn>
+          )}
           <div className="arc-transcript" ref={transcriptRef} onScroll={onTranscriptScroll}>
             {showOnboarding && isEmpty && (
               <Onboarding logoUri={logoUri} monoLogo={monoLogo} hasModels={models.length > 0} onOpenSettings={openSettings} />
@@ -541,96 +533,80 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
               </div>
             )}
           </div>
-          <AnimatePresence>
-            {clarification && (
-              <motion.div
-                initial={{ opacity: 0, x: -4 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -4 }}
-                transition={{ type: "spring", stiffness: 450, damping: 30 }}
-                className="arc-approval"
-              >
-                <div className="arc-approval-row">
-                  <HelpCircle size={14} className="arc-clar-icon" />
-                  <span className="arc-approval-label">Clarification needed</span>
-                </div>
-                <div className="arc-approval-q">{clarification.question}</div>
-                <div className="arc-clar-options">
-                  {clarification.options.map((opt, i) => (
-                    <button
-                      key={opt}
-                      onClick={() => {
-                        client.send({ type: "chat/answerClarification", id: clarification.id, answer: opt });
-                        setClarification(null);
-                      }}
-                    >
-                      {opt}<kbd>{i + 1}</kbd>
-                    </button>
-                  ))}
-                </div>
-                <div className="arc-clar-custom">
-                  <input
-                    type="text"
-                    placeholder="Type your answer…"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        client.send({ type: "chat/answerClarification", id: clarification.id, answer: (e.target as HTMLInputElement).value });
-                        setClarification(null);
-                      }
+          {clarification && (
+            <FadeSlideIn className="arc-approval">
+              <div className="arc-approval-row">
+                <HelpCircle size={14} className="arc-clar-icon" />
+                <span className="arc-approval-label">Clarification needed</span>
+              </div>
+              <div className="arc-approval-q">{clarification.question}</div>
+              <div className="arc-clar-options">
+                {clarification.options.map((opt, i) => (
+                  <button
+                    key={opt}
+                    onClick={() => {
+                      client.send({ type: "chat/answerClarification", id: clarification.id, answer: opt });
+                      setClarification(null);
                     }}
-              />
-                  <button onClick={() => {
-                    const val = (document.querySelector(".arc-clar-custom input") as HTMLInputElement)?.value;
-                    if (val) {
-                      client.send({ type: "chat/answerClarification", id: clarification.id, answer: val });
+                  >
+                    {opt}<kbd>{i + 1}</kbd>
+                  </button>
+                ))}
+              </div>
+              <div className="arc-clar-custom">
+                <input
+                  type="text"
+                  placeholder="Type your answer…"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      client.send({ type: "chat/answerClarification", id: clarification.id, answer: (e.target as HTMLInputElement).value });
                       setClarification(null);
                     }
-                  }}>↩</button>
-                </div>
-              </motion.div>
-            )}
-            {approval && (
-              <motion.div
-                initial={{ opacity: 0, x: -4 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -4 }}
-                transition={{ type: "spring", stiffness: 450, damping: 30 }}
-                className="arc-approval"
-              >
-                <div className="arc-approval-row">
-                  <span className="arc-approval-dot" />
-                  <span className="arc-approval-label">Shell command</span>
-                  <span className="arc-approval-meta">needs approval</span>
-                </div>
-                <div className="arc-approval-q">{approval.description.split("\n\n")[0]}</div>
-                {approval.description.includes("\n\n") && (
-                  <div className="arc-approval-body">{approval.description.split("\n\n").slice(1).join("\n\n")}</div>
-                )}
-                <div className="arc-approval-actions">
-                  <button className="arc-approval-allow" onClick={() => respondApproval(true, getApprovalCommand(approval.description))} autoFocus>
-                    Allow session
-                  </button>
-                  <button className="arc-approval-allow" onClick={() => respondApproval(true, undefined, getApprovalPrefix(approval.description))}>
-                    Allow prefix
-                  </button>
-                  <button className="arc-approval-allow" onClick={() => respondApproval(true)}>
-                    Allow once
-                  </button>
-                  <button className="arc-approval-deny" onClick={() => respondApproval(false)}>
-                    Deny <kbd>Esc</kbd>
-                  </button>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-          <footer className="arc-footer">
-            <AnimatePresence>
-              {error && (
-                <motion.div initial={{ y: 10, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 10, opacity: 0 }} className="arc-errorbar">
-                  <X size={13} /> {error.code && <span className="arc-error-code">{errorLabel(error.code)}</span>} <span>{error.message}</span>
-                </motion.div>
+                  }}
+            />
+                <button onClick={() => {
+                  const val = (document.querySelector(".arc-clar-custom input") as HTMLInputElement)?.value;
+                  if (val) {
+                    client.send({ type: "chat/answerClarification", id: clarification.id, answer: val });
+                    setClarification(null);
+                  }
+                }}>↩</button>
+              </div>
+            </FadeSlideIn>
+          )}
+          {approval && (
+            <FadeSlideIn className="arc-approval">
+              <div className="arc-approval-row">
+                <span className="arc-approval-dot" />
+                <span className="arc-approval-label">Shell command</span>
+                <span className="arc-approval-meta">needs approval</span>
+              </div>
+              <div className="arc-approval-q">{approval.description.split("\n\n")[0]}</div>
+              {approval.description.includes("\n\n") && (
+                <div className="arc-approval-body">{approval.description.split("\n\n").slice(1).join("\n\n")}</div>
               )}
-            </AnimatePresence>
+              <div className="arc-approval-actions">
+                <button className="arc-approval-allow" onClick={() => respondApproval(true, getApprovalCommand(approval.description))} autoFocus>
+                  Allow session
+                </button>
+                <button className="arc-approval-allow" onClick={() => respondApproval(true, undefined, getApprovalPrefix(approval.description))}>
+                  Allow prefix
+                </button>
+                <button className="arc-approval-allow" onClick={() => respondApproval(true)}>
+                  Allow once
+                </button>
+                <button className="arc-approval-deny" onClick={() => respondApproval(false)}>
+                  Deny <kbd>Esc</kbd>
+                </button>
+              </div>
+            </FadeSlideIn>
+          )}
+          <footer className="arc-footer">
+            {error && (
+              <FadeSlideIn className="arc-errorbar">
+                <X size={13} /> {error.code && <span className="arc-error-code">{errorLabel(error.code)}</span>} <span>{error.message}</span>
+              </FadeSlideIn>
+            )}
             <Composer
               key={activeId}
               onSend={send}
@@ -663,6 +639,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
             providers={providers}
             monoLogoText={monoLogoText}
             version={version}
+            providerCatalog={providerCatalog}
           />
         </Suspense>
       )}
