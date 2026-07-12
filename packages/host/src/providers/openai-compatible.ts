@@ -130,6 +130,8 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
         while ((idx = buffer.indexOf("\n")) >= 0) {
           const line = buffer.slice(0, idx).trim();
           buffer = buffer.slice(idx + 1);
+          if (!line) continue;
+          if (line.startsWith(":")) { q.push({ type: "ping" }); continue; }
           if (!line.startsWith("data:")) continue;
           const payload = line.slice(5).trim();
           if (payload === "[DONE]") {
@@ -142,7 +144,18 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
           try {
             const json = JSON.parse(payload);
             const choice = json.choices?.[0];
-            if (!choice) continue;
+            if (!choice) {
+              if (json.usage) {
+                lastUsage = {
+                  prompt: json.usage.prompt_tokens ?? 0,
+                  completion: json.usage.completion_tokens ?? 0,
+                  thinking: 0,
+                  cost: 0,
+                };
+              }
+              q.push({ type: "ping" });
+              continue;
+            }
             const delta = choice.delta ?? {};
             const emitReasoningFromDetails = (): string => {
               if (!Array.isArray(delta.reasoning_details)) return "";
@@ -220,6 +233,7 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
                 if (tc.function?.name) entry.name = tc.function.name;
                 if (typeof tc.function?.arguments === "string") entry.args += tc.function.arguments;
               }
+              q.push({ type: "ping" });
             }
             if (choice.finish_reason === "tool_calls") flushToolCalls();
             if (json.usage) {

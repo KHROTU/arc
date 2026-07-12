@@ -374,7 +374,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         run.push(item.step);
       } else {
         const m = item.msg;
-        if (m.role === "assistant" && !m.content && m.toolCalls?.length) continue;
+        if (m.role === "assistant" && m.toolCalls?.length) continue;
         if (m.role === "tool") continue;
         flush();
         out.push(<MessageBubble key={m.id} message={m} client={client} />);

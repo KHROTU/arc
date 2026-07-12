@@ -154,16 +154,26 @@ function wrapStall(handle: StreamHandle, pid: string, stallMs: number, firstByte
     handle.abort();
     q.close();
   };
+  const onFirstByteTimeout = () => {
+    if (!got && !dead) {
+      q.push({ type: "error", message: `Provider ${pid} timed out (${firstByteMs}ms)` });
+      handle.abort(); q.close();
+    }
+  };
   void (async () => {
     try {
-      fbTimer = setTimeout(() => {
-        if (!got && !dead) {
-          q.push({ type: "error", message: `Provider ${pid} timed out (${firstByteMs}ms)` });
-          handle.abort(); q.close();
-        }
-      }, firstByteMs);
+      fbTimer = setTimeout(onFirstByteTimeout, firstByteMs);
       for await (const ev of handle.events) {
         if (dead) break;
+        if (ev.type === "ping") {
+          if (!got) {
+            if (fbTimer) { clearTimeout(fbTimer); fbTimer = setTimeout(onFirstByteTimeout, firstByteMs); }
+          } else if (sTimer) {
+            clearTimeout(sTimer);
+            sTimer = setTimeout(onStall, stallMs);
+          }
+          continue;
+        }
         if (!got) { got = true; if (fbTimer) { clearTimeout(fbTimer); fbTimer = undefined; } }
         q.push(ev);
         if (ev.type === "done" || ev.type === "error") { kill(); q.close(); return; }

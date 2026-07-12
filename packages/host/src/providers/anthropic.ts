@@ -12,6 +12,19 @@ const ANTHROPIC_EFFORT: Record<string, string | undefined> = {
   max: "max",
 };
 type ContentBlock = Record<string, unknown>;
+const ENV_SPLIT_MARKER = "\n\n---\n\n## Environment\n";
+function splitSystemForCache(system: string): ContentBlock[] {
+  const idx = system.lastIndexOf(ENV_SPLIT_MARKER);
+  if (idx <= 0) {
+    return [{ type: "text", text: system, cache_control: { type: "ephemeral" } }];
+  }
+  const staticPart = system.slice(0, idx);
+  const volatilePart = system.slice(idx);
+  return [
+    { type: "text", text: staticPart, cache_control: { type: "ephemeral" } },
+    { type: "text", text: volatilePart },
+  ];
+}
 function markCacheControl(content: unknown): unknown {
   if (typeof content === "string") {
     return [{ type: "text", text: content, cache_control: { type: "ephemeral" } }];
@@ -31,7 +44,7 @@ export function applyPromptCaching(body: Record<string, unknown>): Record<string
     out.tools = tools;
   }
   if (typeof out.system === "string" && out.system) {
-    out.system = [{ type: "text", text: out.system, cache_control: { type: "ephemeral" } }];
+    out.system = splitSystemForCache(out.system);
   }
   if (Array.isArray(out.messages) && out.messages.length > 1) {
     const messages = (out.messages as { role: string; content: unknown }[]).slice();

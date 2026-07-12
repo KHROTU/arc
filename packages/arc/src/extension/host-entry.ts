@@ -656,9 +656,10 @@ const buildSystemPrompt = async (mcpAggregator?: McpAggregator): Promise<string>
   const globalParts = await loadGlobalPrompts();
   const wsParts = await loadWorkspacePrompts(root);
   const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath;
-  const parts = injectRelevantRules([...globalParts, ...wsParts], activeFile);
+  const staticParts = [...globalParts, ...wsParts];
+  const withRules = injectRelevantRules(staticParts, activeFile);
+  const volatileParts = withRules.filter((p) => !staticParts.includes(p));
   const basePrompt = `You are Arc, an agentic coding assistant. Be concise. Be precise.
-Working dir: ${root} | OS: ${process.platform} | Date: ${new Date().toISOString().slice(0, 10)}
 
 ## Communication
 - STRICTLY FORBIDDEN from starting messages with "Great", "Certainly", "Okay", "Sure". Drop articles, filler, hedging, and pleasantries. Fragments OK.
@@ -667,11 +668,19 @@ Working dir: ${root} | OS: ${process.platform} | Date: ${new Date().toISOString(
 - EXCEPTIONS (revert to full sentences): security warnings, destructive op confirmations, multi-step sequences where fragment order risks misread, compression creates ambiguity, user asks to clarify.
 - Default to action: assume the user wants implementation, not analysis. Stay with the work until handled — don't stop at halfway.
 
+## Reasoning effort
+- Scale thinking to the stakes, not the token budget. Spend depth where a wrong choice is expensive or hard to reverse; spend almost none where it is cheap and obvious.
+- Minimal thinking: reading a file, running a known command, a one-line edit, answering a lookup. Act immediately — do not deliberate over how to run \`ls\` or which flag \`git status\` needs.
+- Deep thinking: architecture and interface design, concurrency and data-loss risks, security-sensitive code, ambiguous requirements, debugging a failure whose cause you cannot yet see. Slow down, weigh alternatives, state assumptions.
+- Do not re-derive facts already established this session, and do not re-verify a result the tool already confirmed. Reuse what you know.
+- Show, don't tell: never announce how hard you are thinking or that you are being concise — just deliver the result. Uncertainty is worth stating; meta-commentary about your own process is not.
+
 ## Rules
 - Respect existing conventions, libraries, and patterns. Let the codebase teach you how to move.
 - Make precise, surgical changes that fully address the request. Implement completely — don't describe undone code.
 - Discover bugs caused by your changes — fix those. Skip unrelated pre-existing issues.
 - Add abstraction only when it removes real complexity, reduces meaningful duplication, or matches a local pattern.
+- Don't over-engineer: no features, refactors, error handling, or validation beyond what the request needs. Trust internal code; validate only at system boundaries. A bug fix does not need surrounding cleanup.
 - If a request is ambiguous, ask before acting. Reserve questions for decisions the codebase cannot answer; pick a sensible default for the rest.
 - Write diagnostic-as-code: no comments unless the WHY is non-obvious.
 - Never revert changes you did not make. Work with unrelated changes in files you touch.
@@ -711,6 +720,7 @@ file.read, file.edit, file.write, file.grep, file.glob, shell.run, shell.backgro
 ## Output
 - Lead with the outcome: your first sentence after tool work should answer what happened.
 - Report outcomes directly: success stated plainly, failure stated with what went wrong. No hedging, no praise, no summary if nothing changed.
+- Match length to change size: trivial/single-file edit → 1-3 sentences, no headings; a few files → up to ~6 bullets; large/multi-file → 1-2 bullets per file. Never inline full files or before/after pairs — reference paths and symbols.
 - Reference code as \`file_path:line_number\` — clickable in the UI.`;
   let mcpBlock = "";
   if (mcpAggregator) {
@@ -725,14 +735,19 @@ file.read, file.edit, file.write, file.grep, file.glob, shell.run, shell.backgro
       mcpBlock = lines.join("\n");
     }
   }
-  const merged = mergePrecedence([{ scope: "global", body: basePrompt + mcpBlock }, ...parts]);
+  const merged = mergePrecedence([{ scope: "global", body: basePrompt + mcpBlock }, ...staticParts]);
   if (skillRegistryReady) await skillRegistryReady;
   const skillsSection = skillRegistry ? skillRegistry.titlesForSystemPrompt() : "";
-  return render(merged, {
+  const staticPrompt = render(merged, {
     workspace: root,
     os: process.platform,
     date: new Date().toISOString().slice(0, 10),
   }) + skillsSection;
+  const volatileRules = volatileParts.length
+    ? "\n\n---\n\n" + render(mergePrecedence(volatileParts), { workspace: root, os: process.platform, date: new Date().toISOString().slice(0, 10) })
+    : "";
+  const envBlock = `\n\n---\n\n## Environment\nWorking dir: ${root} | OS: ${process.platform} | Date: ${new Date().toISOString().slice(0, 10)}`;
+  return staticPrompt + envBlock + volatileRules;
 };
 async function createAgent(session: Session): Promise<Agent | undefined> {
   if (!registry || !store || !lsp || !mcp || !ctxRef) return;
@@ -1487,6 +1502,24 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             registry.upsertProvider({ ...msg.provider, apiKey: msg.apiKey, enabled: msg.provider.enabled ?? true });
             if (msg.apiKey) await ctxRef.secrets.store(`${SECRET_PREFIX}${msg.provider.id}`, msg.apiKey);
             persist?.();
+            webview.postMessage({ type: "provider/list", providers: registry.listProviders() });
+          }
+          break;
+        }
+        case "provider/update": {
+          if (registry) {
+            const p = registry.listProviders().find((x) => x.id === msg.providerId);
+            if (p) {
+              if (msg.changes.label !== undefined) p.label = msg.changes.label;
+              if (msg.changes.kind !== undefined) p.kind = msg.changes.kind;
+              if (msg.changes.baseUrl !== undefined) p.baseUrl = msg.changes.baseUrl || undefined;
+              if (msg.apiKey !== undefined) {
+                if (msg.apiKey) { p.apiKey = msg.apiKey; await ctxRef.secrets.store(`${SECRET_PREFIX}${p.id}`, msg.apiKey); }
+                else { p.apiKey = undefined; await ctxRef.secrets.delete(`${SECRET_PREFIX}${p.id}`); }
+              }
+              registry.upsertProvider(p);
+              persist?.();
+            }
             webview.postMessage({ type: "provider/list", providers: registry.listProviders() });
           }
           break;

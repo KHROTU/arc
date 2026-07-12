@@ -274,6 +274,7 @@ export type WebviewMsg =
   | { type: "model/add"; model: ModelDescriptor }
   | { type: "model/remove"; modelId: string }
   | { type: "provider/add"; provider: Omit<ProviderConfig, "apiKey">; apiKey?: string }
+  | { type: "provider/update"; providerId: string; changes: { label?: string; baseUrl?: string; kind?: ProviderKind }; apiKey?: string }
   | { type: "provider/remove"; providerId: string }
   | { type: "provider/toggle"; providerId: string; enabled: boolean }
   | { type: "config/get"; key: string; id: string }

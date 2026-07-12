@@ -136,6 +136,27 @@ describe("routeStream", () => {
     await routeStream(r, r.get("m1")!, async (d) => { used = d.provider.id; return makeStream([{ type: "text", delta: "ok" }, { type: "done" }]); }, { rerank: true });
     expect(used).toBe("p2");
   });
+  it("ping events keep a slow tool-call stream alive past the stall window", async () => {
+    const r = new ModelRegistry();
+    r.load({ models: [makeModel()], providers: [makeProvider({ id: "p1" })] });
+    const q = new AsyncEventQueue<StreamEvent>();
+    void (async () => {
+      q.push({ type: "text", delta: "start" });
+      for (let i = 0; i < 30; i++) {
+        await new Promise((res) => setTimeout(res, 30));
+        q.push({ type: "ping" });
+      }
+      q.push({ type: "tool_call", id: "c1", name: "file.write", args: { path: "a" } });
+      q.push({ type: "done" });
+      q.close();
+    })();
+    const h = await routeStream(r, r.get("m1")!, async () => ({ events: q, abort: () => q.close() }), { stallMs: 100, firstByteMs: 1000 });
+    const evs: StreamEvent[] = [];
+    for await (const e of h.events) evs.push(e);
+    expect(evs.some((e) => e.type === "error")).toBe(false);
+    expect(evs.some((e) => e.type === "tool_call")).toBe(true);
+    expect(evs.some((e) => e.type === "ping")).toBe(false);
+  });
 });
 describe("recordFailure / recordSuccess", () => {
   it("recordFailure opens circuit breaker", () => {

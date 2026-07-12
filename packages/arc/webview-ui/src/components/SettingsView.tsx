@@ -194,7 +194,7 @@ function ModelsTab({ client, providers, models, onSwitchTab }: { client: RpcClie
   return (
     <Section
       title="Models"
-      description="Each model has a tier and one or more providers. Set the remote slug per provider."
+      description="Each model has a tier and one or more providers."
       action={!adding && <button className="arc-btn" onClick={() => setAdding(true)}><Plus size={14} /> Add model</button>}
     >
       {adding && (
@@ -281,6 +281,7 @@ function ModelsTab({ client, providers, models, onSwitchTab }: { client: RpcClie
 }
 function ProvidersTab({ client, providers, models, providerCatalog }: { client: RpcClient; providers: ProviderConfig[]; models: ModelDescriptor[]; providerCatalog: ProviderSpec[] }) {
   const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [kind, setKind] = useState<ProviderKind>("openai");
   const [label, setLabel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -303,7 +304,7 @@ function ProvidersTab({ client, providers, models, providerCatalog }: { client: 
   return (
     <Section
       title="Providers"
-      description="API keys are stored in SecretStorage, and we can't afford servers to steal your keys."
+      description="API keys are stored in SecretStorage."
       action={!adding && <button className="arc-btn" onClick={() => setAdding(true)}><Plus size={14} /> Add provider</button>}
     >
       {adding && (
@@ -334,6 +335,9 @@ function ProvidersTab({ client, providers, models, providerCatalog }: { client: 
       <ul className="arc-rows">
         {providers.map((p) => {
           const bound = models.filter((m) => m.providers.some((mp) => mp.id === p.id));
+          if (editingId === p.id) {
+            return <li key={p.id} className="arc-row"><EditProviderForm client={client} provider={p} onDone={() => setEditingId(null)} /></li>;
+          }
           return (
             <li key={p.id} className="arc-row">
               <div className="arc-row-main">
@@ -342,6 +346,7 @@ function ProvidersTab({ client, providers, models, providerCatalog }: { client: 
                 {p.baseUrl && <code className="arc-row-code">{p.baseUrl}</code>}
                 <span className="arc-spacer" />
                 <Toggle checked={p.enabled} onChange={(enabled) => client.send({ type: "provider/toggle", providerId: p.id, enabled })} />
+                <button className="arc-iconbtn" onClick={() => setEditingId(p.id)} title="Edit"><Pencil size={14} /></button>
                 <button className="arc-iconbtn" onClick={() => client.send({ type: "provider/remove", providerId: p.id })} title="Remove"><Trash2 size={14} /></button>
               </div>
               {bound.length > 0 && <div className="arc-row-sub">bound to {bound.map((m) => m.label).join(", ")}</div>}
@@ -350,6 +355,35 @@ function ProvidersTab({ client, providers, models, providerCatalog }: { client: 
         })}
       </ul>
     </Section>
+  );
+}
+function EditProviderForm({ client, provider, onDone }: { client: RpcClient; provider: ProviderConfig; onDone: () => void }) {
+  const [label, setLabel] = useState(provider.label);
+  const [baseUrl, setBaseUrl] = useState(provider.baseUrl ?? "");
+  const [apiKey, setApiKey] = useState("");
+  const save = () => {
+    if (!label.trim()) return;
+    client.send({
+      type: "provider/update",
+      providerId: provider.id,
+      changes: { label, baseUrl },
+      apiKey: apiKey ? apiKey : undefined,
+    });
+    onDone();
+  };
+  return (
+    <div className="arc-form" style={{ width: "100%" }}>
+      <div className="arc-form-row">
+        <input className="arc-input" placeholder="Label" value={label} onChange={(e) => setLabel(e.target.value)} autoFocus />
+        <span className="arc-row-meta">{provider.kind}</span>
+      </div>
+      <input className="arc-input" placeholder="https://…" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+      <input className="arc-input" type="password" placeholder="API key (leave blank to keep current)" value={apiKey} onChange={(e) => setApiKey(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
+      <div className="arc-form-actions">
+        <button className="arc-btn" onClick={save}><Check size={14} /> Save</button>
+        <button className="arc-btn-ghost" onClick={onDone}>Cancel</button>
+      </div>
+    </div>
   );
 }
 function McpTab({ client }: { client: RpcClient }) {
@@ -396,7 +430,7 @@ function McpTab({ client }: { client: RpcClient }) {
     <>
       <Section
         title="Configured servers"
-        description="Model Context Protocol servers expose tools to the agent. Persisted to ~/.arc/mcp.json."
+        description="MCP servers expose tools to the agent."
         action={!adding && <button className="arc-btn" onClick={() => setAdding(true)}><Plus size={14} /> Add server</button>}
       >
         {adding && (
@@ -568,7 +602,7 @@ function GeneralTab({ client }: { client: RpcClient }) {
   }, [client]);
   return (
     <>
-      <Section title="Verification" description="Runs commands from .arc/verify.toml after file edits and feeds failures back to the agent to fix.">
+      <Section title="Verification" description="Runs .arc/verify.toml commands after edits and feeds failures back to the agent.">
         <ul className="arc-rows">
           <li className="arc-row"><div className="arc-row-main">
             <span className="arc-row-label">Retry strategy</span>
@@ -607,7 +641,7 @@ function GeneralTab({ client }: { client: RpcClient }) {
           </div></li>
         </ul>
       </Section>
-      <Section title="Proxy" description="Optional HTTP/HTTPS proxy URLs. Category-specific settings override the fallback (URL).">
+      <Section title="Proxy" description="Optional HTTP/HTTPS proxy URLs. Category settings override the fallback.">
         <ul className="arc-rows">
           <li className="arc-row"><div className="arc-row-main">
             <span className="arc-row-label">URL</span>
@@ -774,7 +808,7 @@ function ModesTab({ client, models }: { client: RpcClient; models: ModelDescript
   };
   const remove = (slug: string) => client.send({ type: "mode/delete", slug, scope: "workspace" });
   return (
-    <Section title="Modes" description="Custom agent modes with their own system prompt, allowed tools, write scope, and preferred model." action={!editing && <button className="arc-btn" onClick={startNew}><Plus size={14} /> New mode</button>}>
+    <Section title="Modes" description="Custom agent modes with their own prompt, tools, write scope, and model." action={!editing && <button className="arc-btn" onClick={startNew}><Plus size={14} /> New mode</button>}>
       {!editing && (
         <ul className="arc-rows">
           {modes.map((m) => (
@@ -839,7 +873,7 @@ function CustomTab({ client }: { client: RpcClient }) {
   }, [client]);
   return (
     <>
-      <Section title="System prompts" description="Higher-precedence content overrides lower. Variables {{workspace}}, {{os}}, {{date}} are supported.">
+      <Section title="System prompts" description="Higher-precedence content overrides lower. Supports {{workspace}}, {{os}}, {{date}}.">
         <ul className="arc-rows">
           {PROMPTS.map((r) => (
             <li key={r.name} className="arc-row">

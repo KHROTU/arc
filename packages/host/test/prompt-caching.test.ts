@@ -5,6 +5,14 @@ describe("applyPromptCaching", () => {
     const body = applyPromptCaching({ system: "You are Arc.", messages: [{ role: "user", content: "hi" }] });
     expect(body.system).toEqual([{ type: "text", text: "You are Arc.", cache_control: { type: "ephemeral" } }]);
   });
+  it("splits system into a cached static prefix and an uncached volatile Environment tail", () => {
+    const system = "You are Arc.\n\n---\n\n## Environment\nDate: 2026-01-01";
+    const body = applyPromptCaching({ system, messages: [{ role: "user", content: "hi" }] });
+    expect(body.system).toEqual([
+      { type: "text", text: "You are Arc.", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "\n\n---\n\n## Environment\nDate: 2026-01-01" },
+    ]);
+  });
   it("leaves system prompt untouched when absent", () => {
     const body = applyPromptCaching({ messages: [{ role: "user", content: "hi" }] });
     expect(body.system).toBeUndefined();

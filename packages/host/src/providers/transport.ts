@@ -6,6 +6,7 @@ export type StreamEvent =
   | { type: "tool_call"; id: string; name: string; args: Record<string, unknown> }
   | { type: "tool_call_delta"; id: string; argsDelta: string }
   | { type: "usage"; usage: TurnUsage }
+  | { type: "ping" }
   | { type: "error"; message: string }
   | { type: "done" };
 export interface ToolSpec {
