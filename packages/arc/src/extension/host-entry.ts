@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import * as os from "node:os";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   ModelRegistry, Agent, CheckpointStore, LspBridge, McpAggregator,
@@ -40,6 +42,7 @@ let fileContextTracker: FileContextTracker;
 let persist: () => void;
 let persistAsync: () => Promise<void>;
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
+const serverProcesses = new Map<string, ChildProcess>();
 function debouncedPersist(): void {
   clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
@@ -859,6 +862,9 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
         if (path) reportAgentActivity("edit", path);
       }
     },
+    stepUpdate: (step) => {
+      broadcast(session, { type: "session/stepUpdate", step, sessionId: sinkId });
+    },
     turnStart: (turnId) => {
       broadcast(session, { type: "session/turnStart", turnId, sessionId: sinkId });
       reportAgentActivity("think");
@@ -1266,6 +1272,17 @@ async function tryLoadIndex(): Promise<void> {
   }
 }
 function wireWebview(webview: vscode.Webview, session: Session) {
+  const sendProviders = () => {
+    if (!registry) return;
+    const providers = registry.listProviders();
+    webview.postMessage({ type: "provider/list", providers });
+    for (const p of providers) {
+      const proc = serverProcesses.get(p.id);
+      if (proc && !proc.killed) {
+        webview.postMessage({ type: "provider/serverState", providerId: p.id, running: true, pid: proc.pid });
+      }
+    }
+  };
   webview.onDidReceiveMessage(async (raw: unknown) => {
     const msg = raw as WebviewMsg;
     try {
@@ -1283,7 +1300,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             reasoningEffort: vscode.workspace.getConfiguration().get<string>("arc.reasoning.effort", "high") ?? "high",
           });
           if (registry) webview.postMessage({ type: "model/list", models: registry.list(), currentModelId: registry.getCurrent()?.id ?? "" });
-          if (registry) webview.postMessage({ type: "provider/list", providers: registry.listProviders() });
+          if (registry) sendProviders();
           if (mcp) {
             const list = mcp.listServers().map((s) => ({ name: s.name, enabled: s.enabled, transport: s.transport.type, toolCount: s.tools.length }));
             webview.postMessage({ type: "mcp/list", servers: list });
@@ -1502,7 +1519,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             registry.upsertProvider({ ...msg.provider, apiKey: msg.apiKey, enabled: msg.provider.enabled ?? true });
             if (msg.apiKey) await ctxRef.secrets.store(`${SECRET_PREFIX}${msg.provider.id}`, msg.apiKey);
             persist?.();
-            webview.postMessage({ type: "provider/list", providers: registry.listProviders() });
+            sendProviders();
           }
           break;
         }
@@ -1513,6 +1530,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
               if (msg.changes.label !== undefined) p.label = msg.changes.label;
               if (msg.changes.kind !== undefined) p.kind = msg.changes.kind;
               if (msg.changes.baseUrl !== undefined) p.baseUrl = msg.changes.baseUrl || undefined;
+              if (msg.changes.startCommand !== undefined) p.startCommand = msg.changes.startCommand || undefined;
               if (msg.apiKey !== undefined) {
                 if (msg.apiKey) { p.apiKey = msg.apiKey; await ctxRef.secrets.store(`${SECRET_PREFIX}${p.id}`, msg.apiKey); }
                 else { p.apiKey = undefined; await ctxRef.secrets.delete(`${SECRET_PREFIX}${p.id}`); }
@@ -1520,7 +1538,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
               registry.upsertProvider(p);
               persist?.();
             }
-            webview.postMessage({ type: "provider/list", providers: registry.listProviders() });
+            sendProviders();
           }
           break;
         }
@@ -1529,15 +1547,133 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             await ctxRef.secrets.delete(`${SECRET_PREFIX}${msg.providerId}`);
             registry.removeProvider(msg.providerId);
             persist?.();
-            webview.postMessage({ type: "provider/list", providers: registry.listProviders() });
+            sendProviders();
           }
           break;
         case "provider/toggle": {
           if (registry) {
             const p = registry.listProviders().find((x) => x.id === msg.providerId);
             if (p) { p.enabled = msg.enabled; registry.upsertProvider(p); persist?.(); }
-            webview.postMessage({ type: "provider/list", providers: registry.listProviders() });
+            sendProviders();
           }
+          break;
+        }
+        case "provider/setupInternal": {
+          if (!registry) break;
+          const report = (phase: string, pct: number, error?: string) =>
+            webview.postMessage({ type: "provider/internalSetupProgress", phase, pct, error });
+          try {
+            report("Preparing…", 5);
+            const apiDir = path.join(os.homedir(), ".arc", "api");
+            const repoUrl = "https://github.com/KHROTU/lucky-cat-api.git";
+            const repoDir = apiDir;
+            const repoExists = await fs.access(path.join(repoDir, "lc_server.py")).then(() => true).catch(() => false);
+            if (!repoExists) {
+               report("Downloading…", 10);
+              await fs.mkdir(path.dirname(apiDir), { recursive: true });
+              await new Promise<void>((resolve, reject) => {
+                const proc = spawn("git", ["clone", repoUrl, apiDir], { stdio: "pipe" });
+                let stderr = "";
+                proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+                proc.on("close", (code) => {
+                  if (code === 0) resolve();
+                  else reject(new Error(stderr || `git clone failed with code ${code}`));
+                });
+                proc.on("error", reject);
+              });
+            }
+            report("Installing…", 30);
+            await new Promise<void>((resolve, reject) => {
+              const proc = spawn("pip", ["install", "-r", "requirements.txt"], { cwd: repoDir, stdio: "pipe" });
+              let stderr = "";
+              proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+              proc.on("close", (code) => {
+                if (code === 0) resolve();
+                else reject(new Error(stderr || `pip install failed with code ${code}`));
+              });
+              proc.on("error", reject);
+            });
+            report("Starting…", 90);
+            const providerId = "internal-" + Date.now().toString(36);
+            const internalCmd = `python -m uvicorn lc_server:app --app-dir "${repoDir}" --host 127.0.0.1 --port 3737`;
+            const serverProc = spawn("python", ["-m", "uvicorn", "lc_server:app", "--app-dir", repoDir, "--host", "127.0.0.1", "--port", "3737"], {
+              cwd: repoDir,
+              stdio: "ignore",
+              detached: true,
+            });
+            serverProc.on("exit", () => { serverProcesses.delete(providerId); });
+            serverProcesses.set(providerId, serverProc);
+            serverProc.unref();
+            report("Configuring…", 80);
+            registry.upsertProvider({
+              id: providerId,
+              kind: "openai-compatible",
+              label: "Internal",
+              baseUrl: "http://127.0.0.1:3737/v1",
+              startCommand: internalCmd,
+              enabled: true,
+            });
+            const existingModels = registry.list();
+            if (!existingModels.some((m) => m.id === "glm-5.2")) {
+              registry.upsertModel({
+                id: "glm-5.2",
+                label: "GLM 5.2",
+                tier: "heavy",
+                contextWindow: 200000,
+                costPer1mIn: 0,
+                costPer1mOut: 0,
+                providers: [{ id: providerId, kind: "openai-compatible", priority: 0, remoteModel: "glm-5.2" }],
+              });
+            }
+            if (!existingModels.some((m) => m.id === "qwen3.5-397b-a17b")) {
+              registry.upsertModel({
+                id: "qwen3.5-397b-a17b",
+                label: "Qwen3.5 397B A17B",
+                tier: "heavy",
+                contextWindow: 266000,
+                costPer1mIn: 0,
+                costPer1mOut: 0,
+                providers: [{ id: providerId, kind: "openai-compatible", priority: 1, remoteModel: "qwen3.5-397b-a17b" }],
+              });
+            }
+            persist?.();
+            webview.postMessage({ type: "model/list", models: registry.list(), currentModelId: registry.getCurrent()?.id ?? "" });
+            sendProviders();
+            report("Done", 100);
+          } catch (e) {
+            report("Setup failed", 0, (e as Error).message);
+          }
+          break;
+        }
+        case "provider/startServer": {
+          const p = registry?.listProviders().find((x) => x.id === msg.providerId);
+          if (!p?.startCommand) break;
+          const existing = serverProcesses.get(msg.providerId);
+          if (existing && !existing.killed) {
+            webview.postMessage({ type: "provider/serverState", providerId: msg.providerId, running: true, pid: existing.pid });
+            break;
+          }
+          try {
+            const proc = spawn(p.startCommand, [], { cwd: os.homedir(), stdio: "ignore", detached: true, shell: true });
+            proc.on("exit", () => {
+              serverProcesses.delete(msg.providerId);
+              webview.postMessage({ type: "provider/serverState", providerId: msg.providerId, running: false });
+            });
+            serverProcesses.set(msg.providerId, proc);
+            proc.unref();
+            webview.postMessage({ type: "provider/serverState", providerId: msg.providerId, running: true, pid: proc.pid });
+          } catch (e) {
+            webview.postMessage({ type: "provider/serverState", providerId: msg.providerId, running: false });
+          }
+          break;
+        }
+        case "provider/stopServer": {
+          const proc = serverProcesses.get(msg.providerId);
+          if (proc && !proc.killed) {
+            proc.kill();
+            serverProcesses.delete(msg.providerId);
+          }
+          webview.postMessage({ type: "provider/serverState", providerId: msg.providerId, running: false });
           break;
         }
         case "config/get": {
@@ -1736,7 +1872,6 @@ function wireWebview(webview: vscode.Webview, session: Session) {
               await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(beforeContent));
             } catch (e) {
               webview.postMessage({ type: "error", message: `Failed to revert ${msg.filePath}: ${(e as Error).message}` });
-              break;
             }
           }
           if (session.agent) session.agent.injectSystemNote(`User rejected the edit to ${msg.filePath}. The file has been reverted to its previous content. Do not reapply this edit unless asked again.`);

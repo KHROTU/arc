@@ -15,6 +15,7 @@ import { SubagentRunner } from "./subagent.js";
 import { runHooks } from "../hooks/hooks.js";
 import { loadVerifyConfig, runVerification, type VerifyConfig } from "../verify/verify.js";
 import { appendAuditEntry } from "../audit/audit.js";
+import { FileEditor } from "../edit/editor.js";
 import type { ModeRegistry } from "../modes/index.js";
 import { type ApprovalsConfig, type SessionApprovals, type ApproveShellMeta, DEFAULT_APPROVALS, initSession, resolveApproval } from "../approvals/index.js";
 import type { ChatMessage, ModelDescriptor, ToolCall, TurnUsage, ExecutionEvent } from "../protocol/protocol.js";
@@ -25,6 +26,7 @@ export interface AgentEventSink {
   message(m: ChatMessage): void;
   assistantDelta?(id: string, text: string): void;
   steps(steps: ProcessStep[]): void;
+  stepUpdate?(step: ProcessStep): void;
   turnStart(turnId: string): void;
   turnEnd(turnId: string, ok: boolean, error?: string): void;
   usage(usage: TurnUsage, perModel: Record<string, TurnUsage>): void;
@@ -85,6 +87,9 @@ export class Agent {
   private lastTodoUpdate = 0;
   private pendingChain: { toolName: string; args: Record<string, unknown>; resultText: string; displayTitle: string } | null = null;
   private mcpReverse: Map<string, { server: string; tool: string }> = new Map();
+  private toolMeta = new Map<string, { name: string; args: Record<string, unknown> }>();
+  private toolAcc = new Map<string, { name: string; argsJson: string }>();
+  private toolAccPrevContent = new Map<string, string>();
   private timeline: ExecutionEvent[] = [];
   private readonly TIMELINE_MAX = 2000;
   private verifyAttempts = 0;
@@ -460,6 +465,7 @@ export class Agent {
       const turnTs = Date.now();
       let firstTextTs = 0;
       let thoughtStart = 0;
+      this.toolAcc.clear();
       for await (const ev of stream.events) {
         if (this.abortController.signal.aborted) break;
         switch (ev.type) {
@@ -480,19 +486,45 @@ export class Agent {
             if (thoughtStart) this.finalizeThought(assistantId, thoughtStart);
             const tc: ToolCall = { id: ev.id, name: ev.name, args: ev.args };
             toolCalls.push(tc);
-            if (ev.name !== "todo.write") {
-              this.openStep({
-                id: ev.id,
-                type: "tool",
-                title: prettyToolTitle(ev.name, ev.args),
-                toolName: ev.name,
-                content: "",
-                command: (ev.name === "shell.run" || ev.name === "shell.backgroundRun") ? String(ev.args.command ?? "") : undefined,
-              });
+            this.toolMeta.set(tc.id, { name: tc.name, args: tc.args });
+            if (tc.name !== "todo.write") {
+              const command = (tc.name === "shell.run" || tc.name === "shell.backgroundRun") ? String(tc.args.command ?? "") : undefined;
+              const title = prettyToolTitle(tc.name, tc.args, "processing");
+              this.upsertToolStep(tc.id, tc.name, title, command);
             }
             break;
           }
           case "tool_call_delta": {
+            if (ev.name === "todo.write") break;
+            if (thoughtStart) { this.finalizeThought(assistantId, thoughtStart); thoughtStart = 0; }
+            let acc = this.toolAcc.get(ev.id);
+            if (!acc) { acc = { name: ev.name, argsJson: "" }; this.toolAcc.set(ev.id, acc); }
+            if (ev.name) acc.name = ev.name;
+            acc.argsJson += ev.argsDelta;
+            const partialArgs = parsePartialArgs(acc.argsJson);
+            const command = (acc.name === "shell.run" || acc.name === "shell.backgroundRun") ? String(partialArgs.command ?? "") : undefined;
+            const title = prettyToolTitle(acc.name, partialArgs, "processing");
+            this.upsertToolStep(ev.id, acc.name, title, command);
+            if ((acc.name === "file.write" || acc.name === "file.edit") && partialArgs.path && typeof partialArgs.content === "string" && partialArgs.content.length > 0) {
+              const stepIndex = this.steps.findIndex((s) => s.id === ev.id);
+              if (stepIndex >= 0 && this.steps[stepIndex].pending !== false) {
+                const isWrite = acc.name === "file.write";
+                const prevContent = this.toolAccPrevContent.get(ev.id);
+                if (prevContent !== partialArgs.content) {
+                  this.toolAccPrevContent.set(ev.id, partialArgs.content);
+                  const ed = new FileEditor(this.opts.workspaceRoot);
+                  const prev = isWrite ? "" : prevContent ?? "";
+                  const cur = partialArgs.content;
+                  const r = ed.applyInline(prev, cur);
+                  const hunks = r.diff.map((c) => ({ added: c.added ?? false, removed: c.removed ?? false, value: c.value }));
+                  if (hunks.length > 0) {
+                    const step = this.steps[stepIndex];
+                    this.steps[stepIndex] = { ...step, diffHunks: hunks, filePath: partialArgs.path as string, pending: true };
+                    this.sink.steps(this.steps);
+                  }
+                }
+              }
+            }
             break;
           }
           case "usage": {
@@ -1139,6 +1171,16 @@ export class Agent {
       requestApproval: this.opts.approveShell ?? (this.opts.toolContext as any).requestApproval,
       addSessionCommand: (cmd: string) => { this.sessionApprovals.sessionCommandAllowlist.push(cmd); },
       onChunk: this.makeChunkHandler(tc),
+      onDiff: (diffHunks, filePath) => {
+        for (let i = this.steps.length - 1; i >= 0; i--) {
+          if (this.steps[i].id === tc.id) {
+            if (this.steps[i].pending === false) return;
+            this.steps[i] = { ...this.steps[i], diffHunks, filePath, pending: true };
+            this.sink.steps(this.steps);
+            return;
+          }
+        }
+      },
     };
     let result;
     const toolStartTs = Date.now();
@@ -1150,7 +1192,7 @@ export class Agent {
     this.pushTimeline({ type: "tool_call", turnId, toolCallId: tc.id, toolName: tc.name, args: tc.args, ts: toolStartTs, durationMs: Date.now() - toolStartTs, ok: result.ok, output: (result.output ?? "").slice(0, 500) });
     const truncatedOutput = await this.truncateToolOutput(result.output, tc.name);
     const isEditOrWrite = tc.name === "file.edit" || tc.name === "file.write";
-    this.appendToolOutput(tc.id, isEditOrWrite ? "" : truncatedOutput, result.ok, result.ok ? undefined : prettyToolTitle(tc.name, tc.args, false), result.diffHunks, result.filePath, result.runAfter?.command, result.runAfter?.output);
+    this.appendToolOutput(tc.id, isEditOrWrite ? "" : truncatedOutput, result.ok, result.ok ? undefined : prettyToolTitle(tc.name, tc.args, "error"), result.diffHunks, result.filePath, result.runAfter?.command, result.runAfter?.output);
     if (result.todoState) {
       this.todoItems = result.todoState.items.map((it) => ({ ...it }));
       this.lastTodoUpdate = this.turnCount;
@@ -1320,6 +1362,15 @@ export class Agent {
     this.steps.push({ ...step, ts: step.ts ?? Date.now() });
     this.sink.steps(this.steps);
   }
+  private upsertToolStep(id: string, name: string, title: string, command?: string) {
+    const existing = this.steps.findIndex((s) => s.id === id);
+    if (existing >= 0) {
+      this.steps[existing] = { ...this.steps[existing], title, ...(command !== undefined ? { command } : {}) };
+    } else {
+      this.steps.push({ id, type: "tool", title, toolName: name, content: "", ...(command ? { command } : {}), ts: Date.now(), pending: true });
+    }
+    this.sink.steps(this.steps);
+  }
   private makeChunkHandler(tc: ToolCall): (stream: "stdout" | "stderr", text: string) => void {
     let buffer = "";
     let lastFlush = 0;
@@ -1352,6 +1403,7 @@ export class Agent {
     };
   }
   private appendToolOutput(id: string, output: string, ok: boolean, title?: string, diffHunks?: import("../protocol/process.js").DiffHunk[], filePath?: string, runAfterCommand?: string, runAfterOutput?: string) {
+    const resolvedTitle = title ?? (this.toolMeta.has(id) ? prettyToolTitle(this.toolMeta.get(id)!.name, this.toolMeta.get(id)!.args, ok ? "done" : "error") : undefined);
     for (let i = this.steps.length - 1; i >= 0; i--) {
       if (this.steps[i].id === id) {
         this.steps[i] = {
@@ -1359,7 +1411,7 @@ export class Agent {
           output,
           pending: false,
           type: ok ? this.steps[i].type : "error",
-          ...(title ? { title } : {}),
+          ...(resolvedTitle ? { title: resolvedTitle } : {}),
           ...(diffHunks ? { diffHunks } : {}),
           ...(filePath !== undefined ? { filePath } : {}),
           ...(runAfterCommand ? { runAfterCommand } : {}),
@@ -1420,7 +1472,26 @@ function addUsage(a: TurnUsage | undefined, b: TurnUsage): TurnUsage {
     cost: (a?.cost ?? 0) + b.cost,
   };
 }
-function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true): string {
+function parsePartialArgs(json: string): Record<string, unknown> {
+  try { return JSON.parse(json) as Record<string, unknown>; } catch {}
+  const result: Record<string, unknown> = {};
+  for (const key of ["path", "file", "command", "pattern", "url", "query", "name", "question", "selector", "server", "tool", "slug", "id", "content", "replace", "search"]) {
+    const re = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)(?:"|$)`, "g");
+    let m: RegExpExecArray | null;
+    let last: string | undefined;
+    while ((m = re.exec(json)) !== null) { last = m[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\").replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\r/g, "\r"); }
+    if (last !== undefined) result[key] = last;
+  }
+  for (const key of ["offset", "limit", "index", "cellIndex", "tabId", "direction"]) {
+    const re = new RegExp(`"${key}"\\s*:\\s*(-?\\d+)`, "g");
+    let m: RegExpExecArray | null;
+    let last: number | undefined;
+    while ((m = re.exec(json)) !== null) { last = Number(m[1]); }
+    if (last !== undefined) result[key] = last;
+  }
+  return result;
+}
+function prettyToolTitle(name: string, args: Record<string, unknown>, state: "processing" | "done" | "error" = "done"): string {
   const path = String(args.path ?? args.file ?? "");
   const clip = (s: string, n = 64) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
   const rangeInfo = (): string => {
@@ -1431,7 +1502,95 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
     if (o) return ` [L${o}+]`;
     return ` [${l} lines]`;
   };
-  if (!ok) {
+  const cleanFilePath = (p: string): string => {
+    const m = p.match(/[/\\]tool_outputs[/\\]([a-zA-Z0-9_]+)_(\d{4}-\d{2}-\d{2}T[^/\\]*)$/);
+    if (m) return `${m[1].replace(/_/g, ".")} output`;
+    return p.replace(/[/\\]\.arc[/\\]workspaces[/\\][a-f0-9-]+[/\\]/g, "/.arc/.../");
+  };
+  if (state === "processing") {
+    switch (name) {
+      case "file.read": return `Reading ${cleanFilePath(path)}${rangeInfo()}`;
+      case "file.edit": return `Editing ${cleanFilePath(path)}`;
+      case "file.write": return `Writing ${cleanFilePath(path)}`;
+      case "file.grep": return `Grepping /${clip(String(args.pattern ?? ""))}/`;
+      case "file.glob": return `Globbing ${clip(String(args.pattern ?? ""))}`;
+      case "shell.run": return `Running ${clip(String(args.command ?? ""))}`;
+      case "shell.backgroundRun": return `Starting ${clip(String(args.command ?? ""))}`;
+      case "shell.check": return `Checking process ${args.id ?? ""}`;
+      case "shell.write": return `Writing to process ${args.id ?? ""}`;
+      case "shell.customRun": return `Creating custom run ${clip(String(args.name ?? ""), 40)}`;
+      case "shell.editCustomRun": return `Editing custom run ${String(args.id ?? "").slice(0, 12)}`;
+      case "shell.runCustomRun": return `Running custom run ${String(args.id ?? "").slice(0, 12)}`;
+      case "lsp.problems": return "Checking workspace problems";
+      case "lsp.problemsFor": return `Checking problems in ${path}`;
+      case "todo.write": return "Updating plan";
+      case "browser.navigate": return `Navigating to ${clip(String(args.url ?? ""))}`;
+      case "browser.click": return `Clicking ${clip(String(args.selector ?? ""))}`;
+      case "browser.type": return `Typing into ${clip(String(args.selector ?? ""))}`;
+      case "browser.screenshot": return "Taking screenshot";
+      case "browser.evaluate": return "Evaluating script";
+      case "browser.readDom": return "Reading page DOM";
+      case "browser.drag": return `Dragging ${clip(String(args.from ?? ""))}`;
+      case "browser.dialog": return "Handling dialog";
+      case "browser.runCode": return "Running Playwright code";
+      case "browser.readPage": return "Reading page content";
+      case "browser.close": return "Closing browser";
+      case "browser.hover": return `Hovering ${clip(String(args.selector ?? ""))}`;
+      case "browser.scroll": return `Scrolling ${args.selector ? "to " + String(args.selector) : ""}`;
+      case "browser.waitFor": return `Waiting for ${args.selector ?? args.url ?? args.state ?? "condition"}`;
+      case "browser.newTab": return `Opening new tab${args.url ? " for " + clip(String(args.url)) : ""}`;
+      case "browser.switchTab": return `Switching to tab ${args.tabId ?? ""}`;
+      case "browser.closeTab": return `Closing tab ${args.tabId ?? ""}`;
+      case "browser.listTabs": return "Listing browser tabs";
+      case "browser.intercept": return `Intercepting ${clip(String(args.pattern ?? ""))}`;
+      case "browser.unintercept": return `Stopping interception for ${clip(String(args.pattern ?? ""))}`;
+      case "mcp.call": return `Calling ${args.server ?? ""}/${args.tool ?? ""}`;
+      case "mcp.create": return `Registering MCP server ${args.name ?? ""}`;
+      case "mcp.remove": return `Removing MCP server ${args.name ?? ""}`;
+      case "mcp.toggle": return `Toggling MCP server ${args.name ?? ""}`;
+      case "mcp.resources/list": return `Listing MCP resources on ${args.server ?? ""}`;
+      case "mcp.resources/read": return `Reading MCP resource ${args.uri ?? ""}`;
+      case "mcp.prompts/list": return `Listing MCP prompts on ${args.server ?? ""}`;
+      case "mcp.prompts/get": return `Fetching MCP prompt ${args.name ?? ""}`;
+      case "subagent.spawn": return `Spawning subagent ${args.name ?? ""}`;
+      case "checkpoint.revert": return `Reverting to turn ${String(args.turnId ?? args.index ?? "").slice(0, 12)}`;
+      case "checkpoint.list": return "Listing checkpoints";
+      case "checkpoint.compare": return "Comparing checkpoints";
+      case "subagent.askParent": return `Asking parent: ${clip(String(args.question ?? ""), 80)}`;
+      case "handoff": return `Handing off (${args.direction ?? "escalate"})`;
+      case "clarification.askUser": return `Asking: ${clip(String(args.question ?? ""), 80)}`;
+      case "file.semanticSearch": return `Searching: ${clip(String(args.query ?? ""), 80)}`;
+      case "web.fetch": return `Fetching ${clip(String(args.url ?? ""))}`;
+      case "web.search": return `Searching for: ${clip(String(args.query ?? ""), 60)}`;
+      case "mode.switch": return `Switching to ${String(args.slug ?? "")} mode`;
+      case "skill.read": return `Reading skill ${clip(String(args.name ?? ""), 40)}`;
+      case "skill.use": return `Loading skill ${clip(String(args.name ?? ""), 40)}`;
+      case "memory.add": return `Adding memory`;
+      case "memory.list": return `Listing memories`;
+      case "memory.edit": return `Editing memory`;
+      case "memory.delete": return `Deleting memory`;
+      case "rule.list": return `Listing rules`;
+      case "rule.read": return `Reading rule ${clip(String(args.name ?? ""), 40)}`;
+      case "rule.create": return `Creating rule ${clip(String(args.name ?? ""), 40)}`;
+      case "git.diffStaged": return "Reading staged diff";
+      case "git.diffUnstaged": return "Reading unstaged diff";
+      case "git.changedFiles": return "Listing changed files";
+      case "git.branchDiff": return "Reading branch diff";
+      case "git.commitMessage": return "Generating commit message";
+      case "browser.console": return "Reading browser console";
+      case "browser.network": return "Reading browser network";
+      case "browser.domSnapshot": return "Reading browser snapshot";
+      case "test.run": return `Running tests${args.scope ? " (" + String(args.scope) + ")" : ""}`;
+      case "session.exportTrace": return "Exporting session trace";
+      case "notebook.read": return args.cellIndex !== undefined ? `Reading cell ${args.cellIndex} of ${cleanFilePath(path)}` : `Reading notebook ${cleanFilePath(path)}`;
+      case "notebook.editCell": return `Editing cell ${args.cellIndex ?? ""} in ${cleanFilePath(path)}`;
+      case "notebook.addCell": return `Adding a cell to ${cleanFilePath(path)}`;
+      case "notebook.deleteCell": return `Deleting cell ${args.cellIndex ?? ""} from ${cleanFilePath(path)}`;
+      case "notebook.execute": return `Executing cell ${args.cellIndex ?? ""} in ${cleanFilePath(path)}`;
+      default: return name;
+    }
+  }
+  if (state === "error") {
     switch (name) {
       case "file.read": return `Failed to read ${path}${rangeInfo()}`;
       case "file.edit": return `Failed to edit ${path}`;
@@ -1512,11 +1671,6 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, ok = true)
       default: return `Failed: ${name}`;
     }
   }
-  const cleanFilePath = (p: string): string => {
-    const m = p.match(/[/\\]tool_outputs[/\\]([a-zA-Z0-9_]+)_(\d{4}-\d{2}-\d{2}T[^/\\]*)$/);
-    if (m) return `${m[1].replace(/_/g, ".")} output`;
-    return p.replace(/[/\\]\.arc[/\\]workspaces[/\\][a-f0-9-]+[/\\]/g, "/.arc/.../");
-  };
   switch (name) {
     case "file.read": return `Read ${cleanFilePath(path)}${rangeInfo()}`;
     case "file.edit": return `Edited ${cleanFilePath(path)}`;

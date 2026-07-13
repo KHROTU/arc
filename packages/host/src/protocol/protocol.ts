@@ -181,6 +181,7 @@ export interface ProviderConfig {
   label: string;
   baseUrl?: string;
   apiKey?: string;
+  startCommand?: string;
   enabled: boolean;
 }
 export interface ChatMessage {
@@ -231,6 +232,7 @@ export type HostMsg =
   | { type: "session/message"; message: ChatMessage; sessionId?: string }
   | { type: "session/assistantText"; id: string; text: string; sessionId?: string }
   | { type: "session/steps"; steps: ProcessStep[]; sessionId?: string }
+  | { type: "session/stepUpdate"; step: ProcessStep; sessionId?: string }
   | { type: "session/usage"; usage: TurnUsage; perModel: Record<string, TurnUsage> }
   | { type: "session/turnStart"; turnId: string; sessionId?: string }
   | { type: "session/turnEnd"; turnId: string; ok: boolean; error?: string; sessionId?: string }
@@ -262,7 +264,9 @@ export type HostMsg =
   | { type: "session/loadComposer"; text: string }
   | { type: "session/replaceState"; messages: ChatMessage[]; steps: ProcessStep[]; loadComposer?: string }
   | { type: "session/guidance"; text: string }
-  | { type: "error"; message: string; code?: "timeout" | "rate_limit" | "auth" | "provider" | "malformed" | "network" | "aborted"; inReplyTo?: string };
+  | { type: "error"; message: string; code?: "timeout" | "rate_limit" | "auth" | "provider" | "malformed" | "network" | "aborted"; inReplyTo?: string }
+  | { type: "provider/internalSetupProgress"; phase: string; pct: number; error?: string }
+  | { type: "provider/serverState"; providerId: string; running: boolean; pid?: number };
 export type WebviewMsg =
   | { type: "chat/send"; text: string; attachments?: { uri: string; preview?: string }[]; images?: string[] }
   | { type: "chat/guidance"; text: string }
@@ -274,7 +278,7 @@ export type WebviewMsg =
   | { type: "model/add"; model: ModelDescriptor }
   | { type: "model/remove"; modelId: string }
   | { type: "provider/add"; provider: Omit<ProviderConfig, "apiKey">; apiKey?: string }
-  | { type: "provider/update"; providerId: string; changes: { label?: string; baseUrl?: string; kind?: ProviderKind }; apiKey?: string }
+  | { type: "provider/update"; providerId: string; changes: { label?: string; baseUrl?: string; kind?: ProviderKind; startCommand?: string }; apiKey?: string }
   | { type: "provider/remove"; providerId: string }
   | { type: "provider/toggle"; providerId: string; enabled: boolean }
   | { type: "config/get"; key: string; id: string }
@@ -328,4 +332,7 @@ export type WebviewMsg =
   | { type: "memory/delete"; index: number }
   | { type: "hooks/list" }
   | { type: "diff/accept"; stepId: string; filePath: string }
-  | { type: "diff/reject"; stepId: string; filePath: string; hunks: DiffHunk[] };
+  | { type: "diff/reject"; stepId: string; filePath: string; hunks: DiffHunk[] }
+  | { type: "provider/setupInternal" }
+  | { type: "provider/startServer"; providerId: string }
+  | { type: "provider/stopServer"; providerId: string };

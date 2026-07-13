@@ -139,7 +139,7 @@ export const anthropicTransport: Transport = {
     );
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => "");
-      throw new Error(`Anthropic returned ${res.status}: ${text.slice(0, 200)}`);
+      throw new Error(`Anthropic returned ${res.status}: ${text}`);
     }
     const q = new AsyncEventQueue<StreamEvent>();
     let aborted = false;
@@ -172,6 +172,7 @@ export const anthropicTransport: Transport = {
                     name: j.content_block.name ?? "tool",
                     json: "",
                   });
+                  q.push({ type: "tool_call_delta", id: toolBlocks.get(j.index)!.id, name: fromApiToolName(j.content_block.name ?? "tool"), argsDelta: "" });
                 }
               } else if (j.type === "content_block_delta" && j.delta) {
                 if (j.delta.type === "text_delta" && j.delta.text) {
@@ -180,7 +181,10 @@ export const anthropicTransport: Transport = {
                   q.push({ type: "thinking", delta: j.delta.thinking });
                 } else if (j.delta.type === "input_json_delta" && typeof j.index === "number" && typeof j.delta.partial_json === "string") {
                   const blk = toolBlocks.get(j.index);
-                  if (blk) blk.json += j.delta.partial_json;
+                  if (blk) {
+                    blk.json += j.delta.partial_json;
+                    q.push({ type: "tool_call_delta", id: blk.id, name: fromApiToolName(blk.name), argsDelta: j.delta.partial_json });
+                  }
                 }
               } else if (j.type === "content_block_stop" && typeof j.index === "number") {
                 const blk = toolBlocks.get(j.index);

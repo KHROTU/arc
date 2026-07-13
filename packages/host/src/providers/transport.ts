@@ -4,7 +4,7 @@ export type StreamEvent =
   | { type: "text"; delta: string }
   | { type: "thinking"; delta: string }
   | { type: "tool_call"; id: string; name: string; args: Record<string, unknown> }
-  | { type: "tool_call_delta"; id: string; argsDelta: string }
+  | { type: "tool_call_delta"; id: string; name: string; argsDelta: string }
   | { type: "usage"; usage: TurnUsage }
   | { type: "ping" }
   | { type: "error"; message: string }

@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Settings, Plus, Trash2, Pencil, Maximize2, X, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search, ArrowLeft, Undo2 } from "./icons";
+import { Settings, Plus, Trash2, Pencil, Maximize2, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search, ArrowLeft, Undo2 } from "./icons";
 import { FadeSlideIn } from "./anim";
 import ArcProcessUI, { type ProcessStep } from "./AgentProcess";
 import Composer from "./Composer";
@@ -63,7 +63,6 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [showSidebarList, setShowSidebarList] = useState(false);
   const [waiting, setWaiting] = useState(false);
   const [clarification, setClarification] = useState<{ id: string; question: string; options: string[] } | null>(null);
-  const [error, setError] = useState<{ message: string; code?: string } | null>(null);
   const [handoff, setHandoff] = useState<{ from: string; to: string; reason: string } | null>(null);
   const [, setUsage] = useState<TurnUsage | null>(null);
   const [ctxStats, setCtxStats] = useState<{ usedPct: number; tokens: number; window: number; cost: number } | null>(null);
@@ -164,6 +163,15 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         case "session/steps":
           setSteps(e.steps);
           break;
+        case "session/stepUpdate":
+          setSteps((prev) => {
+            const idx = prev.findIndex((s) => s.id === e.step.id);
+            if (idx < 0) return [...prev, e.step];
+            const next = prev.slice();
+            next[idx] = e.step;
+            return next;
+          });
+          break;
         case "session/loadComposer":
           setPrefillText(e.text);
           break;
@@ -196,9 +204,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           setApproval({ id: e.id, description: e.description, kind: e.kind, command: e.command });
           break;
         case "error":
-          setError({ message: e.message, code: e.code });
           setLastTurnError({ message: e.message, code: e.code });
-          setTimeout(() => setError(null), 4500);
           break;
       }
     });
@@ -253,7 +259,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const deleteChat = (id: string) => client.send({ type: "chat/delete", chatId: id });
   const compact = () => client.send({ type: "chat/compact" });
   const openSettings = () => setShowSettings(true);
-  const openFile = (path: string) => { console.log("[arc] openFile", path); client.send({ type: "ui/openFile", path }); };
+  const openFile = (path: string) => { client.send({ type: "ui/openFile", path }); };
   const openFullscreen = () => client.send({ type: "ui/openFullscreen" });
   const selectModel = (id: string) => client.send({ type: "model/select", modelId: id });
   const selectEffort = (e: Effort) => {
@@ -518,8 +524,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
             {timelineNodes}
             {lastTurnError && !streaming && (
               <div className="arc-transcript-error" role="status">
-                {lastTurnError.code && <span className="arc-error-code">{errorLabel(lastTurnError.code)}</span>}
-                <span>{lastTurnError.message}</span>
+                {lastTurnError.message}
               </div>
             )}
             {streaming && (
@@ -602,11 +607,6 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
             </FadeSlideIn>
           )}
           <footer className="arc-footer">
-            {error && (
-              <FadeSlideIn className="arc-errorbar">
-                <X size={13} /> {error.code && <span className="arc-error-code">{errorLabel(error.code)}</span>} <span>{error.message}</span>
-              </FadeSlideIn>
-            )}
             <Composer
               key={activeId}
               onSend={send}
@@ -815,16 +815,4 @@ function TodoList({ items, level }: { items: TodoItemUI[]; level: number }) {
       ))}
     </ul>
   );
-}
-function errorLabel(code: string): string {
-  switch (code) {
-    case "timeout": return "Timeout";
-    case "rate_limit": return "Rate Limit";
-    case "auth": return "Auth";
-    case "provider": return "Provider";
-    case "malformed": return "Malformed";
-    case "network": return "Network";
-    case "aborted": return "Aborted";
-    default: return code;
-  }
 }

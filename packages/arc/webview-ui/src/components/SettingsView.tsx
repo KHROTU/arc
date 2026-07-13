@@ -286,17 +286,42 @@ function ProvidersTab({ client, providers, models, providerCatalog }: { client: 
   const [label, setLabel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [startCommand, setStartCommand] = useState("");
   const [providerSearch, setProviderSearch] = useState("");
+  const [internalSetup, setInternalSetup] = useState<{ phase: string; pct: number; error?: string } | null>(null);
+  const [serverStates, setServerStates] = useState<Record<string, { running: boolean; pid?: number }>>({});
+  const hasInternal = providers.some((p) => p.label === "Internal" && p.enabled);
+  const showBanner = !hasInternal || !!internalSetup;
+  useEffect(() => {
+    const off = client.on((e: HostEvent) => {
+      if (e.type === "provider/internalSetupProgress") {
+        setInternalSetup({ phase: e.phase, pct: e.pct, error: e.error });
+      }
+      if (e.type === "provider/list") {
+        if (e.providers.some((p) => p.label === "Internal" && p.enabled)) {
+          if (!internalSetup || (internalSetup.pct >= 100)) setInternalSetup(null);
+        }
+      }
+      if (e.type === "provider/serverState") {
+        setServerStates((prev) => ({ ...prev, [e.providerId]: { running: e.running, pid: e.pid } }));
+      }
+    });
+    return off;
+  }, [client, internalSetup]);
+  const setupInternal = () => {
+    setInternalSetup({ phase: "Starting…", pct: 0 });
+    client.send({ type: "provider/setupInternal" });
+  };
   const spec = providerCatalog.find((p) => p.kind === kind);
   const add = () => {
     if (!label.trim()) return;
     const id = label.toLowerCase().replace(/[^a-z0-9]+/g, "-") + "-" + Date.now().toString(36);
     client.send({
       type: "provider/add",
-      provider: { id, kind, label, baseUrl: baseUrl || spec?.defaultBaseUrl || undefined, enabled: true },
+      provider: { id, kind, label, baseUrl: baseUrl || spec?.defaultBaseUrl || undefined, startCommand: startCommand || undefined, enabled: true },
       apiKey: apiKey || undefined,
     });
-    setLabel(""); setBaseUrl(""); setApiKey(""); setProviderSearch(""); setAdding(false);
+    setLabel(""); setBaseUrl(""); setApiKey(""); setStartCommand(""); setProviderSearch(""); setAdding(false);
   };
   const filteredProviders = providerSearch.length > 0
     ? providerCatalog.filter((p) => fuzzyMatch(providerSearch, p.label) || fuzzyMatch(providerSearch, p.kind) || p.tags.some((t) => fuzzyMatch(providerSearch, t)))
@@ -325,25 +350,62 @@ function ProvidersTab({ client, providers, models, providerCatalog }: { client: 
           </div>
           <input className="arc-input" placeholder={spec?.defaultBaseUrl || "https://…"} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
           <input className="arc-input" type="password" placeholder="API key" value={apiKey} onChange={(e) => setApiKey(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
+          {(baseUrl.startsWith("http://127.") || baseUrl.startsWith("http://localhost")) && (
+            <input className="arc-input" placeholder="Start command (runs from ~)" value={startCommand} onChange={(e) => setStartCommand(e.target.value)} />
+          )}
           <div className="arc-form-actions">
             <button className="arc-btn" onClick={add}><Check size={14} /> Save</button>
             <button className="arc-btn-ghost" onClick={() => setAdding(false)}>Cancel</button>
           </div>
         </div>
       )}
-      {providers.length === 0 && !adding && <p className="arc-empty">No providers yet.</p>}
+      {providers.length === 0 && !adding && !showBanner && <p className="arc-empty">No providers yet.</p>}
+      {showBanner && (
+        <div className="arc-provider-banner">
+          <p className="arc-provider-banner-text">
+            Limited-time offer: free access to the GLM 5.2 model for all users. Set up in one click.
+          </p>
+          {!internalSetup || (internalSetup.error || internalSetup.pct >= 100) ? (
+            <div className="arc-provider-banner-actions">
+              {internalSetup?.error ? (
+                <>
+                  <span className="arc-provider-banner-error">{internalSetup.error}</span>
+                  <button className="arc-btn" onClick={setupInternal}>Retry</button>
+                </>
+              ) : internalSetup && internalSetup.pct >= 100 ? (
+                <span className="arc-provider-banner-done">Ready — see "Internal" provider below.</span>
+              ) : (
+                <button className="arc-btn" onClick={setupInternal}>Set up</button>
+              )}
+            </div>
+          ) : (
+            <div className="arc-provider-banner-progress">
+              <div className="arc-progress-bar">
+                <div className="arc-progress-fill" style={{ width: `${internalSetup.pct}%` }} />
+              </div>
+              <p className="arc-progress-text">{internalSetup.phase}</p>
+            </div>
+          )}
+        </div>
+      )}
       <ul className="arc-rows">
         {providers.map((p) => {
           const bound = models.filter((m) => m.providers.some((mp) => mp.id === p.id));
           if (editingId === p.id) {
             return <li key={p.id} className="arc-row"><EditProviderForm client={client} provider={p} onDone={() => setEditingId(null)} /></li>;
           }
+          const ss = serverStates[p.id];
           return (
             <li key={p.id} className="arc-row">
               <div className="arc-row-main">
                 <span className="arc-row-label">{p.label}</span>
                 <span className="arc-row-meta">{p.kind}</span>
                 {p.baseUrl && <code className="arc-row-code">{p.baseUrl}</code>}
+                {p.startCommand && (
+                  ss?.running
+                    ? <button className="arc-btn" style={{ padding: "3px 10px", fontSize: 11 }} onClick={() => client.send({ type: "provider/stopServer", providerId: p.id })}>Stop server</button>
+                    : <button className="arc-btn-ghost" style={{ padding: "3px 10px", fontSize: 11 }} onClick={() => client.send({ type: "provider/startServer", providerId: p.id })}>Start server</button>
+                )}
                 <span className="arc-spacer" />
                 <Toggle checked={p.enabled} onChange={(enabled) => client.send({ type: "provider/toggle", providerId: p.id, enabled })} />
                 <button className="arc-iconbtn" onClick={() => setEditingId(p.id)} title="Edit"><Pencil size={14} /></button>
@@ -361,12 +423,14 @@ function EditProviderForm({ client, provider, onDone }: { client: RpcClient; pro
   const [label, setLabel] = useState(provider.label);
   const [baseUrl, setBaseUrl] = useState(provider.baseUrl ?? "");
   const [apiKey, setApiKey] = useState("");
+  const [startCmd, setStartCmd] = useState(provider.startCommand ?? "");
+  const isLocal = (baseUrl || provider.baseUrl || "").startsWith("http://127.") || (baseUrl || provider.baseUrl || "").startsWith("http://localhost");
   const save = () => {
     if (!label.trim()) return;
     client.send({
       type: "provider/update",
       providerId: provider.id,
-      changes: { label, baseUrl },
+      changes: { label, baseUrl, startCommand: isLocal ? (startCmd || undefined) : undefined },
       apiKey: apiKey ? apiKey : undefined,
     });
     onDone();
@@ -379,6 +443,9 @@ function EditProviderForm({ client, provider, onDone }: { client: RpcClient; pro
       </div>
       <input className="arc-input" placeholder="https://…" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
       <input className="arc-input" type="password" placeholder="API key (leave blank to keep current)" value={apiKey} onChange={(e) => setApiKey(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
+      {isLocal && (
+        <input className="arc-input" placeholder="Start command (runs from ~)" value={startCmd} onChange={(e) => setStartCmd(e.target.value)} />
+      )}
       <div className="arc-form-actions">
         <button className="arc-btn" onClick={save}><Check size={14} /> Save</button>
         <button className="arc-btn-ghost" onClick={onDone}>Cancel</button>

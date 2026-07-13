@@ -59,4 +59,17 @@ export class FileEditor {
   resolve(file: string): string {
     return path.isAbsolute(file) ? path.normalize(file) : path.join(this.root, file);
   }
+  applyInline(before: string, after: string): { ok: boolean; diff: { value: string; added?: boolean; removed?: boolean; count: number }[] } {
+    const result = applyEdit({ before, search: "", replace: after });
+    if (result.ok) {
+      return { ok: true, diff: result.diff.map(d => ({ ...d, count: d.count ?? 0 })) };
+    }
+    return {
+      ok: true,
+      diff: [
+        { value: before, count: 0, removed: true },
+        { value: after, count: 0, added: true },
+      ],
+    };
+  }
 }
