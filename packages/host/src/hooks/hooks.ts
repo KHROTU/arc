@@ -6,6 +6,8 @@ import { getArcDir, getWorkspaceArcDir } from "../arc-dir.js";
 const pexec = promisify(exec);
 const IS_WIN = process.platform === "win32";
 const EXEC_SHELL: string | undefined = IS_WIN ? "pwsh.exe" : undefined;
+const ANSI_RE = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
+function stripAnsi(s: string): string { return s.replace(ANSI_RE, ""); }
 export type HookEvent =
   | "session.start"
   | "user.submit"
@@ -122,7 +124,7 @@ export async function runHooks(ctx: HookEventContext): Promise<HookDecision[]> {
         shell: EXEC_SHELL,
         env: { ...process.env, ARC_HOOK: JSON.stringify(ctx) },
       });
-      const trimmed = stdout.trim();
+      const trimmed = stripAnsi(stdout).trim();
       if (!trimmed) continue;
       try {
         const d = JSON.parse(trimmed) as HookDecision;
@@ -174,7 +176,8 @@ export async function runPreWriteHooks(filePath: string, content: string, worksp
     if (hook.type === "custom" && hook.command) {
       try {
         const { stdout } = await pexec(hook.command, { windowsHide: true, timeout: 10_000, shell: EXEC_SHELL });
-        if (stdout.trim()) warnings.push(`Pre-write hook "${hook.command}": ${stdout.trim().slice(0, 500)}`);
+        const out = stripAnsi(stdout).trim();
+        if (out) warnings.push(`Pre-write hook "${hook.command}": ${out.slice(0, 500)}`);
       } catch (e) {
         warnings.push(`Pre-write hook "${hook.command}" failed: ${(e as Error).message}`);
       }
@@ -197,8 +200,10 @@ export async function runPostEditHooks(filePath: string, root: string): Promise<
     try {
       const cwd = path.dirname(filePath);
       const { stdout, stderr } = await pexec(hook.command, { cwd, windowsHide: true, timeout: 30_000, shell: EXEC_SHELL });
-      if (stdout.trim()) warnings.push(`[${hook.label}] ${stdout.trim().slice(0, 500)}`);
-      if (stderr.trim()) warnings.push(`[${hook.label}] ${stderr.trim().slice(0, 500)}`);
+      const out = stripAnsi(stdout).trim();
+      const err = stripAnsi(stderr).trim();
+      if (out) warnings.push(`[${hook.label}] ${out.slice(0, 500)}`);
+      if (err) warnings.push(`[${hook.label}] ${err.slice(0, 500)}`);
     } catch (e) {
       warnings.push(`Post-edit hook "${hook.label}" failed: ${(e as Error).message}`);
     }

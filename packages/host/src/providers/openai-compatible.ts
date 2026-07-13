@@ -96,10 +96,10 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
       skipReasoning = true;
       continue;
     }
-    if (!res.ok) throw new Error(`Provider ${req.provider.kind} returned ${res.status}: ${lastText.slice(0, 200)}`);
+    if (!res.ok) throw new Error(`Provider ${req.provider.kind} returned ${res.status}: ${lastText}`);
   }
   if (!res!.ok || !res!.body) {
-    throw new Error(`Provider ${req.provider.kind} returned ${res!.status}: ${lastText.slice(0, 200)}`);
+    throw new Error(`Provider ${req.provider.kind} returned ${res!.status}: ${lastText}`);
   }
   const q = new AsyncEventQueue<StreamEvent>();
   let aborted = false;
@@ -232,6 +232,9 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
                 if (tc.id) entry.id = tc.id;
                 if (tc.function?.name) entry.name = tc.function.name;
                 if (typeof tc.function?.arguments === "string") entry.args += tc.function.arguments;
+                if (entry.name) {
+                  q.push({ type: "tool_call_delta", id: entry.id, name: fromApiToolName(entry.name), argsDelta: tc.function?.arguments ?? "" });
+                }
               }
               q.push({ type: "ping" });
             }

@@ -1,4 +1,4 @@
-import { useState, useEffect, memo, useCallback, useMemo } from "react";
+import { useState, useEffect, memo, useCallback, useMemo, useRef } from "react";
 import { Expand, FadeSlideIn, ScaleIn, RotateArrow } from "./anim";
 import {
   ChevronRight, Bot, ArrowRight, Check, Circle, CircleDot,
@@ -198,8 +198,7 @@ const ClarificationBlock = memo(({ question, options }: { question?: string; opt
 ClarificationBlock.displayName = "ClarificationBlock";
 export type ToolTreeMode = "auto" | "collapsed";
 const GroupNode = memo(({ step, onOpenFile, onOpenFullscreenDiff, toolTreeMode, resolvedDiffs, onResolveDiff }: { step: ProcessStep; onOpenFile?: (path: string) => void; onOpenFullscreenDiff?: (payload: { filePath?: string; hunks: DiffHunk[] }) => void; toolTreeMode: ToolTreeMode; resolvedDiffs?: Record<string, "accepted" | "rejected">; onResolveDiff?: (step: ProcessStep, action: "accept" | "reject") => void }) => {
-  const initialOpen = step.type === "subagent" || toolTreeMode === "auto";
-  const [open, setOpen] = useState(initialOpen);
+  const [open, setOpen] = useState(step.type === "subagent" || toolTreeMode === "auto");
   const childCount = step.children?.length || 0;
   return (
     <div className="arc-proc-group">
@@ -268,7 +267,7 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, onOpenFullscre
   const isEditTool = step.toolName === "file.edit";
   const hasDiff = isWriteTool || isEditTool;
   const hasChildren = !!step.children?.length;
-  const hasDetails = hasChildren || (!isNoDetail && (!!step.command || !!step.output || !!step.content || !!step.todos || !!step.options || !!step.runAfterCommand || !!step.runAfterOutput || step.type === "handoff" || (hasDiff && !!step.diffHunks?.length)));
+  const hasDetails = hasChildren || (!isNoDetail && (!!step.command || !!step.output || !!step.content || !!step.todos || !!step.options || !!step.runAfterCommand || !!step.runAfterOutput || step.type === "handoff" || hasDiff || (hasDiff && !!step.diffHunks?.length)));
   return (
     <FadeSlideIn className={`arc-proc-node arc-proc-node-${step.type}`}>
       <button
@@ -278,7 +277,7 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, onOpenFullscre
         aria-expanded={hasDetails ? isActive : undefined}
       >
         <span className="arc-proc-row-mark"><StatusDot type={step.type} interrupted={step.interrupted} /></span>
-        <span className="arc-proc-title">{step.title}{step.interrupted ? <span className="arc-proc-interrupted">(stopped)</span> : null}</span>
+        <span className="arc-proc-title">{step.title}{step.pending ? <span className="arc-working-dots" /> : null}{step.interrupted ? <span className="arc-proc-interrupted">(stopped)</span> : null}</span>
         {hasDetails && (
           <RotateArrow open={isActive} />
         )}
@@ -294,6 +293,12 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, onOpenFullscre
                 <div className="arc-proc-block">
                   <span className="arc-proc-block-label">Command</span>
                   <div className="arc-code"><Code text={step.command} /></div>
+                </div>
+              )}
+              {hasDiff && (!step.diffHunks || step.diffHunks.length === 0) && step.pending && (
+                <div className="arc-proc-block">
+                  <span className="arc-proc-block-label">Diff</span>
+                  <div className="arc-proc-text" style={{ color: "var(--vscode-descriptionForeground)", fontStyle: "italic" }}>Writing<span className="arc-working-dots" /></div>
                 </div>
               )}
               {hasDiff && step.diffHunks && step.diffHunks.length > 0 && (
@@ -358,21 +363,28 @@ const StepList = memo(({ steps, onOpenFile, onOpenFullscreenDiff, toolTreeMode, 
     return ids;
   });
   const [prevLen, setPrevLen] = useState(steps.length);
+  const lastSigRef = useRef("");
   useEffect(() => {
     if (toolTreeMode === "collapsed") return;
     if (isEnded) {
       setOpenIds(new Set<string>());
       setPrevLen(steps.length);
+      lastSigRef.current = "";
       return;
     }
-    if (steps.length > prevLen && steps.length > 0) {
-      setOpenIds(() => {
-        const next = new Set<string>();
-        for (const s of steps) if (s.children?.length) next.add(s.id);
-        next.add(steps[steps.length - 1].id);
+    const lenChanged = steps.length > prevLen;
+    const last = steps[steps.length - 1];
+    const sig = last ? `${last.id}:${last.diffHunks?.length ?? 0}:${(last.output ?? "").length}` : "";
+    const sigChanged = sig !== lastSigRef.current;
+    if (last && (lenChanged || sigChanged)) {
+      setOpenIds((prev) => {
+        if (prev.has(last.id)) return prev;
+        const next = new Set(prev);
+        next.add(last.id);
         return next;
       });
     }
+    lastSigRef.current = sig;
     setPrevLen(steps.length);
   }, [steps, prevLen, toolTreeMode, isEnded]);
   const handleToggle = useCallback((id: string) => {

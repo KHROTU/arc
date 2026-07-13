@@ -6,6 +6,8 @@ import { getWorkspaceArcDir } from "../arc-dir.js";
 const pexec = promisify(exec);
 const IS_WIN = process.platform === "win32";
 const EXEC_SHELL: string | undefined = IS_WIN ? "pwsh.exe" : undefined;
+const ANSI_RE = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
+function stripAnsi(s: string): string { return s.replace(ANSI_RE, ""); }
 export interface VerifyCommand { name: string; command: string; glob?: string }
 export interface VerifyConfig { commands: VerifyCommand[]; maxRetries: number }
 export interface VerifyCommandResult { name: string; ok: boolean; output: string }
@@ -79,11 +81,11 @@ export async function runVerification(workspaceRoot: string, config: VerifyConfi
     if (cmd.glob && rels.length && !rels.some((f) => matchesVerifyGlob(f, cmd.glob!))) continue;
     try {
       const { stdout, stderr } = await pexec(cmd.command, { cwd: workspaceRoot, windowsHide: true, timeout: 120_000, maxBuffer: 4 * 1024 * 1024, shell: EXEC_SHELL });
-      const output = (stdout + (stderr ? `\n${stderr}` : "")).trim();
+      const output = (stripAnsi(stdout) + (stderr ? `\n${stripAnsi(stderr)}` : "")).trim();
       results.push({ name: cmd.name, ok: true, output: output.slice(0, 2000) });
     } catch (e: unknown) {
       const err = e as { stdout?: string; stderr?: string; message?: string };
-      const output = ((err.stdout ?? "") + (err.stderr ? `\n${err.stderr}` : "") || err.message || "verification failed").toString();
+      const output = (stripAnsi(err.stdout ?? "") + (err.stderr ? `\n${stripAnsi(err.stderr)}` : "") || err.message || "verification failed").toString();
       results.push({ name: cmd.name, ok: false, output: output.slice(0, 2000) });
     }
   }

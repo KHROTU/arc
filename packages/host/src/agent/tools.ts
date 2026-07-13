@@ -13,6 +13,10 @@ import type { DiffHunk } from "../protocol/process.js";
 const pexec = promisify(exec);
 const IS_WIN = process.platform === "win32";
 const SHELL: string | boolean = IS_WIN ? "pwsh.exe" : true;
+const ANSI_RE = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_RE, "");
+}
 const EXEC_SHELL: string | undefined = IS_WIN ? "pwsh.exe" : undefined;
 function shellEnv(proxyUrl: string | undefined): Record<string, string> | undefined {
   if (!proxyUrl) return undefined;
@@ -49,11 +53,21 @@ export function killActiveProcesses(): { count: number; pids: number[] } {
   activeProcesses.clear();
   return { count, pids };
 }
+async function streamDiffHunks(
+  hunks: import("../protocol/process.js").DiffHunk[],
+  filePath: string,
+  onDiff: (hunks: import("../protocol/process.js").DiffHunk[], filePath: string) => void,
+): Promise<void> {
+  for (let i = 0; i < hunks.length; i++) {
+    onDiff(hunks.slice(0, i + 1), filePath);
+    await new Promise((r) => setTimeout(r, 40));
+  }
+}
 async function runAfterCmd(cmd: string | undefined, cwd: string): Promise<{ command: string; output: string } | undefined> {
   if (!cmd) return undefined;
   try {
     const { stdout, stderr } = await pexec(cmd, { cwd, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
-    const output = (stdout + (stderr ? `\n[stderr]\n${stderr}` : "")).slice(0, 2000) || "(no output)";
+    const output = (stripAnsi(stdout) + (stderr ? `\n[stderr]\n${stripAnsi(stderr)}` : "")).slice(0, 2000) || "(no output)";
     return { command: cmd, output };
   } catch (e: unknown) {
     const err = e as { message?: string };
@@ -85,12 +99,12 @@ async function runSingleCommand(
       resolve({ ok, output: out });
     };
     proc.stdout?.on("data", (d: Buffer) => {
-      const s = d.toString();
+      const s = stripAnsi(d.toString());
       stdout += s;
       onChunk?.("stdout", s);
     });
     proc.stderr?.on("data", (d: Buffer) => {
-      const s = d.toString();
+      const s = stripAnsi(d.toString());
       stderr += s;
       onChunk?.("stderr", s);
     });
@@ -123,6 +137,7 @@ export interface ToolContext {
   mcp?: import("../mcp/mcp.js").McpAggregator;
   workspacePath: string;
   onChunk?: (stream: "stdout" | "stderr", text: string) => void;
+  onDiff?: (diffHunks: import("../protocol/process.js").DiffHunk[], filePath: string) => void;
   proxyUrl?: string;
   proxyProvider?: string;
   proxyWeb?: string;
@@ -205,11 +220,15 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       if (r.ok) {
         runPostEditHooks(filePath, ctx.root).catch(() => {});
       }
+      const hunks = r.diff.map((c) => ({ added: c.added ?? false, removed: c.removed ?? false, value: c.value }));
+      if (hunks.length && ctx.onDiff) {
+        await streamDiffHunks(hunks, filePath, ctx.onDiff);
+      }
       return {
         ok: r.ok,
         output: r.ok ? `Edited ${filePath} (${r.strategy}, ${r.matches} match${r.matches === 1 ? "" : "es"})` : `Error: ${r.error}`,
         touchedFiles: r.ok ? [filePath] : [],
-        diffHunks: r.diff.map((c) => ({ added: c.added ?? false, removed: c.removed ?? false, value: c.value })),
+        diffHunks: hunks,
         filePath: filePath,
         runAfter: ra,
       };
@@ -225,11 +244,15 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const r = await ed.apply(filePath, "", content);
       const ra = await runAfterCmd(args.runAfter ? String(args.runAfter) : undefined, ctx.workspacePath);
       runPostEditHooks(filePath, ctx.root).catch(() => {});
+      const hunks = r.diff.map((c) => ({ added: c.added ?? false, removed: c.removed ?? false, value: c.value }));
+      if (hunks.length && ctx.onDiff) {
+        await streamDiffHunks(hunks, filePath, ctx.onDiff);
+      }
       return {
         ok: true,
         output: `Wrote ${filePath}`,
         touchedFiles: [filePath],
-        diffHunks: r.diff.map((c) => ({ added: c.added ?? false, removed: c.removed ?? false, value: c.value })),
+        diffHunks: hunks,
         filePath: filePath,
         runAfter: ra,
       };
@@ -287,12 +310,12 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
           resolve({ ok, output: out });
         };
         proc.stdout?.on("data", (d: Buffer) => {
-          const s = d.toString();
+          const s = stripAnsi(d.toString());
           stdout += s;
           onChunk?.("stdout", s);
         });
         proc.stderr?.on("data", (d: Buffer) => {
-          const s = d.toString();
+          const s = stripAnsi(d.toString());
           stderr += s;
           onChunk?.("stderr", s);
         });
@@ -326,12 +349,12 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
         bgProcesses.set(id, bg);
         const onChunk = ctx.onChunk;
         proc.stdout?.on("data", (d: Buffer) => {
-          const s = d.toString();
+          const s = stripAnsi(d.toString());
           bg.stdout += s;
           onChunk?.("stdout", s);
         });
         proc.stderr?.on("data", (d: Buffer) => {
-          const s = d.toString();
+          const s = stripAnsi(d.toString());
           bg.stderr += s;
           onChunk?.("stderr", s);
         });
@@ -483,10 +506,10 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       if (testProxyEnv) execOpts.env = { ...process.env, ...testProxyEnv };
       try {
         const { stdout, stderr } = await pexec(cmd, execOpts);
-        return { ok: true, output: stdout + (stderr ? `\n[stderr]\n${stderr}` : "") };
+        return { ok: true, output: stripAnsi(stdout) + (stderr ? `\n[stderr]\n${stripAnsi(stderr)}` : "") };
       } catch (e: unknown) {
         const err = e as { stdout?: string; stderr?: string; message?: string };
-        return { ok: false, output: (err.stdout ?? "") + (err.stderr ? `\n[stderr]\n${err.stderr}` : "") || err.message || "Tests failed." };
+        return { ok: false, output: stripAnsi(err.stdout ?? "") + (err.stderr ? `\n[stderr]\n${stripAnsi(err.stderr)}` : "") || err.message || "Tests failed." };
       }
     },
   },
@@ -753,7 +776,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       try {
         const scope = args.path ? ` -- "${String(args.path)}"` : "";
         const { stdout, stderr } = await pexec(`git diff --cached${scope}`, { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
-        const output = stdout + (stderr ? `\n[stderr]\n${stderr}` : "");
+        const output = stripAnsi(stdout) + (stderr ? `\n[stderr]\n${stripAnsi(stderr)}` : "");
         return { ok: true, output: output || "(no staged changes)" };
       } catch (e: unknown) {
         return { ok: false, output: `git diffStaged failed: ${(e as Error).message}` };
@@ -766,7 +789,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       try {
         const scope = args.path ? ` -- "${String(args.path)}"` : "";
         const { stdout, stderr } = await pexec(`git diff${scope}`, { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
-        const output = stdout + (stderr ? `\n[stderr]\n${stderr}` : "");
+        const output = stripAnsi(stdout) + (stderr ? `\n[stderr]\n${stripAnsi(stderr)}` : "");
         return { ok: true, output: output || "(no unstaged changes)" };
       } catch (e: unknown) {
         return { ok: false, output: `git diffUnstaged failed: ${(e as Error).message}` };
@@ -778,8 +801,9 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     fn: async (_args, ctx) => {
       try {
         const { stdout } = await pexec("git status --porcelain", { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
-        if (!stdout.trim()) return { ok: true, output: "(no changed files)" };
-        const lines = stdout.trim().split("\n").map((l) => {
+        const out = stripAnsi(stdout);
+        if (!out.trim()) return { ok: true, output: "(no changed files)" };
+        const lines = out.trim().split("\n").map((l) => {
           const m = l.match(/^(..) (.+)$/);
           if (!m) return l;
           const status = m[1].trim();
@@ -799,10 +823,10 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       try {
         const base = String(args.base ?? "main");
         const { stdout: mbOut } = await pexec(`git merge-base HEAD "${base}"`, { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL }).catch(() => ({ stdout: "" }));
-        const mergeBase = mbOut.trim();
+        const mergeBase = stripAnsi(mbOut).trim();
         const target = mergeBase || base;
         const { stdout, stderr } = await pexec(`git diff "${target}"...HEAD`, { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
-        const output = stdout + (stderr ? `\n[stderr]\n${stderr}` : "");
+        const output = stripAnsi(stdout) + (stderr ? `\n[stderr]\n${stripAnsi(stderr)}` : "");
         return { ok: true, output: output || "(no differences from base)" };
       } catch (e: unknown) {
         return { ok: false, output: `git branchDiff failed: ${(e as Error).message}` };
@@ -816,8 +840,9 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       if (!diff) {
         try {
           const { stdout } = await pexec("git diff --cached", { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
-          if (!stdout.trim()) return { ok: true, output: "(no staged changes to generate a commit message from)" };
-          return { ok: true, output: `Staged diff (use this as input to compose a commit message):\n${stdout}` };
+          const diffOut = stripAnsi(stdout);
+          if (!diffOut.trim()) return { ok: true, output: "(no staged changes to generate a commit message from)" };
+          return { ok: true, output: `Staged diff (use this as input to compose a commit message):\n${diffOut}` };
         } catch (e: unknown) {
           return { ok: false, output: `Failed to read staged diff: ${(e as Error).message}` };
         }

@@ -8,6 +8,10 @@ export class StallError extends Error {
     super(msg); this.name = "StallError";
   }
 }
+function isRateLimitError(msg: string): boolean {
+  const m = msg.toLowerCase();
+  return m.includes("429") || m.includes("rate limit") || m.includes("too many requests");
+}
 export type { StreamEvent, StreamHandle };
 export interface RoutingDecision {
   model: ModelDescriptor;
@@ -96,23 +100,33 @@ async function tryEach<T>(
   fn: (ref: ProviderRef, prov: ProviderConfig, attempt: number) => Promise<T>,
   opts?: { rerank?: boolean },
 ): Promise<T> {
-  let lastErr: unknown;
-  let attempt = 0;
-  for (const ref of orderedRefs(registry, model, opts?.rerank)) {
-    const prov = registry.resolveProvider(ref);
-    if (!prov) continue;
-    const t0 = Date.now();
-    try {
-      const out = await fn(ref, prov, attempt++);
-      perf.recordSuccess(ref.id, model.id, Date.now() - t0);
-      return out;
-    } catch (e) {
-      lastErr = e;
-      perf.recordFailure(ref.id, model.id);
-      if (e instanceof StallError) perf.recordStall(ref.id, model.id);
+  const MAX_RETRIES = 4;
+  for (let cycle = 0; cycle <= MAX_RETRIES; cycle++) {
+    let lastErr: unknown;
+    let attempt = 0;
+    let anyRateLimited = false;
+    for (const ref of orderedRefs(registry, model, opts?.rerank)) {
+      const prov = registry.resolveProvider(ref);
+      if (!prov) continue;
+      const t0 = Date.now();
+      try {
+        const out = await fn(ref, prov, attempt++);
+        perf.recordSuccess(ref.id, model.id, Date.now() - t0);
+        return out;
+      } catch (e) {
+        lastErr = e;
+        const msg = (e as Error)?.message ?? String(e);
+        if (isRateLimitError(msg)) anyRateLimited = true;
+        perf.recordFailure(ref.id, model.id);
+        if (e instanceof StallError) perf.recordStall(ref.id, model.id);
+      }
     }
+    if (!anyRateLimited || cycle >= MAX_RETRIES) {
+      throw new Error(`All providers for ${model.id} failed: ${(lastErr as Error)?.message ?? lastErr}`);
+    }
+    await new Promise((r) => setTimeout(r, Math.min(2000 * 2 ** cycle, 60_000)));
   }
-  throw new Error(`All providers for ${model.id} failed: ${(lastErr as Error)?.message ?? lastErr}`);
+  throw new Error(`All providers for ${model.id} failed after retries`);
 }
 export async function routeWithFailover<T>(
   registry: ModelRegistry,
@@ -126,12 +140,12 @@ export interface ResilientOptions {
   firstByteMs?: number;
   rerank?: boolean;
 }
-const MIN_STALL_MS = 5_000;
-const MAX_STALL_MS = 30_000;
-const MIN_FB_MS = 10_000;
-const MAX_FB_MS = 45_000;
-const DEFAULT_STALL_MS = 15_000;
-const DEFAULT_FB_MS = 30_000;
+const MIN_STALL_MS = 20_000;
+const MAX_STALL_MS = 60_000;
+const MIN_FB_MS = 30_000;
+const MAX_FB_MS = 90_000;
+const DEFAULT_STALL_MS = 45_000;
+const DEFAULT_FB_MS = 60_000;
 function timeoutFor(pid: string, mid: string, userMs: number | undefined, minMs: number, maxMs: number, defaultMs: number): number {
   if (userMs !== undefined) return userMs;
   const lat = perf.latency(pid, mid);

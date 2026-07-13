@@ -2,7 +2,7 @@
   "name": "arc-code",
   "displayName": "Arc",
   "description": "0.20 MB agentic coding assistant. 150+ providers with tiered model routing, failover, and multi-model subagents.",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "publisher": "khrotu",
   "license": "Apache-2.0",
   "repository": {
@@ -578,6 +578,12 @@
           "type": "boolean",
           "default": false,
           "description": "Show the file the agent is actively editing as your Discord presence (spoofs file activity so Discord RPC extensions report agent edits as your status)."
+        },
+        "arc.reasoning.effort": {
+          "type": "string",
+          "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+          "default": "high",
+          "description": "Default reasoning effort level used when starting a new chat. Controls how much the model reasons before responding."
         }
       }
     },

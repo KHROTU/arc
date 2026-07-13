@@ -4,7 +4,8 @@
 
 Arc is built for speed and precision. It combines a sophisticated multi-model orchestration layer with a deep toolset, including browser automation, MCP support, subagents, and semantic search, all within a sub-1MB footprint.
 
-> [!NOTE]  
+> [!NOTE]
+> **Limited Time Offer:** For a limited time, Arc is offering free access to the GLM 5.2 model for all users with some caveats (responses may be slower and connectivity may be less reliable). See Settings > Providers inside the extension for more details.
 > **Early Alpha:** Arc is evolving rapidly. We are actively refining APIs and features; expect frequent updates as we move toward a stable 1.0.
 
 [arc-demo.webm](https://github.com/user-attachments/assets/fa8d9d15-870f-49e2-b1ea-4ed57678483f)
@@ -76,7 +77,7 @@ Arc aims to provide a top-of-the-line agentic experience with a minimal footprin
 Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=khrotu.arc-code) or directly via the VS Code CLI:
 
 ```bash
-code --install-extension packages/arc/arc-code-0.5.2.vsix
+code --install-extension packages/arc/arc-code-0.5.3.vsix
 ```
 
 ### Development
