@@ -1,8 +1,8 @@
 {
   "name": "arc-code",
   "displayName": "Arc",
-  "description": "0.20 MB agentic coding assistant. 150+ providers with tiered model routing, failover, and multi-model subagents.",
-  "version": "0.5.3",
+  "description": "0.18 MB agentic coding assistant. 150+ providers with tiered model routing, failover, and multi-model subagents.",
+  "version": "0.5.4",
   "publisher": "khrotu",
   "license": "Apache-2.0",
   "repository": {
@@ -18,6 +18,12 @@
     "ui",
     "workspace"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Arc loads repository instructions and exposes privileged coding tools, so it requires explicit Workspace Trust."
+    }
+  },
   "categories": [
     "AI",
     "Chat",
@@ -27,27 +33,12 @@
     "Machine Learning"
   ],
   "keywords": [
-    "ai",
-    "agent",
-    "coding",
-    "autonomous",
-    "pair programming",
-    "code assistant",
-    "ai agent",
     "ai coding agent",
-    "copilot",
-    "mcp",
-    "playwright",
-    "claude",
-    "openai",
-    "anthropic",
-    "gpt",
     "model router",
     "multi-model",
+    "mcp",
     "subagent",
-    "handoff",
-    "arc",
-    "open source"
+    "playwright"
   ],
   "icon": "assets/arc-logo-mono.png",
   "galleryBanner": {
@@ -60,7 +51,6 @@
     "assets/arc-logo-mono.png",
     "assets/arc-logo-mono.svg",
     "assets/arc-logo-pride.svg",
-    "assets/arc-logo-mono-text.svg",
     "LICENSE*",
     "package.json"
   ],
@@ -112,12 +102,14 @@
       {
         "command": "arc.openFullscreen",
         "title": "Open Full-Screen Chat",
-        "category": "Arc"
+        "category": "Arc",
+        "icon": "$(screen-full)"
       },
       {
         "command": "arc.openSettings",
         "title": "Open Settings",
-        "category": "Arc"
+        "category": "Arc",
+        "icon": "$(gear)"
       },
       {
         "command": "arc.newTask",
@@ -204,70 +196,16 @@
       }
     ],
     "menus": {
-      "commandPalette": [
-        {
-          "command": "arc.openSidebar",
-          "when": "true"
-        },
+      "view/title": [
         {
           "command": "arc.openFullscreen",
-          "when": "true"
+          "when": "view == arc-sidebar || view == arc-sidebar-pride",
+          "group": "navigation@1"
         },
         {
           "command": "arc.openSettings",
-          "when": "true"
-        },
-        {
-          "command": "arc.openPlayground",
-          "when": "true"
-        },
-        {
-          "command": "arc.newTask",
-          "when": "true"
-        },
-        {
-          "command": "arc.stop",
-          "when": "true"
-        },
-        {
-          "command": "arc.continue",
-          "when": "true"
-        },
-        {
-          "command": "arc.toggleProblems",
-          "when": "true"
-        },
-        {
-          "command": "arc.manageModels",
-          "when": "true"
-        },
-        {
-          "command": "arc.manageMcp",
-          "when": "true"
-        },
-        {
-          "command": "arc.managePrompts",
-          "when": "true"
-        },
-        {
-          "command": "arc.auditLog.export",
-          "when": "true"
-        },
-        {
-          "command": "arc.auditLog.verify",
-          "when": "true"
-        },
-        {
-          "command": "arc.explainSelection",
-          "when": "editorHasSelection"
-        },
-        {
-          "command": "arc.fixSelection",
-          "when": "editorHasSelection"
-        },
-        {
-          "command": "arc.inlineChat",
-          "when": "editorTextFocus"
+          "when": "view == arc-sidebar || view == arc-sidebar-pride",
+          "group": "navigation@2"
         }
       ],
       "editor/context": [
@@ -428,6 +366,16 @@
           ],
           "description": "Commands that can run without explicit approval when shell.approval is 'allowlist'."
         },
+        "arc.sandbox.profile": {
+          "type": "string",
+          "enum": [
+            "off",
+            "read-only",
+            "workspace"
+          ],
+          "default": "off",
+          "description": "Native shell sandbox profile. Non-off profiles fail closed when the platform sandbox is unavailable."
+        },
         "arc.compaction.strategy": {
           "type": "string",
           "enum": [
@@ -450,8 +398,8 @@
             "custom"
           ],
           "enumDescriptions": [
-            "Never run post-edit verification commands, even if .arc/verify.toml defines them.",
-            "Use the retry count defined in .arc/verify.toml (falls back to 3 if unset).",
+            "Never run post-edit verification commands, even if ~/.arc/workspaces/<workspace>/verify.toml defines them.",
+            "Use the retry count defined in ~/.arc/workspaces/<workspace>/verify.toml (falls back to 3 if unset).",
             "Override the retry count with arc.verify.customMaxRetries."
           ],
           "default": "default",
@@ -489,6 +437,7 @@
         },
         "arc.search.ollamaUrl": {
           "type": "string",
+          "scope": "machine",
           "default": "http://127.0.0.1:11434",
           "description": "Ollama base URL for the semantic embedding backend."
         },
@@ -509,6 +458,7 @@
         },
         "arc.titleGeneration.method": {
           "type": "string",
+          "scope": "machine",
           "enum": [
             "first-words",
             "ollama"
@@ -535,23 +485,33 @@
           "default": "none",
           "description": "Model to describe attached images when the active model isn't multimodal. Uses local Ollama or Ollama Cloud."
         },
+        "arc.image.ollamaUrl": {
+          "type": "string",
+          "scope": "machine",
+          "default": "http://127.0.0.1:11434",
+          "description": "Machine-level Ollama endpoint used for image description."
+        },
         "arc.proxy.url": {
           "type": "string",
+          "scope": "machine",
           "default": "",
           "description": "Fallback proxy URL used when a category-specific proxy is not set. Applies to provider API calls, web tools, and shell commands. Example: http://proxy.company.com:8080."
         },
         "arc.proxy.providerUrl": {
           "type": "string",
+          "scope": "machine",
           "default": "",
           "description": "Proxy URL for model provider API calls (OpenAI, Anthropic, Ollama, etc.). Falls back to arc.proxy.url if empty."
         },
         "arc.proxy.webUrl": {
           "type": "string",
+          "scope": "machine",
           "default": "",
           "description": "Proxy URL for web.fetch and web.search tools. Falls back to arc.proxy.url if empty."
         },
         "arc.proxy.shellUrl": {
           "type": "string",
+          "scope": "machine",
           "default": "",
           "description": "Proxy URL for shell commands. Sets HTTP_PROXY/HTTPS_PROXY environment variables on spawned child processes. Falls back to arc.proxy.url if empty."
         },
@@ -581,7 +541,15 @@
         },
         "arc.reasoning.effort": {
           "type": "string",
-          "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+          "enum": [
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
           "default": "high",
           "description": "Default reasoning effort level used when starting a new chat. Controls how much the model reasons before responding."
         }
@@ -620,17 +588,16 @@
     "package": "vsce package --no-dependencies",
     "test": "vitest run"
   },
-  "devDependencies": {
-    "@types/vscode": "1.95.0",
-    "@types/react": "18.3.12",
-    "@types/react-dom": "18.3.1",
-    "esbuild": "0.23.0",
-    "@vscode/vsce": "2.32.0",
-    "vitest": "2.0.5"
-  },
   "dependencies": {
     "@arc/host": "workspace:*",
-    "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "preact": "^10.29.8"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "@types/vscode": "1.95.0",
+    "@vscode/vsce": "3.9.2",
+    "esbuild": "0.28.1",
+    "vitest": "4.1.10"
   }
 }

@@ -1,4 +1,6 @@
 import * as path from "node:path";
+import * as vm from "node:vm";
+import { resolveAuthorizedPath } from "../security/path-policy.js";
 export interface BrowserAdapter {
   navigate(url: string, tabId?: string): Promise<{ ok: boolean; output: string }>;
   click(selector: string, tabId?: string): Promise<{ ok: boolean; output: string }>;
@@ -65,10 +67,10 @@ interface PlaywrightPage {
 }
 const MAX_LOG_ENTRIES = 50;
 interface TabState { id: string; page: PlaywrightPage; consoleLog: ConsoleEntry[]; networkLog: NetworkEntry[] }
-export async function createBrowser(kind: BrowserKind = "chromium", headless = true): Promise<BrowserAdapter> {
+export async function createBrowser(kind: BrowserKind = "chromium", headless = true, workspaceRoot = process.cwd()): Promise<BrowserAdapter> {
   let pw: MinimalPlaywright;
   try {
-    pw = (await import("playwright")) as MinimalPlaywright;
+    pw = (await import("playwright")) as unknown as MinimalPlaywright;
   } catch {
     return stubAdapter("Playwright is not installed. Run: pnpm add -D playwright");
   }
@@ -171,7 +173,7 @@ export async function createBrowser(kind: BrowserKind = "chromium", headless = t
       const tab = resolveTab(tabId);
       if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
       try {
-        const p = outPath || path.join(process.cwd(), `arc-shot-${Date.now()}.${type || "png"}`);
+        const p = outPath ? resolveAuthorizedPath(workspaceRoot, outPath) : path.join(workspaceRoot, `arc-shot-${Date.now()}.${type || "png"}`);
         await tab.page.screenshot({ path: p, fullPage: fullPage ?? false, type: type || "png" });
         const cap = captureSummary(tab);
         return { ok: true, output: `Saved ${p}${cap ? "\n\n" + cap : ""}` };
@@ -206,7 +208,7 @@ export async function createBrowser(kind: BrowserKind = "chromium", headless = t
       if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
       try {
         if (selector) {
-          await tab.page.evaluate(`(function(){const el=document.querySelector("${selector.replace(/"/g, '\\"')}");if(el)el.scrollIntoView({behavior:"smooth",block:"center"});})()`);
+          await tab.page.evaluate(`(function(){const el=document.querySelector(${JSON.stringify(selector)});if(el)el.scrollIntoView({behavior:"smooth",block:"center"});})()`);
           return { ok: true, output: `Scrolled to ${selector}` };
         }
         await tab.page.evaluate(`window.scrollBy(0, ${pixels ?? 300})`);
@@ -245,9 +247,59 @@ export async function createBrowser(kind: BrowserKind = "chromium", headless = t
       const tab = resolveTab(tabId);
       if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
       try {
-        const fn = new Function("page", code) as (page: unknown) => Promise<unknown>;
-        const result = await fn(tab.page);
-        return { ok: true, output: typeof result === "string" ? result : JSON.stringify(result, null, 2) ?? String(result) };
+        type QueuedOp = { method: string; args: unknown[] };
+        const context = vm.createContext(Object.create(null), { codeGeneration: { strings: false, wasm: false } });
+        const bootstrap = new vm.Script(`
+          "use strict";
+          globalThis.__ops = [];
+          const __queue = (method, args) => { globalThis.__ops.push({ method, args }); return undefined; };
+          const page = Object.freeze({
+            goto: (...args) => __queue("goto", args),
+            click: (...args) => __queue("click", args),
+            fill: (...args) => __queue("fill", args),
+            hover: (...args) => __queue("hover", args),
+            dragAndDrop: (...args) => __queue("dragAndDrop", args),
+            waitForSelector: (...args) => __queue("waitForSelector", args),
+            waitForURL: (...args) => __queue("waitForURL", args),
+            waitForLoadState: (...args) => __queue("waitForLoadState", args),
+            evaluate: (...args) => __queue("evaluate", args),
+            screenshot: (...args) => __queue("screenshot", args),
+            content: (...args) => __queue("content", args),
+            url: (...args) => __queue("url", args)
+          });
+        `);
+        bootstrap.runInContext(context, { timeout: 1000 });
+        const synchronousCode = code.replace(/\bawait\s+(?=page\.)/g, "");
+        if (/\b(?:await|async|import|require|process|globalThis|__ops|__queue)\b/.test(synchronousCode)) {
+          throw new Error("Only synchronous page.* Playwright operations are allowed in browser.runCode.");
+        }
+        const script = new vm.Script(`(() => { ${synchronousCode}\n})()`);
+        script.runInContext(context, { timeout: 1000 });
+        const queued = (context as unknown as { __ops: QueuedOp[] }).__ops;
+        const results: unknown[] = [];
+        for (const op of queued) {
+          switch (op.method) {
+            case "goto": results.push(await tab.page.goto(String(op.args[0]), { waitUntil: "domcontentloaded", timeout: 15_000 })); break;
+            case "click": results.push(await tab.page.click(String(op.args[0]), { timeout: 5_000 })); break;
+            case "fill": results.push(await tab.page.fill(String(op.args[0]), String(op.args[1] ?? ""), { timeout: 5_000 })); break;
+            case "hover": results.push(await tab.page.hover(String(op.args[0]), { timeout: 5_000 })); break;
+            case "dragAndDrop": results.push(await tab.page.dragAndDrop(String(op.args[0]), String(op.args[1]), { timeout: 10_000 })); break;
+            case "waitForSelector": results.push(await tab.page.waitForSelector(String(op.args[0]), { state: "visible", timeout: 10_000 })); break;
+            case "waitForURL": results.push(await tab.page.waitForURL(String(op.args[0]), { timeout: 10_000 })); break;
+            case "waitForLoadState": results.push(await tab.page.waitForLoadState(String(op.args[0] ?? "networkidle"))); break;
+            case "evaluate": results.push(await tab.page.evaluate(String(op.args[0] ?? ""))); break;
+            case "screenshot": {
+              const options = (op.args[0] && typeof op.args[0] === "object" ? op.args[0] : {}) as { path?: string; fullPage?: boolean; type?: string };
+              const out = options.path ? resolveAuthorizedPath(workspaceRoot, options.path) : path.join(workspaceRoot, `arc-shot-${Date.now()}.${options.type === "jpeg" ? "jpeg" : "png"}`);
+              results.push(await tab.page.screenshot({ path: out, fullPage: !!options.fullPage, type: options.type === "jpeg" ? "jpeg" : "png" }));
+              break;
+            }
+            case "content": results.push(await tab.page.content()); break;
+            case "url": results.push(tab.page.url()); break;
+            default: throw new Error(`Unsupported Playwright operation: ${op.method}`);
+          }
+        }
+        return { ok: true, output: JSON.stringify(results, null, 2) ?? "(completed)" };
       } catch (e) { return { ok: false, output: `Playwright code failed: ${(e as Error).message}` }; }
     },
     async readPage(tabId) {

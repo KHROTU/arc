@@ -1,7 +1,10 @@
-import { spawn, ChildProcessByStdio } from "node:child_process";
+import { ChildProcessByStdio } from "node:child_process";
 import { Readable, Writable } from "node:stream";
-import * as readline from "node:readline";
 import { EventEmitter } from "node:events";
+import * as net from "node:net";
+import { assertSafeUrl, isPrivateAddress, readBodyLimited, safeFetch } from "../security/network.js";
+import { spawnBounded, terminateProcessTree } from "../util/process.js";
+import type { SandboxProfile } from "../sandbox/sandbox.js";
 export type McpTransport =
   | { type: "stdio"; command: string; args?: string[]; env?: Record<string, string> }
   | { type: "http"; url: string; headers?: Record<string, string> };
@@ -34,6 +37,8 @@ export interface McpClientOptions {
   reconnectMaxMs?: number;
   healthIntervalMs?: number;
   healthTimeoutMs?: number;
+  workspaceRoot?: string;
+  sandboxProfile?: SandboxProfile;
 }
 export class McpClient extends EventEmitter {
   private id = 0;
@@ -49,8 +54,11 @@ export class McpClient extends EventEmitter {
   private healthTimer?: NodeJS.Timeout;
   private healthInflight: number | string | undefined;
   private shouldRun = false;
-  private opts: Required<McpClientOptions>;
+  private opts: Required<Pick<McpClientOptions, "reconnectInitialMs" | "reconnectMaxMs" | "healthIntervalMs" | "healthTimeoutMs">>;
   private requestHandler?: McpRequestHandler;
+  private httpAllowPrivate = false;
+  private workspaceRoot?: string;
+  private sandboxProfile?: SandboxProfile;
   constructor(public config: McpServerConfig, options: McpClientOptions = {}) {
     super();
     this.opts = {
@@ -59,6 +67,8 @@ export class McpClient extends EventEmitter {
       healthIntervalMs: options.healthIntervalMs ?? 60_000,
       healthTimeoutMs: options.healthTimeoutMs ?? 10_000,
     };
+    this.workspaceRoot = options.workspaceRoot;
+    this.sandboxProfile = options.sandboxProfile;
   }
   getServerName(): string {
     return this.config.name;
@@ -101,7 +111,7 @@ export class McpClient extends EventEmitter {
       this.pending.delete(this.healthInflight);
       this.healthInflight = undefined;
     }
-    this.proc?.kill();
+    if (this.proc) terminateProcessTree(this.proc);
     this.httpAbort?.abort();
     this.proc = undefined;
     this.httpAbort = undefined;
@@ -186,14 +196,14 @@ export class McpClient extends EventEmitter {
       ...this.config.transport.headers,
     };
     if (this.httpSessionId) headers["mcp-session-id"] = this.httpSessionId;
-    const res = await fetch(endpoint, {
+    const res = await safeFetch(endpoint, {
       method: "POST",
       headers,
       body: JSON.stringify(req),
       signal: this.httpAbort?.signal,
-    });
+    }, { allowPrivate: this.httpAllowPrivate, allowHttpLoopback: true, sameOrigin: this.config.transport.url });
     if (!res.ok) {
-      throw new Error(`MCP HTTP error ${res.status}: ${await res.text()}`);
+      throw new Error(`MCP HTTP error ${res.status}: ${await readBodyLimited(res)}`);
     }
     const ct = res.headers.get("content-type") ?? "";
     if (ct.includes("text/event-stream")) {
@@ -202,7 +212,7 @@ export class McpClient extends EventEmitter {
       await this.consumeSseResponse(res.body, req.id);
       return;
     }
-    const json = (await res.json()) as JsonRpcResponse;
+    const json = JSON.parse(await readBodyLimited(res)) as JsonRpcResponse;
     if (json.error) throw new Error(json.error.message);
     const p = this.pending.get(req.id);
     if (p) {
@@ -219,6 +229,7 @@ export class McpClient extends EventEmitter {
       const { value, done } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
+      if (buffer.length > 1024 * 1024) throw new Error("MCP SSE event exceeded 1 MiB.");
       let idx;
       while ((idx = buffer.indexOf("\n\n")) !== -1) {
         const block = buffer.slice(0, idx);
@@ -265,12 +276,12 @@ export class McpClient extends EventEmitter {
       ...this.config.transport.headers,
     };
     if (this.httpSessionId) headers["mcp-session-id"] = this.httpSessionId;
-    void fetch(endpoint, {
+    void safeFetch(endpoint, {
       method: "POST",
       headers,
       body: JSON.stringify(msg),
       signal: this.httpAbort?.signal,
-    }).then(async (res) => {
+    }, { allowPrivate: this.httpAllowPrivate, allowHttpLoopback: true, sameOrigin: this.config.transport.url }).then(async (res) => {
       try { await res.body?.cancel(); } catch {}
     }).catch(() => {});
   }
@@ -315,21 +326,34 @@ export class McpClient extends EventEmitter {
   private async startStdio() {
     const t = this.config.transport;
     if (t.type !== "stdio") return;
-    this.proc = spawn(t.command, t.args ?? [], { env: { ...process.env, ...t.env }, stdio: ["pipe", "pipe", "pipe"], shell: process.platform === "win32" }) as ChildProcessByStdio<Writable, Readable, Readable>;
-    const rl = readline.createInterface({ input: this.proc.stdout });
-    rl.on("line", (line) => {
-      try {
-        const msg = JSON.parse(line) as JsonRpcMessage;
-        this.handleMessage(msg);
-} catch {  }
-    });
-    this.proc.stderr.on("data", (_d: Buffer) => {
-    });
+    this.proc = spawnBounded(t.command, t.args ?? [], {
+      cwd: this.workspaceRoot ?? process.cwd(),
+      workspaceRoot: this.workspaceRoot,
+      sandboxProfile: this.sandboxProfile,
+      env: mcpEnvironment(t.env),
+    }) as ChildProcessByStdio<Writable, Readable, Readable>;
     const failAll = (reason: string) => {
       for (const [id, p] of this.pending) { p.reject(new Error(reason)); this.pending.delete(id); }
       this.proc = undefined;
       this.emit("exit", { code: -1, reason });
     };
+    let stdoutBuffer = "";
+    this.proc.stdout.on("data", (chunk: Buffer) => {
+      stdoutBuffer += chunk.toString("utf8");
+      if (stdoutBuffer.length > 1024 * 1024) {
+        if (this.proc) terminateProcessTree(this.proc);
+        failAll("MCP stdio message exceeded 1 MiB.");
+        return;
+      }
+      let newline: number;
+      while ((newline = stdoutBuffer.indexOf("\n")) >= 0) {
+        const line = stdoutBuffer.slice(0, newline).trim();
+        stdoutBuffer = stdoutBuffer.slice(newline + 1);
+        if (!line) continue;
+        try { this.handleMessage(JSON.parse(line) as JsonRpcMessage); } catch {}
+      }
+    });
+    this.proc.stderr.on("data", (_d: Buffer) => {});
     this.proc.on("error", (err) => {
       failAll(`MCP process error: ${err.message}`);
       if (this.shouldRun) this.scheduleReconnect();
@@ -344,7 +368,10 @@ export class McpClient extends EventEmitter {
     const t = this.config.transport;
     if (t.type !== "http") return;
     this.httpAbort = new AbortController();
-    const url = new URL(t.url);
+    const parsedUrl = new URL(t.url);
+    const hostname = parsedUrl.hostname.replace(/^\[|\]$/g, "");
+    this.httpAllowPrivate = hostname === "localhost" || (net.isIP(hostname) > 0 && isPrivateAddress(hostname));
+    const url = await assertSafeUrl(parsedUrl, { allowPrivate: this.httpAllowPrivate, allowHttpLoopback: true });
     const headers: Record<string, string> = {
       accept: "text/event-stream, application/json",
       ...t.headers,
@@ -352,7 +379,7 @@ export class McpClient extends EventEmitter {
     let res: Response;
     try {
       const timeoutId = setTimeout(() => this.httpAbort?.abort(), 10_000);
-      res = await fetch(url, { method: "GET", headers, signal: this.httpAbort!.signal });
+      res = await safeFetch(url, { method: "GET", headers, signal: this.httpAbort!.signal }, { allowPrivate: this.httpAllowPrivate, allowHttpLoopback: true, sameOrigin: t.url });
       clearTimeout(timeoutId);
     } catch (e) {
       if (this.shouldRun) this.scheduleReconnect();
@@ -375,6 +402,7 @@ export class McpClient extends EventEmitter {
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
+        if (buffer.length > 1024 * 1024) throw new Error("MCP SSE event exceeded 1 MiB.");
         let idx;
         while ((idx = buffer.indexOf("\n\n")) !== -1) {
           const block = buffer.slice(0, idx);
@@ -384,7 +412,8 @@ export class McpClient extends EventEmitter {
           for (const data of parsed) {
             const text = data;
             if (text.startsWith("http")) {
-              this.httpEndpoint = text.trim();
+              const endpoint = await assertSafeUrl(text.trim(), { allowPrivate: this.httpAllowPrivate, allowHttpLoopback: true, sameOrigin: t.url });
+              this.httpEndpoint = endpoint.toString();
               this.httpReady = true;
               continue;
             }
@@ -422,7 +451,7 @@ export class McpClient extends EventEmitter {
       if (!this.shouldRun) return;
       this.httpAbort?.abort();
       this.httpAbort = undefined;
-      this.proc?.kill();
+      if (this.proc) terminateProcessTree(this.proc);
       this.proc = undefined;
       this.httpEndpoint = undefined;
       this.httpReady = false;
@@ -475,6 +504,18 @@ export class McpClient extends EventEmitter {
       return false;
     }
   }
+}
+function mcpEnvironment(extra?: Record<string, string>): NodeJS.ProcessEnv {
+  const allowedBase = ["HOME", "USERPROFILE", "TMP", "TEMP", "SystemRoot", "ComSpec", "PATHEXT", "PSModulePath", "LOCALAPPDATA", "APPDATA", "LANG"];
+  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? process.env.Path };
+  for (const key of allowedBase) {
+    if (process.env[key] !== undefined) env[key] = process.env[key];
+  }
+  const blocked = /^(?:PATH|NODE_OPTIONS|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_|PYTHONPATH|RUBYOPT|PERL5OPT|JAVA_TOOL_OPTIONS|GIT_SSH_COMMAND)/i;
+  for (const [key, value] of Object.entries(extra ?? {})) {
+    if (!blocked.test(key)) env[key] = value;
+  }
+  return env;
 }
 interface JsonRpcResponse {
   jsonrpc: "2.0";

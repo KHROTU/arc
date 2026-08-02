@@ -2,22 +2,6 @@
 
 A self-contained workspace for the Arc agent to read, explore, and exercise every built-in tool.
 
-## Before you begin
-
-**Run the restore script first.** The agent modifies files; the script resets to a known clean baseline:
-
-```
-node C:/Users/khrot/Desktop/Work/arc/scripts/restore-playground.mjs
-```
-
-Or on Windows:
-
-```
-pwsh C:/Users/khrot/Desktop/Work/arc/scripts/restore-playground.ps1
-```
-
-The clean snapshot lives at `C:/Users/khrot/Desktop/Work/arc/scripts/playground-clean.zip`. Do not modify that archive — the restore script extracts from it.
-
 ## Structure
 
 ```
@@ -50,6 +34,8 @@ test/         Test files
   example.test.ts    Vitest test suite (test.run); has a REPLACE_ME test that fails until fixed
   checkpoint-compare-a.md  Initial state fixture for checkpoint.compare
   checkpoint-compare-b.md  Modified state fixture for checkpoint.compare
+package.json  Local Vitest test script for test.run
+tsconfig.json TypeScript project for LSP diagnostic coverage
 notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteCell/execute
 ```
 

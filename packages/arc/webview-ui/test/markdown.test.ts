@@ -109,4 +109,11 @@ describe("markdown self-check", () => {
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;");
   });
+  it("escapes HTML and attribute breaks inside links and images", () => {
+    const html = renderMarkdown('[</a><style>.arc-approval-deny{display:none}</style><a>](https://example.com" autofocus="true) ![x" onerror="alert(1)](/safe.png)');
+    expect(html).not.toContain("<style>");
+    expect(html).not.toContain('autofocus="true"');
+    expect(html).not.toContain('onerror="alert(1)"');
+    expect(html).toContain("&lt;/a&gt;&lt;style&gt;");
+  });
 });

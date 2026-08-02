@@ -3,11 +3,14 @@ export type ApprovalPreset = "readonly" | "safe-edit" | "dev" | "autonomous" | "
 export interface ApprovalsConfig {
   preset?: ApprovalPreset;
   read: ApprovalLevel;
+  "read.external": ApprovalLevel;
   "write.local": ApprovalLevel;
   "write.external": ApprovalLevel;
   "shell.safe": ApprovalLevel;
   "shell.other": ApprovalLevel;
   browser: ApprovalLevel;
+  "code.execute": ApprovalLevel;
+  subagent: ApprovalLevel;
   "web.fetch": ApprovalLevel;
   "web.search": ApprovalLevel;
   mcp: {
@@ -24,55 +27,70 @@ export interface SessionApprovals {
 export const PRESETS: Record<ApprovalPreset, ApprovalsConfig> = {
   "readonly": {
     read: "auto",
+    "read.external": "ask",
     "write.local": "ask",
     "write.external": "ask",
     "shell.safe": "ask",
     "shell.other": "ask",
     browser: "ask",
+    "code.execute": "ask",
+    subagent: "ask",
     "web.fetch": "auto",
     "web.search": "auto",
     mcp: { default: "ask", perServer: {} },
   },
   "safe-edit": {
     read: "auto",
+    "read.external": "ask",
     "write.local": "auto",
     "write.external": "ask",
     "shell.safe": "auto",
     "shell.other": "ask",
     browser: "ask",
+    "code.execute": "ask",
+    subagent: "ask",
     "web.fetch": "auto",
     "web.search": "auto",
     mcp: { default: "auto", perServer: {} },
   },
   "dev": {
     read: "auto",
+    "read.external": "ask",
     "write.local": "auto",
     "write.external": "ask",
     "shell.safe": "auto",
     "shell.other": "ask",
     browser: "auto",
+    "code.execute": "ask",
+    subagent: "ask",
     "web.fetch": "auto",
     "web.search": "auto",
     mcp: { default: "auto", perServer: {} },
   },
   "autonomous": {
     read: "auto",
+    "read.external": "ask",
     "write.local": "auto",
     "write.external": "auto",
     "shell.safe": "auto",
     "shell.other": "auto",
     browser: "auto",
+    "code.execute": "ask",
+    subagent: "ask",
     "web.fetch": "auto",
     "web.search": "auto",
     mcp: { default: "auto", perServer: {} },
   },
   "full-trust": {
     read: "auto",
+    "read.external": "ask",
     "write.local": "auto",
     "write.external": "auto",
     "shell.safe": "auto",
     "shell.other": "auto",
     browser: "auto",
+    "code.execute": "ask",
+    subagent: "ask",
     "web.fetch": "auto",
     "web.search": "auto",
     mcp: { default: "auto", perServer: {} },
@@ -80,11 +98,14 @@ export const PRESETS: Record<ApprovalPreset, ApprovalsConfig> = {
 };
 export const DEFAULT_APPROVALS: ApprovalsConfig = {
   read: "auto",
+  "read.external": "ask",
   "write.local": "auto",
   "write.external": "ask",
   "shell.safe": "auto",
   "shell.other": "ask",
   browser: "ask",
+  "code.execute": "ask",
+  subagent: "ask",
   "web.fetch": "auto",
   "web.search": "auto",
   mcp: { default: "auto", perServer: {} },
@@ -94,10 +115,13 @@ export interface ApproveShellMeta {
 }
 export type ApprovalCategory =
   | "read"
+  | "read.external"
   | "write.local"
   | "write.external"
   | "shell.safe"
   | "shell.other"
   | "browser"
+  | "code.execute"
+  | "subagent"
   | "web.fetch"
   | "mcp";

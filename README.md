@@ -12,13 +12,13 @@ Arc is built for speed and precision. It combines a sophisticated multi-model or
 
 ## Efficiency
 
-| Extension | VSIX Size (as of July 13th, 2026) |
+| Extension | VSIX Size (as of August 2nd, 2026) |
 | :--- | :--- |
-| **Arc** | **0.20 MB** |
-| Cline | 10.18 MB |
+| **Arc** | **0.18 MB** |
+| Cline | 18.89 MB |
 | BLACKBOXAI Agent | 20.15 MB |
 | Roo Code | 30.11 MB |
-| Kilo Code | 102.36 MB |
+| Kilo Code | 99.78 MB |
 | Continue | 111.48 MB |
 
 Arc aims to provide a top-of-the-line agentic experience with a minimal footprint. By optimizing our dependency tree and focusing on native VS Code APIs, we keep the extension fast and portable.
@@ -55,10 +55,10 @@ Arc aims to provide a top-of-the-line agentic experience with a minimal footprin
 - **Prompt caching.** System prompts and conversation prefixes are structured with `cache_control` breakpoints to maximize Anthropic and OpenAI cache hits, reducing cost and latency for long-running sessions.
 - **EMA-tracked compaction.** The engine maintains an exponential moving average of prompt and completion tokens per model. When estimated usage crosses the model's usable window (total minus a max-output reserve), it sends the conversation midsection to an LLM summarizer, replaces it with a single system message, and keeps the system prompt plus the last six messages intact. The safety margin is configurable per workspace.
 - **Full agent resume.** Snapshots preserve browser tabs, MCP connections, and background processes. Sessions survive VS Code restarts with graceful degradation for missing resources.
-- **Mode write-globs.** Each mode can declare a `writeGlob` that restricts which file paths the agent is allowed to modify. Review mode, for example, can only write `**/.arc/review-*.md`, so the agent can produce review artifacts but cannot touch source files. Switching to Code mode lifts the restriction.
-- **Tamper-evident audit log.** Session traces export as a SHA-256 hash-chained JSONL log. Run `arc audit verify` to validate the chain. Meets SOC 2 compliance requirements.
+- **Mode write-globs.** Each mode can declare a fail-closed glob that restricts which workspace file paths the agent may modify. Generated Arc configuration and state stay under `~/.arc` rather than a repository-local `.arc` directory.
+- **Authenticated audit log.** Session traces use an HMAC-SHA-256 chain whose head is anchored in VS Code SecretStorage. Run `arc audit verify` to detect malformed, truncated, rolled-back, or modified logs.
 - **Post-edit verification loop.** After each edit, lint and typecheck are automatically run via the LSP, and the agent autonomously fixes up to N times.
-- **OS sandboxing for shell commands.** Shell execution supports three native sandboxing profiles: `sandbox-exec` on macOS, `bwrap` on Linux, and WSB on Windows.
+- **OS sandboxing for shell commands.** Shell execution supports `sandbox-exec` on macOS and `bwrap` on Linux. A selected but unavailable sandbox fails closed; Windows currently requires the `off` profile until a native process sandbox is available.
 - **Dual-backend semantic search.** The indexing engine supports two backends: hash-based and semantic. The index uses a custom `ARCX` format for fast loading and saving. Incremental re-indexing keeps the index in sync without rebuilding.
 - **Granular proxy fallback.** You can set a proxy per category—provider API calls, web tools, or shell commands—with a global fallback.
 - **Custom modes UI.** Create and edit `.toml` mode definitions, update the default modes, and configure model binding from the settings panel, without touching config files.
@@ -77,7 +77,7 @@ Arc aims to provide a top-of-the-line agentic experience with a minimal footprin
 Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=khrotu.arc-code) or directly via the VS Code CLI:
 
 ```bash
-code --install-extension packages/arc/arc-code-0.5.3.vsix
+code --install-extension packages/arc/arc-code-0.5.4.vsix
 ```
 
 ### Development

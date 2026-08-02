@@ -1,0 +1,7 @@
+{
+  "name": "arc-agent-playground",
+  "private": true,
+  "scripts": {
+    "test": "vitest run"
+  }
+}

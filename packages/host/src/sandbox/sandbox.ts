@@ -41,12 +41,16 @@ export function warnSandboxUnavailable(profile: SandboxProfile): string | undefi
   return `Sandbox profile '${profile}' is configured but the native sandbox binary was not found on this system. All shell commands will run unsandboxed.`;
 }
 function getSeatbeltArgs(profile: SandboxProfile, root: string): string[] {
-  const sb = `(allow file-read* file-write* (subpath "${root}") (allow default))`;
-  if (profile === "read-only") return ["sandbox-exec", "-p", sb.replace("file-write*", "")];
+  const escaped = root.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const workspaceWrite = profile === "workspace" ? `(allow file-write* (subpath "${escaped}"))` : "";
+  const write = `${workspaceWrite}(allow file-write* (subpath "/private/tmp"))(allow file-write* (subpath "/tmp"))`;
+  const sb = `(version 1)(deny default)(allow process*)(allow file-read*)(allow network*)${write}`;
   return ["sandbox-exec", "-p", sb];
 }
-function getLandlockArgs(_profile: SandboxProfile, _root: string): string[] {
-  return ["bwrap", "--ro-bind", "/", "/", "--bind", _root, _root, "--dev", "/dev", "--proc", "/proc"];
+function getLandlockArgs(profile: SandboxProfile, root: string): string[] {
+  const args = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"];
+  if (profile === "workspace") args.push("--bind", root, root);
+  return args;
 }
 function getWindowsSandboxArgs(_profile: SandboxProfile, _root: string): string[] {
   return [];
@@ -58,4 +62,12 @@ function checkLandlock(): boolean {
   } catch {
     return false;
   }
+}
+export function wrapSandbox(profile: SandboxProfile, workspaceRoot: string, executable: string, args: string[]): { executable: string; args: string[] } {
+  if (profile === "off") return { executable, args };
+  if (!sandboxBinaryAvailable(profile)) throw new Error(`Sandbox profile '${profile}' is unavailable on ${PLATFORM}.`);
+  const wrapper = getSandboxArgs(profile, workspaceRoot);
+  if (!wrapper.length) throw new Error(`Sandbox profile '${profile}' produced no confinement command.`);
+  const separator = wrapper[0] === "bwrap" ? ["--"] : [];
+  return { executable: wrapper[0], args: [...wrapper.slice(1), ...separator, executable, ...args] };
 }

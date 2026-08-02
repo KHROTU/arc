@@ -18,6 +18,7 @@ export class ChatHistory {
   private messages: Record<string, unknown[]> = {};
   private steps: Record<string, unknown[]> = {};
   private maxMessages = 500;
+  private maxSerializedBytes = 8 * 1024 * 1024;
   load(input: { chats?: ChatMeta[]; currentId?: string; messages?: Record<string, unknown[]>; steps?: Record<string, unknown[]> }) {
     this.chats = input.chats ?? [];
     this.currentId = input.currentId;
@@ -88,9 +89,7 @@ export class ChatHistory {
   }
   setSteps(id: string, s: unknown[]): void {
     this.steps[id] = s;
-    if (s.length > this.maxMessages) {
-      this.steps[id] = s.slice(-this.maxMessages);
-    }
+    this.trimChat(id);
   }
   getSteps(id: string): unknown[] {
     return this.steps[id] ?? [];
@@ -125,5 +124,21 @@ export class ChatHistory {
     if (steps && steps.length > this.maxMessages) {
       this.steps[id] = steps.slice(-this.maxMessages);
     }
+    if (this.messages[id]) this.messages[id] = trimSerialized(this.messages[id], this.maxSerializedBytes);
+    if (this.steps[id]) this.steps[id] = trimSerialized(this.steps[id], this.maxSerializedBytes);
   }
+}
+function trimSerialized(items: unknown[], maxBytes: number): unknown[] {
+  let bytes = 0;
+  const kept: unknown[] = [];
+  for (let index = items.length - 1; index >= 0; index--) {
+    let size: number;
+    try { size = Buffer.byteLength(JSON.stringify(items[index])); }
+    catch { continue; }
+    if (kept.length && bytes + size > maxBytes) break;
+    if (size > maxBytes) continue;
+    bytes += size;
+    kept.push(items[index]);
+  }
+  return kept.reverse();
 }

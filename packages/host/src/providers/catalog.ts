@@ -8,6 +8,7 @@ export interface ProviderSpec {
 export const PROVIDERS: ProviderSpec[] = [
   { tags: ["gpt", "chatgpt"], kind: "openai", label: "OpenAI", defaultBaseUrl: "https://api.openai.com/v1" },
   { tags: ["router", "multi-model"], kind: "openrouter", label: "OpenRouter", defaultBaseUrl: "https://openrouter.ai/api/v1" },
+  { tags: ["router", "multi-model"], kind: "tokenrouter", label: "TokenRouter", defaultBaseUrl: "https://api.tokenrouter.com/v1" },
   { tags: ["claude", "sonnet", "opus", "fable"], kind: "anthropic", label: "Anthropic", defaultBaseUrl: "https://api.anthropic.com/v1" },
   { tags: ["gemini", "gemma", "bard", "palm", "deepmind"], kind: "google", label: "Google AI", defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai" },
   { tags: ["groq", "fast inference"], kind: "groq", label: "Groq", defaultBaseUrl: "https://api.groq.com/openai/v1" },
@@ -161,6 +162,7 @@ export const PROVIDERS: ProviderSpec[] = [
   { tags: ["qwen", "tongyi"], kind: "tongyi", label: "Alibaba Tongyi (Qwen)", defaultBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
   { tags: ["deepgram"], kind: "deepgram", label: "Deepgram (Text)", defaultBaseUrl: "https://api.deepgram.com/v1" },
   { tags: ["elevenlabs", "text"], kind: "elevenlabs", label: "ElevenLabs (Text)", defaultBaseUrl: "https://api.elevenlabs.io/v1" },
+  { tags: ["poolside", "laguna"], kind: "poolside", label: "Poolside", defaultBaseUrl: "https://inference.poolside.ai/v1" },
 ];
 export function getProviderSpec(kind: ProviderKind): ProviderSpec | undefined {
   return PROVIDERS.find((p) => p.kind === kind);

@@ -1,12 +1,13 @@
 import { useState, useRef, useEffect } from "react";
-import { ChevronDown, Wrench, FileSearch, BugPlay, SearchCheck } from "./icons";
-type ModeDef = { slug: string; description: string };
+import { ChevronDown, Wrench, FileSearch, BugPlay, SearchCheck, Layers } from "./icons";
+type ModeDef = { slug: string; description: string; source?: string };
 const MODE_ICONS: Record<string, React.ReactNode> = {
   plan: <FileSearch size={12} />,
   code: <Wrench size={12} />,
   debug: <BugPlay size={12} />,
   audit: <SearchCheck size={12} />,
 };
+const CUSTOM_ICON = <Layers size={12} />;
 const MODE_LABELS: Record<string, string> = {
   plan: "Plan",
   code: "Code",
@@ -17,15 +18,19 @@ type Props = {
   modes: ModeDef[];
   currentMode: string;
   onSelect: (mode: string) => void;
-  variant?: "sidebar" | "fullscreen";
+  compact?: boolean;
 };
-export default function ModePicker({ modes, currentMode, onSelect, variant }: Props) {
+export default function ModePicker({ modes, currentMode, onSelect, compact }: Props) {
   const [open, setOpen] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const currentLabel = MODE_LABELS[currentMode] ?? currentMode;
-  const currentIcon = MODE_ICONS[currentMode] ?? <Wrench size={12} />;
+  const currentIcon = MODE_ICONS[currentMode] ?? CUSTOM_ICON;
+  const isCustom = (m: ModeDef) => (m.source ?? "builtin") !== "builtin";
+  const official = modes.filter((m) => !isCustom(m));
+  const custom = modes.filter((m) => isCustom(m));
+  const iconFor = (m: ModeDef) => MODE_ICONS[m.slug] ?? CUSTOM_ICON;
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
@@ -68,19 +73,29 @@ export default function ModePicker({ modes, currentMode, onSelect, variant }: Pr
   if (modes.length === 0) return null;
   return (
     <div className="arc-mode" ref={containerRef} onKeyDown={handleKey}>
-      <button
-        className={`arc-mode-trigger ${open ? "is-open" : ""}`}
-        onClick={() => setOpen((o) => !o)}
-        title={currentLabel + " mode"}
-      >
-        <span className="arc-mode-trigger-icon">{currentIcon}</span>
-        <span className="arc-mode-trigger-label">{currentLabel}</span>
-        <ChevronDown size={12} className={`arc-mode-trigger-chevron ${open ? "is-open" : ""}`} />
-      </button>
+      {compact ? (
+        <button
+          className={`arc-mode-trigger arc-mode-trigger-compact ${open ? "is-open" : ""}`}
+          onClick={() => setOpen((o) => !o)}
+          title={currentLabel + " mode"}
+        >
+          <span className="arc-mode-trigger-icon">{currentIcon}</span>
+        </button>
+      ) : (
+        <button
+          className={`arc-mode-trigger ${open ? "is-open" : ""}`}
+          onClick={() => setOpen((o) => !o)}
+          title={currentLabel + " mode"}
+        >
+          <span className="arc-mode-trigger-icon">{currentIcon}</span>
+          <span className="arc-mode-trigger-label">{currentLabel}</span>
+          <ChevronDown size={12} className={`arc-mode-trigger-chevron ${open ? "is-open" : ""}`} />
+        </button>
+      )}
       {open && (
         <div className="arc-mode-dropdown">
-          <div className="arc-mode-dropdown-list" ref={listRef}>
-            {modes.map((m, i) => (
+          <div className="arc-mode-dropdown-list" ref={listRef} onMouseLeave={() => setActiveIdx(-1)}>
+            {official.map((m, i) => (
               <button
                 key={m.slug}
                 className={`arc-mode-dropdown-item ${m.slug === currentMode ? "is-selected" : ""} ${i === activeIdx ? "is-active" : ""}`}
@@ -88,12 +103,32 @@ export default function ModePicker({ modes, currentMode, onSelect, variant }: Pr
                 onMouseEnter={() => setActiveIdx(i)}
               >
                 <span className="arc-mode-dropdown-item-icon">
-                  {MODE_ICONS[m.slug] ?? <Wrench size={12} />}
+                  {iconFor(m)}
                 </span>
                 <span className="arc-mode-dropdown-item-label">{MODE_LABELS[m.slug] ?? m.slug}</span>
-                {variant !== "sidebar" && <span className="arc-mode-dropdown-item-desc">{m.description}</span>}
               </button>
             ))}
+            {custom.length > 0 && (
+              <>
+                <div className="arc-mode-dropdown-sep" />
+                {custom.map((m, j) => {
+                  const idx = official.length + 1 + j;
+                  return (
+                    <button
+                      key={m.slug}
+                      className={`arc-mode-dropdown-item ${m.slug === currentMode ? "is-selected" : ""} ${idx === activeIdx ? "is-active" : ""}`}
+                      onClick={() => { onSelect(m.slug); setOpen(false); }}
+                      onMouseEnter={() => setActiveIdx(idx)}
+                    >
+                      <span className="arc-mode-dropdown-item-icon">
+                        {CUSTOM_ICON}
+                      </span>
+                      <span className="arc-mode-dropdown-item-label">{MODE_LABELS[m.slug] ?? m.slug}</span>
+                    </button>
+                  );
+                })}
+              </>
+            )}
           </div>
         </div>
       )}

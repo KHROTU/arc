@@ -1,26 +1,18 @@
-import { exec, spawn, type ChildProcess } from "node:child_process";
-import { promisify } from "node:util";
+import type { ChildProcess } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { FileEditor } from "../edit/editor.js";
 import { getSkillsDir } from "../arc-dir.js";
 import { runPreWriteHooks, runPostEditHooks } from "../hooks/hooks.js";
-import { getSandboxArgs } from "../sandbox/sandbox.js";
+import { minimalEnvironment, PROCESS_OUTPUT_LIMIT, proxyEnvironment, runProcess, runShellCommand, shellCommand, spawnBounded, terminateProcessTree } from "../util/process.js";
+import { readBodyLimited, safeFetch } from "../security/network.js";
 import { makeProxyDispatcher } from "../util/proxy.js";
 import { parseNotebook, serializeNotebook, listCells, readCell, editCellSource, addCell, deleteCell } from "../notebook/notebook.js";
 import type { SandboxProfile } from "../sandbox/sandbox.js";
 import type { DiffHunk } from "../protocol/process.js";
-const pexec = promisify(exec);
-const IS_WIN = process.platform === "win32";
-const SHELL: string | boolean = IS_WIN ? "pwsh.exe" : true;
 const ANSI_RE = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
 function stripAnsi(s: string): string {
   return s.replace(ANSI_RE, "");
-}
-const EXEC_SHELL: string | undefined = IS_WIN ? "pwsh.exe" : undefined;
-function shellEnv(proxyUrl: string | undefined): Record<string, string> | undefined {
-  if (!proxyUrl) return undefined;
-  return { HTTP_PROXY: proxyUrl, HTTPS_PROXY: proxyUrl, http_proxy: proxyUrl, https_proxy: proxyUrl };
 }
 type BrowserAdapter = import("../browser/browser.js").BrowserAdapter;
 type BrowserSource = BrowserAdapter | (() => Promise<BrowserAdapter>);
@@ -45,8 +37,7 @@ export function killActiveProcesses(): { count: number; pids: number[] } {
   for (const proc of activeProcesses) {
     if (proc.pid && !proc.killed) {
       pids.push(proc.pid);
-      try { process.kill(proc.pid, "SIGINT"); } catch {}
-      try { proc.kill("SIGINT"); } catch {}
+      terminateProcessTree(proc);
       count++;
     }
   }
@@ -63,16 +54,27 @@ async function streamDiffHunks(
     await new Promise((r) => setTimeout(r, 40));
   }
 }
-async function runAfterCmd(cmd: string | undefined, cwd: string): Promise<{ command: string; output: string } | undefined> {
+async function runAfterCmd(cmd: string | undefined, cwd: string, ctx: ToolContext): Promise<{ command: string; output: string } | undefined> {
   if (!cmd) return undefined;
-  try {
-    const { stdout, stderr } = await pexec(cmd, { cwd, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
-    const output = (stripAnsi(stdout) + (stderr ? `\n[stderr]\n${stripAnsi(stderr)}` : "")).slice(0, 2000) || "(no output)";
-    return { command: cmd, output };
-  } catch (e: unknown) {
-    const err = e as { message?: string };
-    return { command: cmd, output: `[runAfter failed] ${err.message ?? e}` };
-  }
+  const approved = await ctx.requestApproval?.(`Run post-write command?\n\n${cmd}`, { command: cmd });
+  if (!approved) return { command: cmd, output: "[runAfter denied by user]" };
+  const proxyEnv = proxyEnvironment(ctx.proxyShell || ctx.proxyUrl);
+  const result = await runShellCommand(cmd, {
+    cwd,
+    env: minimalEnvironment(proxyEnv),
+    timeoutMs: 120_000,
+    maxOutputBytes: PROCESS_OUTPUT_LIMIT,
+    sandboxProfile: ctx.sandboxProfile,
+    workspaceRoot: ctx.workspacePath,
+  });
+  const output = (stripAnsi(result.stdout) + (result.stderr ? `\n[stderr]\n${stripAnsi(result.stderr)}` : "")).slice(0, 2000) || "(no output)";
+  return { command: cmd, output: result.ok ? output : `[runAfter failed] ${output}` };
+}
+async function enforcePreWrite(filePath: string, content: string, ctx: ToolContext): Promise<void> {
+  const scan = await runPreWriteHooks(filePath, content, ctx.root, ctx.sandboxProfile);
+  if (scan.ok) return;
+  const approved = await ctx.requestApproval?.(`Potential secret detected before writing ${filePath}:\n\n${scan.errors.join("\n")}\n\nWrite this file once anyway?`);
+  if (!approved) throw new Error(scan.errors.join("\n"));
 }
 async function runSingleCommand(
   cmd: string,
@@ -80,40 +82,20 @@ async function runSingleCommand(
   _ctx: ToolContext,
   onChunk?: (stream: "stdout" | "stderr", text: string) => void,
 ): Promise<{ ok: boolean; output: string }> {
-  const sandboxArgs = _ctx.sandboxProfile ? getSandboxArgs(_ctx.sandboxProfile, _ctx.workspacePath) : [];
-  const fullCmd = sandboxArgs.length ? sandboxArgs.concat([cmd]).join(" ") : cmd;
-  const proxyEnv = shellEnv(_ctx.proxyShell || _ctx.proxyUrl);
-  return new Promise((resolve) => {
-    const proc = spawn(fullCmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...(proxyEnv ? { env: { ...process.env, ...proxyEnv } } : {}) });
-    activeProcesses.add(proc);
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const finalize = (ok: boolean, errMsg?: string) => {
-      if (settled) return;
-      settled = true;
-      activeProcesses.delete(proc);
-      const out = errMsg
-        ? `${errMsg}\n${stdout}${stderr ? `\n[stderr]\n${stderr}` : ""}`
-        : stdout + (stderr ? `\n[stderr]\n${stderr}` : "");
-      resolve({ ok, output: out });
-    };
-    proc.stdout?.on("data", (d: Buffer) => {
-      const s = stripAnsi(d.toString());
-      stdout += s;
-      onChunk?.("stdout", s);
-    });
-    proc.stderr?.on("data", (d: Buffer) => {
-      const s = stripAnsi(d.toString());
-      stderr += s;
-      onChunk?.("stderr", s);
-    });
-    proc.on("error", (err) => finalize(false, err.message));
-    proc.on("exit", (code) => {
-      if (code === 0) finalize(true);
-      else finalize(false, `Process exited with code ${code}`);
-    });
+  const proxyEnv = proxyEnvironment(_ctx.proxyShell || _ctx.proxyUrl);
+  let spawned: ChildProcess | undefined;
+  const result = await runShellCommand(cmd, {
+    cwd,
+    env: minimalEnvironment(proxyEnv),
+    maxOutputBytes: PROCESS_OUTPUT_LIMIT,
+    sandboxProfile: _ctx.sandboxProfile,
+    workspaceRoot: _ctx.workspacePath,
+    onChunk: (stream, text) => onChunk?.(stream, stripAnsi(text)),
+    onSpawn: (proc) => { spawned = proc; activeProcesses.add(proc); },
   });
+  if (spawned) activeProcesses.delete(spawned);
+  const output = stripAnsi(result.stdout) + (result.stderr ? `\n[stderr]\n${stripAnsi(result.stderr)}` : "") + (result.truncated ? "\n[output limit exceeded]" : "");
+  return { ok: result.ok, output };
 }
 import type { ApprovalsConfig, SessionApprovals, ApproveShellMeta } from "../approvals/index.js";
 import type { SkillRegistry } from "../skills/index.js";
@@ -146,6 +128,7 @@ export interface ToolContext {
   describeImage?: (dataUrl: string) => Promise<string>;
   fileContextTracker?: FileContextTracker;
   executeNotebookCell?: (path: string, cellIndex: number) => Promise<{ ok: boolean; output: string; images?: string[] }>;
+  allowExternalPath?: boolean;
 }
 export interface ToolResult {
   ok: boolean;
@@ -161,17 +144,30 @@ export interface ToolResult {
 export type ToolFn = (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
 export function checkWriteGlob(filePath: string, glob: string): { allowed: boolean } {
   try {
-    const re = new RegExp(glob, "i");
-    return { allowed: re.test(filePath) };
+    if (!glob.trim() || glob.includes("\0")) return { allowed: false };
+    let pattern = "^";
+    for (let i = 0; i < glob.length; i++) {
+      const char = glob[i];
+      if (char === "*") {
+        if (glob[i + 1] === "*" && glob[i + 2] === "/") { pattern += "(?:.*/)?"; i += 2; }
+        else if (glob[i + 1] === "*") { pattern += ".*"; i++; }
+        else pattern += "[^/]*";
+      } else if (char === "?") pattern += "[^/]";
+      else if (char === "\\") pattern += "/";
+      else if ("\\^$.|+()[]{}".includes(char)) pattern += `\\${char}`;
+      else pattern += char;
+    }
+    const re = new RegExp(pattern + "$", "i");
+    return { allowed: re.test(filePath.replace(/\\/g, "/")) };
   } catch {
-    return { allowed: true };
+    return { allowed: false };
   }
 }
 export const tools: Record<string, { description: string; fn: ToolFn }> = {
   "file.read": {
     description: "Read a file. Images are included inline for vision. Args: { path, offset?, limit? }",
     fn: async (args, ctx) => {
-      const ed = new FileEditor(ctx.root);
+      const ed = new FileEditor(ctx.root, !!ctx.allowExternalPath);
       const filePath = String(args.path);
       const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
       const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif", "heic"]);
@@ -211,14 +207,18 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
   "file.edit": {
     description: "Apply an edit. PREFER passing a SEARCH/REPLACE block in `search`:\n<<<<<<< SEARCH\nexact text\n=======\nreplacement\n>>>>>>> REPLACE\nFallback args: { path, search, replace, replaceAll?, runAfter? }",
     fn: async (args, ctx) => {
-      const ed = new FileEditor(ctx.root);
+      const ed = new FileEditor(ctx.root, !!ctx.allowExternalPath);
       const filePath = String(args.path);
       const replace = String(args.replace);
-      await runPreWriteHooks(filePath, replace, ctx.root);
-      const r = await ed.apply(filePath, String(args.search), replace, { replaceAll: !!args.replaceAll });
-      const ra = await runAfterCmd(args.runAfter ? String(args.runAfter) : undefined, ctx.workspacePath);
+      const r = await ed.apply(filePath, String(args.search), replace, {
+        replaceAll: !!args.replaceAll,
+        validate: async (content) => {
+          await enforcePreWrite(filePath, content, ctx);
+        },
+      });
+      const ra = r.ok ? await runAfterCmd(args.runAfter ? String(args.runAfter) : undefined, ctx.workspacePath, ctx) : undefined;
       if (r.ok) {
-        runPostEditHooks(filePath, ctx.root).catch(() => {});
+        runPostEditHooks(filePath, ctx.root, ctx.sandboxProfile).catch(() => {});
       }
       const hunks = r.diff.map((c) => ({ added: c.added ?? false, removed: c.removed ?? false, value: c.value }));
       if (hunks.length && ctx.onDiff) {
@@ -237,13 +237,16 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
   "file.write": {
     description: "Write a new file (or overwrite). Args: { path, content, runAfter? }",
     fn: async (args, ctx) => {
-      const ed = new FileEditor(ctx.root);
+      const ed = new FileEditor(ctx.root, !!ctx.allowExternalPath);
       const filePath = String(args.path);
       const content = String(args.content);
-      await runPreWriteHooks(filePath, content, ctx.root);
-      const r = await ed.apply(filePath, "", content);
-      const ra = await runAfterCmd(args.runAfter ? String(args.runAfter) : undefined, ctx.workspacePath);
-      runPostEditHooks(filePath, ctx.root).catch(() => {});
+      const r = await ed.apply(filePath, "", content, {
+        validate: async (next) => {
+          await enforcePreWrite(filePath, next, ctx);
+        },
+      });
+      const ra = r.ok ? await runAfterCmd(args.runAfter ? String(args.runAfter) : undefined, ctx.workspacePath, ctx) : undefined;
+      runPostEditHooks(filePath, ctx.root, ctx.sandboxProfile).catch(() => {});
       const hunks = r.diff.map((c) => ({ added: c.added ?? false, removed: c.removed ?? false, value: c.value }));
       if (hunks.length && ctx.onDiff) {
         await streamDiffHunks(hunks, filePath, ctx.onDiff);
@@ -265,6 +268,9 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const pattern = String(args.pattern ?? "");
       const include = args.include ? String(args.include) : undefined;
       if (!pattern) return { ok: false, output: "No pattern provided." };
+      if (pattern.length > 256 || /\\[1-9]|\([^)]*[+*{][^)]*\)[+*{]|(?:\.\*|\.\+|\[[^\]]*\][+*])[+*{]/.test(pattern)) {
+        return { ok: false, output: "Regex rejected because it is too large or contains unsafe nested repetition/backreferences." };
+      }
       const results = await ctx.grep(pattern, include);
       if (results.length === 0) return { ok: true, output: `No matches for /${pattern}/` };
       const out = results.map((r) => `${r.file}:${r.line}:${r.column}: ${r.text}`).join("\n");
@@ -286,53 +292,24 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     description: "Run a shell command in the workspace (subject to approval).",
     fn: async (args, ctx) => {
       const cmd = String(args.command);
-      const sandboxArgs = ctx.sandboxProfile ? getSandboxArgs(ctx.sandboxProfile, ctx.workspacePath) : [];
-      const fullCmd = sandboxArgs.length ? sandboxArgs.concat([cmd]).join(" ") : cmd;
       const timeoutSec = args.timeout ? Number(args.timeout) : -1;
       const cwd = (args.cwd ? String(args.cwd) : ctx.root) || ctx.root;
       const onChunk = ctx.onChunk;
-      const proxyEnv = shellEnv(ctx.proxyShell || ctx.proxyUrl);
-      return new Promise<ToolResult>((resolve) => {
-        const proc = spawn(fullCmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...(proxyEnv ? { env: { ...process.env, ...proxyEnv } } : {}) });
-        activeProcesses.add(proc);
-        let stdout = "";
-        let stderr = "";
-        let settled = false;
-        const finalize = (ok: boolean, errMsg?: string, killed = false) => {
-          if (settled) return;
-          settled = true;
-          activeProcesses.delete(proc);
-          const combined = (stdout + (stderr ? `\n[stderr]\n${stderr}` : ""));
-          const hint = killed ? ` (killed after ${timeoutSec}s timeout)` : "";
-          const out = errMsg
-            ? `${errMsg}${hint}\n${stdout}${stderr ? `\n[stderr]\n${stderr}` : ""}`
-            : combined;
-          resolve({ ok, output: out });
-        };
-        proc.stdout?.on("data", (d: Buffer) => {
-          const s = stripAnsi(d.toString());
-          stdout += s;
-          onChunk?.("stdout", s);
-        });
-        proc.stderr?.on("data", (d: Buffer) => {
-          const s = stripAnsi(d.toString());
-          stderr += s;
-          onChunk?.("stderr", s);
-        });
-        proc.on("error", (err) => finalize(false, err.message));
-        proc.on("exit", (code) => {
-          if (code === 0) finalize(true);
-          else finalize(false, `Process exited with code ${code}`);
-        });
-        if (timeoutSec > 0) {
-          setTimeout(() => {
-            if (!settled) {
-              proc.kill();
-              finalize(false, "Process killed after timeout", true);
-            }
-          }, timeoutSec * 1000);
-        }
+      const proxyEnv = proxyEnvironment(ctx.proxyShell || ctx.proxyUrl);
+      let spawned: ChildProcess | undefined;
+      const result = await runShellCommand(cmd, {
+        cwd,
+        env: minimalEnvironment(proxyEnv),
+        timeoutMs: timeoutSec > 0 ? timeoutSec * 1000 : undefined,
+        maxOutputBytes: PROCESS_OUTPUT_LIMIT,
+        sandboxProfile: ctx.sandboxProfile,
+        workspaceRoot: ctx.workspacePath,
+        onChunk: (stream, text) => onChunk?.(stream, stripAnsi(text)),
+        onSpawn: (proc) => { spawned = proc; activeProcesses.add(proc); },
       });
+      if (spawned) activeProcesses.delete(spawned);
+      const output = stripAnsi(result.stdout) + (result.stderr ? `\n[stderr]\n${stripAnsi(result.stderr)}` : "") + (result.truncated ? "\n[output limit exceeded]" : "");
+      return { ok: result.ok, output };
     },
   },
   "shell.backgroundRun": {
@@ -341,8 +318,9 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const cmd = String(args.command);
       const cwd = (args.cwd ? String(args.cwd) : ctx.root) || ctx.root;
       try {
-        const proxyEnv = shellEnv(ctx.proxyShell || ctx.proxyUrl);
-        const proc = spawn(cmd, { cwd, shell: SHELL, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...(proxyEnv ? { env: { ...process.env, ...proxyEnv } } : {}) });
+        const proxyEnv = proxyEnvironment(ctx.proxyShell || ctx.proxyUrl);
+        const shell = shellCommand(cmd);
+        const proc = spawnBounded(shell.executable, shell.args, { cwd, env: minimalEnvironment(proxyEnv), sandboxProfile: ctx.sandboxProfile, workspaceRoot: ctx.workspacePath });
         activeProcesses.add(proc);
         const bg: BgProcess = { proc, command: cmd, stdout: "", stderr: "", exited: false, exitCode: undefined };
         const id = String(bgIds++);
@@ -350,12 +328,12 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
         const onChunk = ctx.onChunk;
         proc.stdout?.on("data", (d: Buffer) => {
           const s = stripAnsi(d.toString());
-          bg.stdout += s;
+          bg.stdout = (bg.stdout + s).slice(-PROCESS_OUTPUT_LIMIT);
           onChunk?.("stdout", s);
         });
         proc.stderr?.on("data", (d: Buffer) => {
           const s = stripAnsi(d.toString());
-          bg.stderr += s;
+          bg.stderr = (bg.stderr + s).slice(-PROCESS_OUTPUT_LIMIT);
           onChunk?.("stderr", s);
         });
         proc.on("exit", (code) => { bg.exited = true; bg.exitCode = code ?? undefined; activeProcesses.delete(proc); setTimeout(() => { bgProcesses.delete(id); }, 60_000); });
@@ -421,7 +399,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     description: "Update a previously-defined custom run by ID. Args: { id, commands?, name? }",
     fn: async (args) => {
       const id = String(args.id ?? "").trim();
-      if (!id) return { ok: false, output: "editCustomRun requires an id." };
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(id)) return { ok: false, output: "editCustomRun requires a safe id." };
       const dir = getSkillsDir();
       const filePath = path.join(dir, `${id}.json`);
       let skill: { id: string; name: string; commands: string[]; createdAt: number; updatedAt: number };
@@ -447,7 +425,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     description: "Execute a previously-defined custom run by id or name. Executes each command sequentially in the workspace. Args: { id, cwd? }",
     fn: async (args, ctx) => {
       const id = String(args.id ?? "").trim();
-      if (!id) return { ok: false, output: "runCustomRun requires an id." };
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(id)) return { ok: false, output: "runCustomRun requires a safe id." };
       const dir = getSkillsDir();
       const filePath = path.join(dir, `${id}.json`);
       let skill: { name: string; commands: string[] };
@@ -467,6 +445,8 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       for (let i = 0; i < skill.commands.length; i++) {
         const cmd = skill.commands[i];
         const label = `[${i + 1}/${skill.commands.length}] ${cmd}`;
+        const approved = await ctx.requestApproval?.(`Run custom command?\n\n${cmd}`, { command: cmd });
+        if (!approved) { results.push(`${label}\nDENIED`); allOk = false; continue; }
         const result = await runSingleCommand(cmd, cwd, ctx, onChunk);
         const entry = result.ok ? `${label}\n${result.output}` : `${label}\nFAILED: ${result.output}`;
         results.push(entry);
@@ -480,37 +460,42 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     fn: async (args, ctx) => {
       const scope = String(args.scope ?? "workspace");
       const testPath = args.path ? String(args.path) : "";
-      let cmd = "";
+      let executable = "";
+      let commandArgs: string[] = [];
       try {
         const pkgRaw = await fs.readFile(path.join(ctx.workspacePath, "package.json"), "utf-8");
         const pkg = JSON.parse(pkgRaw);
-        if (pkg.scripts?.test) cmd = "pnpm test";
-        else if (pkg.devDependencies?.vitest || pkg.dependencies?.vitest) cmd = "npx vitest run";
-        else if (pkg.devDependencies?.jest || pkg.dependencies?.jest) cmd = "npx jest";
-        else if (pkg.devDependencies?.mocha || pkg.dependencies?.mocha) cmd = "npx mocha";
+        if (pkg.scripts?.test) { executable = "pnpm"; commandArgs = ["test"]; }
+        else if (pkg.devDependencies?.vitest || pkg.dependencies?.vitest) { executable = "npx"; commandArgs = ["vitest", "run"]; }
+        else if (pkg.devDependencies?.jest || pkg.dependencies?.jest) { executable = "npx"; commandArgs = ["jest"]; }
+        else if (pkg.devDependencies?.mocha || pkg.dependencies?.mocha) { executable = "npx"; commandArgs = ["mocha"]; }
       } catch {}
-      if (!cmd) {
-        try { await fs.access(path.join(ctx.workspacePath, "go.mod")); cmd = "go test ./..."; } catch {}
+      if (!executable) {
+        try { await fs.access(path.join(ctx.workspacePath, "go.mod")); executable = "go"; commandArgs = ["test", "./..."]; } catch {}
       }
-      if (!cmd) {
+      if (!executable) {
         try {
           const pyFiles = await fs.readdir(ctx.workspacePath);
-          if (pyFiles.some((f) => f.startsWith("test_") && f.endsWith(".py"))) cmd = "python -m pytest";
+          if (pyFiles.some((f) => f.startsWith("test_") && f.endsWith(".py"))) { executable = "python"; commandArgs = ["-m", "pytest"]; }
         } catch {}
       }
-      if (!cmd) return { ok: false, output: "No test runner detected. Add a test script to package.json." };
-      if (scope === "file" && testPath) cmd = `${cmd} -- "${testPath}"`;
-      else if (scope === "failed" && (cmd.includes("vitest") || cmd.includes("jest"))) cmd = `${cmd} --last-failed`;
-      const testProxyEnv = shellEnv(ctx.proxyShell || ctx.proxyUrl);
-      const execOpts: Record<string, unknown> = { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL };
-      if (testProxyEnv) execOpts.env = { ...process.env, ...testProxyEnv };
-      try {
-        const { stdout, stderr } = await pexec(cmd, execOpts);
-        return { ok: true, output: stripAnsi(stdout) + (stderr ? `\n[stderr]\n${stripAnsi(stderr)}` : "") };
-      } catch (e: unknown) {
-        const err = e as { stdout?: string; stderr?: string; message?: string };
-        return { ok: false, output: stripAnsi(err.stdout ?? "") + (err.stderr ? `\n[stderr]\n${stripAnsi(err.stderr)}` : "") || err.message || "Tests failed." };
-      }
+      if (!executable) return { ok: false, output: "No test runner detected. Add a test script to package.json." };
+      if (scope === "file" && testPath) commandArgs.push("--", testPath);
+      else if (scope === "failed" && (commandArgs.includes("vitest") || commandArgs.includes("jest"))) commandArgs.push("--last-failed");
+      const displayCommand = [executable, ...commandArgs.map((arg) => JSON.stringify(arg))].join(" ");
+      const approved = await ctx.requestApproval?.(`Run detected test command?\n\n${displayCommand}`, { command: displayCommand });
+      if (!approved) return { ok: false, output: "Test command denied by user." };
+      const testProxyEnv = proxyEnvironment(ctx.proxyShell || ctx.proxyUrl);
+      const result = await runProcess(executable, commandArgs, {
+        cwd: ctx.workspacePath,
+        env: minimalEnvironment(testProxyEnv),
+        timeoutMs: 120_000,
+        maxOutputBytes: PROCESS_OUTPUT_LIMIT,
+        sandboxProfile: ctx.sandboxProfile,
+        workspaceRoot: ctx.workspacePath,
+      });
+      const output = stripAnsi(result.stdout) + (result.stderr ? `\n[stderr]\n${stripAnsi(result.stderr)}` : "") + (result.truncated ? "\n[output limit exceeded]" : "");
+      return { ok: result.ok, output: output || (result.ok ? "(no output)" : "Tests failed.") };
     },
   },
   "lsp.problems": {
@@ -557,12 +542,12 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       try {
         const url = String(args.url);
         const webProxy = ctx.proxyWeb || ctx.proxyUrl;
-        const res = await fetch(url, {
+        const res = await safeFetch(url, {
           signal: AbortSignal.timeout(15000),
           ...(webProxy ? { dispatcher: makeProxyDispatcher(webProxy) } : {}),
-        });
+        } as RequestInit);
         if (!res.ok) return { ok: false, output: `HTTP ${res.status}: ${res.statusText}` };
-        const text = await res.text();
+        const text = await readBodyLimited(res);
         return { ok: true, output: text };
       } catch (e: unknown) {
         return { ok: false, output: `Fetch failed: ${(e as Error).message}` };
@@ -774,10 +759,10 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     description: "Show the staged diff (git diff --cached). Args: { path? } to scope to a single file.",
     fn: async (args, ctx) => {
       try {
-        const scope = args.path ? ` -- "${String(args.path)}"` : "";
-        const { stdout, stderr } = await pexec(`git diff --cached${scope}`, { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
-        const output = stripAnsi(stdout) + (stderr ? `\n[stderr]\n${stripAnsi(stderr)}` : "");
-        return { ok: true, output: output || "(no staged changes)" };
+        const gitArgs = ["diff", "--cached", ...(args.path ? ["--", String(args.path)] : [])];
+        const result = await runProcess("git", gitArgs, { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
+        const output = stripAnsi(result.stdout) + (result.stderr ? `\n[stderr]\n${stripAnsi(result.stderr)}` : "");
+        return { ok: result.ok, output: output || "(no staged changes)" };
       } catch (e: unknown) {
         return { ok: false, output: `git diffStaged failed: ${(e as Error).message}` };
       }
@@ -787,10 +772,10 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     description: "Show the unstaged diff (git diff). Args: { path? } to scope to a single file.",
     fn: async (args, ctx) => {
       try {
-        const scope = args.path ? ` -- "${String(args.path)}"` : "";
-        const { stdout, stderr } = await pexec(`git diff${scope}`, { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
-        const output = stripAnsi(stdout) + (stderr ? `\n[stderr]\n${stripAnsi(stderr)}` : "");
-        return { ok: true, output: output || "(no unstaged changes)" };
+        const gitArgs = ["diff", ...(args.path ? ["--", String(args.path)] : [])];
+        const result = await runProcess("git", gitArgs, { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
+        const output = stripAnsi(result.stdout) + (result.stderr ? `\n[stderr]\n${stripAnsi(result.stderr)}` : "");
+        return { ok: result.ok, output: output || "(no unstaged changes)" };
       } catch (e: unknown) {
         return { ok: false, output: `git diffUnstaged failed: ${(e as Error).message}` };
       }
@@ -800,8 +785,9 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     description: "List all changed files (staged and unstaged) with status. Args: {}",
     fn: async (_args, ctx) => {
       try {
-        const { stdout } = await pexec("git status --porcelain", { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
-        const out = stripAnsi(stdout);
+        const result = await runProcess("git", ["status", "--porcelain"], { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
+        if (!result.ok) return { ok: false, output: result.stderr || "git status failed" };
+        const out = stripAnsi(result.stdout);
         if (!out.trim()) return { ok: true, output: "(no changed files)" };
         const lines = out.trim().split("\n").map((l) => {
           const m = l.match(/^(..) (.+)$/);
@@ -822,12 +808,13 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     fn: async (args, ctx) => {
       try {
         const base = String(args.base ?? "main");
-        const { stdout: mbOut } = await pexec(`git merge-base HEAD "${base}"`, { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL }).catch(() => ({ stdout: "" }));
-        const mergeBase = stripAnsi(mbOut).trim();
+        if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(base) || base.includes("..") || base.includes("@{")) return { ok: false, output: "Invalid Git base ref." };
+        const mb = await runProcess("git", ["merge-base", "HEAD", base], { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
+        const mergeBase = mb.ok ? stripAnsi(mb.stdout).trim() : "";
         const target = mergeBase || base;
-        const { stdout, stderr } = await pexec(`git diff "${target}"...HEAD`, { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
-        const output = stripAnsi(stdout) + (stderr ? `\n[stderr]\n${stripAnsi(stderr)}` : "");
-        return { ok: true, output: output || "(no differences from base)" };
+        const result = await runProcess("git", ["diff", `${target}...HEAD`], { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
+        const output = stripAnsi(result.stdout) + (result.stderr ? `\n[stderr]\n${stripAnsi(result.stderr)}` : "");
+        return { ok: result.ok, output: output || "(no differences from base)" };
       } catch (e: unknown) {
         return { ok: false, output: `git branchDiff failed: ${(e as Error).message}` };
       }
@@ -839,8 +826,9 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const diff = args.diff ? String(args.diff) : "";
       if (!diff) {
         try {
-          const { stdout } = await pexec("git diff --cached", { cwd: ctx.workspacePath, maxBuffer: 4 * 1024 * 1024, windowsHide: true, shell: EXEC_SHELL });
-          const diffOut = stripAnsi(stdout);
+          const result = await runProcess("git", ["diff", "--cached"], { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
+          if (!result.ok) return { ok: false, output: result.stderr || "Failed to read staged diff." };
+          const diffOut = stripAnsi(result.stdout);
           if (!diffOut.trim()) return { ok: true, output: "(no staged changes to generate a commit message from)" };
           return { ok: true, output: `Staged diff (use this as input to compose a commit message):\n${diffOut}` };
         } catch (e: unknown) {
@@ -937,7 +925,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     description: "Read a Jupyter notebook (.ipynb). Without cellIndex, lists every cell (index, type, source preview, whether it has output). With cellIndex, returns that cell's full source and (for code cells) its text/image output.",
     fn: async (args, ctx) => {
       const filePath = String(args.path);
-      const ed = new FileEditor(ctx.root);
+      const ed = new FileEditor(ctx.root, !!ctx.allowExternalPath);
       let raw: string;
       try {
         raw = await ed.read(filePath);
@@ -974,7 +962,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const filePath = String(args.path);
       const cellIndex = Number(args.cellIndex);
       const source = String(args.source ?? "");
-      const ed = new FileEditor(ctx.root);
+      const ed = new FileEditor(ctx.root, !!ctx.allowExternalPath);
       let raw: string;
       try {
         raw = await ed.read(filePath);
@@ -994,7 +982,10 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
         return { ok: false, output: (e as Error).message };
       }
       const full = ed.resolve(filePath);
-      await fs.writeFile(full, serializeNotebook(updated), "utf-8");
+      const serialized = serializeNotebook(updated);
+      try { await enforcePreWrite(filePath, serialized, ctx); } catch (error) { return { ok: false, output: (error as Error).message }; }
+      await fs.writeFile(full, serialized, "utf-8");
+      void runPostEditHooks(filePath, ctx.root, ctx.sandboxProfile);
       return { ok: true, output: `Updated cell ${cellIndex} in ${filePath}`, touchedFiles: [filePath], filePath };
     },
   },
@@ -1005,7 +996,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const index = Number(args.index);
       const cellType = String(args.cellType ?? "code") as "code" | "markdown" | "raw";
       const source = String(args.source ?? "");
-      const ed = new FileEditor(ctx.root);
+      const ed = new FileEditor(ctx.root, !!ctx.allowExternalPath);
       let raw: string;
       try {
         raw = await ed.read(filePath);
@@ -1020,7 +1011,10 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       }
       const updated = addCell(doc, index, cellType, source);
       const full = ed.resolve(filePath);
-      await fs.writeFile(full, serializeNotebook(updated), "utf-8");
+      const serialized = serializeNotebook(updated);
+      try { await enforcePreWrite(filePath, serialized, ctx); } catch (error) { return { ok: false, output: (error as Error).message }; }
+      await fs.writeFile(full, serialized, "utf-8");
+      void runPostEditHooks(filePath, ctx.root, ctx.sandboxProfile);
       return { ok: true, output: `Inserted a new ${cellType} cell at index ${index} in ${filePath}`, touchedFiles: [filePath], filePath };
     },
   },
@@ -1029,7 +1023,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     fn: async (args, ctx) => {
       const filePath = String(args.path);
       const cellIndex = Number(args.cellIndex);
-      const ed = new FileEditor(ctx.root);
+      const ed = new FileEditor(ctx.root, !!ctx.allowExternalPath);
       let raw: string;
       try {
         raw = await ed.read(filePath);
@@ -1049,7 +1043,10 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
         return { ok: false, output: (e as Error).message };
       }
       const full = ed.resolve(filePath);
-      await fs.writeFile(full, serializeNotebook(updated), "utf-8");
+      const serialized = serializeNotebook(updated);
+      try { await enforcePreWrite(filePath, serialized, ctx); } catch (error) { return { ok: false, output: (error as Error).message }; }
+      await fs.writeFile(full, serialized, "utf-8");
+      void runPostEditHooks(filePath, ctx.root, ctx.sandboxProfile);
       return { ok: true, output: `Deleted cell ${cellIndex} from ${filePath}`, touchedFiles: [filePath], filePath };
     },
   },
@@ -1095,7 +1092,7 @@ async function ddgSearchLite(query: string, max: number, proxyDispatcher: unknow
     if (proxyDispatcher) opts.dispatcher = proxyDispatcher;
     const res = await fetch("https://lite.duckduckgo.com/lite/", opts as RequestInit);
     if (!res.ok) return [];
-    const html = await res.text();
+    const html = await readBodyLimited(res);
     return parseLiteResults(html, max);
   } catch {
     return [];
@@ -1108,7 +1105,7 @@ async function ddgSearchHtml(query: string, max: number, proxyDispatcher: unknow
     if (proxyDispatcher) opts.dispatcher = proxyDispatcher;
     const res = await fetch(`https://html.duckduckgo.com/html/?${params.toString()}`, opts as RequestInit);
     if (!res.ok) return [];
-    const html = await res.text();
+    const html = await readBodyLimited(res);
     if (hasCaptcha(html)) return [];
     return parseHtmlResults(html, max);
   } catch {

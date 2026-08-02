@@ -1,5 +1,9 @@
 import { useState, useRef, useEffect, useCallback, useLayoutEffect } from "react";
 import { ArrowUp, Paperclip, Square, X, ChevronDown } from "./icons";
+import ModelPicker from "./ModelPicker";
+import ModePicker from "./ModePicker";
+import EffortPicker, { type Effort } from "./EffortPicker";
+import type { ModelDescriptor } from "@arc/host/protocol";
 type Attachment = { uri: string; preview?: string };
 type Props = {
   onSend: (text: string, attachments?: Attachment[], images?: string[]) => void;
@@ -14,9 +18,19 @@ type Props = {
   queuedText?: string | null;
   onCancelQueue?: () => void;
   prefillText?: string | null;
+  variant: "sidebar" | "fullscreen";
+  models: ModelDescriptor[];
+  currentModelId: string;
+  onSelectModel: (modelId: string) => void;
+  modes: { slug: string; description: string }[];
+  currentMode: string;
+  onSelectMode: (mode: string) => void;
+  effort: Effort;
+  onSelectEffort: (effort: Effort) => void;
 };
 export default function Composer({
   onSend, onStop, onGuidance, streaming, disabled, pendingAttachment, onAttach, placeholder, autoFocus = true, queuedText, onCancelQueue, prefillText,
+  variant, models, currentModelId, onSelectModel, modes, currentMode, onSelectMode, effort, onSelectEffort,
 }: Props) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -175,6 +189,14 @@ export default function Composer({
         placeholder={placeholder ?? "Ask Arc anything…"}
       />
       <div className="arc-composer-bar">
+        <div className="arc-composer-pickers">
+          {modes.length > 0 && (
+            <ModePicker modes={modes} currentMode={currentMode} onSelect={onSelectMode} compact />
+          )}
+          <ModelPicker models={models} currentModelId={currentModelId} onSelect={onSelectModel} compact />
+          <EffortPicker effort={effort} onSelect={onSelectEffort} variant={variant} compact />
+        </div>
+        <span className="arc-spacer" />
         <div className="arc-attach-wrap" ref={attachRef}>
           <button className="arc-composer-tool" title="Attach" onClick={() => setAttachOpen((o) => !o)} disabled={disabled}>
             <Paperclip size={14} />
@@ -215,31 +237,32 @@ export default function Composer({
             </div>
           )}
         </div>
-        <span className="arc-spacer" />
         {streaming ? (
           <div className="arc-send-group" ref={actionsRef}>
             {text.trim() ? (
-              <button className="arc-composer-send" onClick={submit} title="Send (queues after current turn)">
-                <ArrowUp size={15} strokeWidth={2.5} />
-              </button>
+              <>
+                <button className="arc-composer-send" onClick={submit} title="Send (queues after current turn)">
+                  <ArrowUp size={15} strokeWidth={2.5} />
+                </button>
+                <span className="arc-send-sep" />
+                <button className="arc-composer-send is-chevron" onClick={() => setActionsOpen((o) => !o)} title="More actions">
+                  <ChevronDown size={12} strokeWidth={2.5} />
+                </button>
+                {actionsOpen && (
+                  <div className="arc-send-dropdown">
+                    <button className="arc-send-dropdown-item" onClick={() => { setActionsOpen(false); if (text.trim() && onGuidance) { onGuidance(text.trim()); setText(""); } }} disabled={!text.trim()}>
+                      Steer
+                    </button>
+                    <button className="arc-send-dropdown-item" onClick={() => { setActionsOpen(false); if (text.trim()) { onSend(text.trim(), attachments.length ? attachments : undefined, images.length ? images : undefined); setText(""); setAttachments([]); setImages([]); } }} disabled={!text.trim()}>
+                      Queue
+                    </button>
+                  </div>
+                )}
+              </>
             ) : (
               <button className="arc-composer-send is-stop" onClick={onStop} title="Stop">
                 <Square size={12} strokeWidth={2.5} />
               </button>
-            )}
-            <span className="arc-send-sep" />
-            <button className="arc-composer-send is-chevron" onClick={() => setActionsOpen((o) => !o)} title="More actions">
-              <ChevronDown size={12} strokeWidth={2.5} />
-            </button>
-            {actionsOpen && (
-              <div className="arc-send-dropdown">
-                <button className="arc-send-dropdown-item" onClick={() => { setActionsOpen(false); if (text.trim() && onGuidance) { onGuidance(text.trim()); setText(""); } }} disabled={!text.trim()}>
-                  Steer
-                </button>
-                <button className="arc-send-dropdown-item" onClick={() => { setActionsOpen(false); if (text.trim()) { onSend(text.trim(), attachments.length ? attachments : undefined, images.length ? images : undefined); setText(""); setAttachments([]); setImages([]); } }} disabled={!text.trim()}>
-                  Queue
-                </button>
-              </div>
             )}
           </div>
         ) : (

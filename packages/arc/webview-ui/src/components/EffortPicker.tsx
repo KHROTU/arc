@@ -14,9 +14,11 @@ type Props = {
   effort: Effort;
   onSelect: (effort: Effort) => void;
   variant: "sidebar" | "fullscreen";
+  compact?: boolean;
 };
-export default function EffortPicker({ effort, onSelect, variant }: Props) {
+export default function EffortPicker({ effort, onSelect, variant, compact }: Props) {
   const [open, setOpen] = useState(false);
+  const [activeIdx, setActiveIdx] = useState(-1);
   const ref = useRef<HTMLDivElement>(null);
   const isFull = variant === "fullscreen";
   useEffect(() => {
@@ -29,14 +31,24 @@ export default function EffortPicker({ effort, onSelect, variant }: Props) {
   const current = EFFORTS.find((e) => e.value === effort) ?? EFFORTS[4];
   return (
     <div className="arc-effort-picker" ref={ref}>
-      <button
-        className={`arc-effort-trigger ${isFull ? "arc-effort-trigger-full" : ""}`}
-        onClick={() => setOpen((o) => !o)}
-        title="Reasoning effort"
-      >
-        <span className="arc-effort-value">{current.label}</span>
-        <ChevronDown size={11} className={`arc-effort-chevron ${open ? "arc-effort-chevron-open" : ""}`} />
-      </button>
+      {compact ? (
+        <button
+          className={`arc-effort-trigger arc-effort-trigger-compact ${open ? "is-open" : ""}`}
+          onClick={() => setOpen((o) => !o)}
+          title="Reasoning effort"
+        >
+          <span className="arc-effort-value">{current.label}</span>
+        </button>
+      ) : (
+        <button
+          className={`arc-effort-trigger ${isFull ? "arc-effort-trigger-full" : ""}`}
+          onClick={() => setOpen((o) => !o)}
+          title="Reasoning effort"
+        >
+          <span className="arc-effort-value">{current.label}</span>
+          <ChevronDown size={11} className={`arc-effort-chevron ${open ? "arc-effort-chevron-open" : ""}`} />
+        </button>
+      )}
       {open && (
         <div className="arc-effort-dropdown">
           <div className="arc-effort-header">
@@ -45,15 +57,18 @@ export default function EffortPicker({ effort, onSelect, variant }: Props) {
               <Info size={12} />
             </span>
           </div>
-          {EFFORTS.map((e) => (
-            <button
-              key={e.value}
-              className={`arc-effort-item ${e.value === effort ? "arc-effort-item-active" : ""}`}
-              onClick={() => { onSelect(e.value); setOpen(false); }}
-            >
-              {e.label}
-            </button>
-          ))}
+          <div className="arc-effort-dropdown-list" onMouseLeave={() => setActiveIdx(-1)}>
+            {EFFORTS.map((e, i) => (
+              <button
+                key={e.value}
+                className={`arc-effort-item ${e.value === effort ? "is-selected" : ""} ${i === activeIdx ? "is-active" : ""}`}
+                onClick={() => { onSelect(e.value); setOpen(false); }}
+                onMouseEnter={() => setActiveIdx(i)}
+              >
+                {e.label}
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </div>

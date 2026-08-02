@@ -1,5 +1,5 @@
 export function helper(): string {
-  return "REPLACE_ME";
+  return "Arc Agent Playground v0.5.0";
 }
 
 export function countLines(text: string): number {

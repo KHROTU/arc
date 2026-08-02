@@ -1,5 +1,11 @@
 import * as fs from "node:fs/promises";
 import type { EmbeddingVector } from "./backend.js";
+interface VectorIndexSecurity {
+  encrypt?: (content: Buffer) => Promise<Buffer>;
+  decrypt?: (content: Buffer) => Promise<Buffer>;
+}
+let security: VectorIndexSecurity = {};
+export function configureVectorIndexSecurity(next: VectorIndexSecurity): void { security = next; }
 export interface VectorRecord {
   id: string;
   vector: number[];
@@ -90,11 +96,12 @@ export class VectorIndex {
       bufs.push(dim, vecBufs[i]);
     }
     const out = Buffer.concat(bufs);
-    await fs.writeFile(filePath, out);
+    await fs.writeFile(filePath, security.encrypt ? await security.encrypt(out) : out, { mode: 0o600 });
   }
   static async load(filePath: string): Promise<VectorIndex> {
     const idx = new VectorIndex();
-    const buf = await fs.readFile(filePath);
+    const stored = await fs.readFile(filePath);
+    const buf = stored.toString("ascii", 0, 4) === "ARCX" ? stored : security.decrypt ? await security.decrypt(stored) : stored;
     if (buf.length < 16) return idx;
     const magic = buf.toString("ascii", 0, 4);
     if (magic !== "ARCX") throw new Error(`Not an Arc index file: ${filePath}`);

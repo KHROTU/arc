@@ -1,4 +1,5 @@
 import type { EmbeddingBackend, EmbeddingRequest, EmbeddingVector } from "./backend.js";
+import { readBodyLimited } from "../security/network.js";
 export interface OllamaEmbeddingOptions {
   baseUrl?: string;
   signal?: AbortSignal;
@@ -21,10 +22,10 @@ export class OllamaEmbeddingBackend implements EmbeddingBackend {
         signal: this.opts.signal ?? AbortSignal.timeout(60_000),
       });
       if (!res.ok) {
-        const body = await res.text().catch(() => "");
+        const body = await readBodyLimited(res).catch((error) => (error as Error).message);
         throw new Error(`Ollama embedding returned ${res.status}: ${body.slice(0, 200)}`);
       }
-      const j = await res.json() as { embedding?: number[] };
+      const j = JSON.parse(await readBodyLimited(res)) as { embedding?: number[] };
       if (!j.embedding) throw new Error(`Ollama embedding response missing 'embedding' field.`);
       out.push({ values: j.embedding, dim: j.embedding.length });
     }

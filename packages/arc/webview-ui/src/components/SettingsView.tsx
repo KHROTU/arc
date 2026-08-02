@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Plus, Trash2, Plug, Braces, Cpu, KeyRound, X, Check, Info, ListChecks, Play, ShieldCheck, RefreshCw, CircleDot, AlertTriangle, Layers, Pencil } from "./icons";
+import { Plus, Trash2, Plug, Braces, Cpu, KeyRound, X, Check, Info, ListChecks, Play, RefreshCw, CircleDot, AlertTriangle, Layers, Pencil } from "./icons";
 import type { RpcClient, HostEvent } from "../rpc";
-import type { ModelDescriptor, ModelTier, ProviderConfig, ProviderKind } from "@arc/host/protocol";
+import type { ModelDescriptor, ModelTier, ProviderKind, ProviderSummary } from "@arc/host/protocol";
 type ProviderSpec = { kind: ProviderKind; label: string; tags: string[]; defaultBaseUrl?: string };
-type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderConfig[]; monoLogoText: string; version: string; providerCatalog: ProviderSpec[] };
+type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderSummary[]; monoLogoText: string; version: string; providerCatalog: ProviderSpec[] };
 const TIERS: ModelTier[] = ["heavy", "default", "light", "free"];
 const TIER_ORDER: Record<ModelTier, number> = { heavy: 0, default: 1, light: 2, free: 3 };
 type Tab = "models" | "providers" | "mcp" | "general" | "search" | "customize" | "modes";
@@ -145,12 +145,14 @@ function ModelMultimodalCheckbox({ modelId, client }: { modelId: string; client:
     />
   );
 }
-function ModelsTab({ client, providers, models, onSwitchTab }: { client: RpcClient; providers: ProviderConfig[]; models: ModelDescriptor[]; onSwitchTab: (t: Tab) => void }) {
+function ModelsTab({ client, providers, models, onSwitchTab }: { client: RpcClient; providers: ProviderSummary[]; models: ModelDescriptor[]; onSwitchTab: (t: Tab) => void }) {
   const [adding, setAdding] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   const [label, setLabel] = useState("");
   const [tier, setTier] = useState<ModelTier>("default");
-  const [ctx, setCtx] = useState(0);
-  const [maxOut, setMaxOut] = useState(0);
+  const [ctx, setCtx] = useState<number | "">("");
+  const [maxOut, setMaxOut] = useState<number | "">("");
   const [costIn, setCostIn] = useState<number | undefined>(undefined);
   const [costOut, setCostOut] = useState<number | undefined>(undefined);
   const add = () => {
@@ -162,8 +164,8 @@ function ModelsTab({ client, providers, models, onSwitchTab }: { client: RpcClie
         id,
         label,
         tier,
-        contextWindow: ctx,
-        maxOutputTokens: maxOut,
+        contextWindow: ctx === "" ? 0 : ctx,
+        maxOutputTokens: maxOut === "" ? 0 : maxOut,
         costPer1mIn: costIn ?? 0,
         costPer1mOut: costOut ?? 0,
         providers: [],
@@ -225,11 +227,24 @@ function ModelsTab({ client, providers, models, onSwitchTab }: { client: RpcClie
             <li key={m.id} className="arc-row">
               <div className="arc-row-main">
                 <TierDot tier={m.tier} />
-                <span className="arc-row-label">{m.label}</span>
+                {renamingId === m.id ? (
+                  <input
+                    className="arc-input arc-input-sm"
+                    style={{ maxWidth: 180 }}
+                    value={renameValue}
+                    autoFocus
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onBlur={() => { if (renamingId === m.id && renameValue.trim() && renameValue.trim() !== m.label) { client.send({ type: "model/remove", modelId: m.id }); client.send({ type: "model/add", model: { ...m, label: renameValue.trim() } }); } setRenamingId(null); }}
+                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setRenamingId(null); e.stopPropagation(); }}
+                  />
+                ) : (
+                  <span className="arc-row-label">{m.label}</span>
+                )}
                 <select className="arc-input arc-input-sm" value={m.tier} onChange={(e) => { client.send({ type: "model/remove", modelId: m.id }); client.send({ type: "model/add", model: { ...m, tier: e.target.value as ModelTier } }); }}>
                   {TIERS.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
                 <span className="arc-spacer" />
+                <button className="arc-iconbtn" onClick={() => { setRenamingId(m.id); setRenameValue(m.label); }} title="Rename model"><Pencil size={14} /></button>
                 <button className="arc-iconbtn" onClick={() => client.send({ type: "model/remove", modelId: m.id })} title="Remove model"><Trash2 size={14} /></button>
               </div>
               <div className="arc-row-sub" key={`edit-${m.id}-${m.contextWindow}-${m.maxOutputTokens ?? 0}-${m.costPer1mIn}-${m.costPer1mOut}`}>
@@ -279,7 +294,7 @@ function ModelsTab({ client, providers, models, onSwitchTab }: { client: RpcClie
     </Section>
   );
 }
-function ProvidersTab({ client, providers, models, providerCatalog }: { client: RpcClient; providers: ProviderConfig[]; models: ModelDescriptor[]; providerCatalog: ProviderSpec[] }) {
+function ProvidersTab({ client, providers, models, providerCatalog }: { client: RpcClient; providers: ProviderSummary[]; models: ModelDescriptor[]; providerCatalog: ProviderSpec[] }) {
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [kind, setKind] = useState<ProviderKind>("openai");
@@ -329,7 +344,7 @@ function ProvidersTab({ client, providers, models, providerCatalog }: { client: 
   return (
     <Section
       title="Providers"
-      description="API keys are stored in SecretStorage."
+      description="API keys are stored in securely."
       action={!adding && <button className="arc-btn" onClick={() => setAdding(true)}><Plus size={14} /> Add provider</button>}
     >
       {adding && (
@@ -419,7 +434,7 @@ function ProvidersTab({ client, providers, models, providerCatalog }: { client: 
     </Section>
   );
 }
-function EditProviderForm({ client, provider, onDone }: { client: RpcClient; provider: ProviderConfig; onDone: () => void }) {
+function EditProviderForm({ client, provider, onDone }: { client: RpcClient; provider: ProviderSummary; onDone: () => void }) {
   const [label, setLabel] = useState(provider.label);
   const [baseUrl, setBaseUrl] = useState(provider.baseUrl ?? "");
   const [apiKey, setApiKey] = useState("");
@@ -439,7 +454,6 @@ function EditProviderForm({ client, provider, onDone }: { client: RpcClient; pro
     <div className="arc-form" style={{ width: "100%" }}>
       <div className="arc-form-row">
         <input className="arc-input" placeholder="Label" value={label} onChange={(e) => setLabel(e.target.value)} autoFocus />
-        <span className="arc-row-meta">{provider.kind}</span>
       </div>
       <input className="arc-input" placeholder="https://…" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
       <input className="arc-input" type="password" placeholder="API key (leave blank to keep current)" value={apiKey} onChange={(e) => setApiKey(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
@@ -544,7 +558,7 @@ function McpTab({ client }: { client: RpcClient }) {
         </ul>
         <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
           <button className="arc-chip" onClick={() => setShowDebug(!showDebug)} style={{ padding: "3px 8px", fontSize: 11 }}>
-            <ShieldCheck size={12} /> {showDebug ? "Hide" : "Show"} traffic
+            {showDebug ? "Hide" : "Show"} traffic
           </button>
           {showDebug && <button className="arc-iconbtn" onClick={() => setDebugMsgs([])} title="Clear"><RefreshCw size={12} /></button>}
         </div>
@@ -596,7 +610,10 @@ function McpMarketplace({ client, existingServers }: { client: RpcClient; existi
     if (remote?.type === "http" && remote.url) {
       client.send({ type: "mcp/addServer", name, transport: { type: "http", url: remote.url } });
     } else if (pkg) {
-      const cmd = pkg.registryType === "pypi" ? `uvx ${pkg.identifier}` : `npx -y ${pkg.identifier}`;
+      const version = pkg.version || srv.version;
+      if (!version || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) { setInstalling(null); return; }
+      const pinned = pkg.registryType === "pypi" ? `${pkg.identifier}==${version}` : `${pkg.identifier}@${version}`;
+      const cmd = pkg.registryType === "pypi" ? `uvx ${pinned}` : `npx -y ${pinned}`;
       const parts = cmd.trim().split(/\s+/);
       client.send({ type: "mcp/addServer", name, transport: { type: "stdio", command: parts[0], args: parts.slice(1) } });
     }
@@ -669,7 +686,7 @@ function GeneralTab({ client }: { client: RpcClient }) {
   }, [client]);
   return (
     <>
-      <Section title="Verification" description="Runs .arc/verify.toml commands after edits and feeds failures back to the agent.">
+      <Section title="Verification" description="Runs centralized ~/.arc workspace verification commands after edits and feeds failures back to the agent.">
         <ul className="arc-rows">
           <li className="arc-row"><div className="arc-row-main">
             <span className="arc-row-label">Retry strategy</span>
@@ -849,29 +866,45 @@ function emptyModeEntry(): CustomModeEntry {
 function ModesTab({ client, models }: { client: RpcClient; models: ModelDescriptor[] }) {
   const [modes, setModes] = useState<CustomModeEntry[]>([]);
   const [editing, setEditing] = useState<CustomModeEntry | null>(null);
+  const [saving, setSaving] = useState(false);
   const [toolsText, setToolsText] = useState("");
   const [error, setError] = useState("");
+  const savedSlugRef = useRef<string | null>(null);
   useEffect(() => {
     const off = client.on((e: any) => {
-      if (e.type === "mode/list") setModes(e.modes);
-      if (e.type === "error" && typeof e.message === "string" && e.message.startsWith("Failed to save mode")) setError(e.message);
+      if (e.type === "mode/list") {
+        setModes(e.modes);
+        if (savedSlugRef.current && e.modes?.some((m: any) => m.slug === savedSlugRef.current)) {
+          savedSlugRef.current = null;
+          setSaving(false);
+          setEditing(null);
+        }
+      }
+      if (e.type === "error" && typeof e.message === "string" && e.message.startsWith("Failed to save mode")) {
+        setSaving(false);
+        setError(e.message);
+      }
     });
     client.send({ type: "mode/list" });
     return off;
   }, [client]);
   const startNew = () => { setEditing(emptyModeEntry()); setToolsText(""); setError(""); };
   const startEdit = (m: CustomModeEntry) => { setEditing(m); setToolsText(m.allowedTools.join(", ")); setError(""); };
-  const cancel = () => { setEditing(null); setError(""); };
+  const cancel = () => { setEditing(null); setError(""); setSaving(false); };
   const save = () => {
     if (!editing) return;
+    const slug = editing.slug.trim();
     const allowedTools = toolsText.split(",").map((t) => t.trim()).filter(Boolean);
-    if (!editing.slug.trim() || !editing.roleDefinition.trim() || !allowedTools.length) { setError("Name, prompt, and at least one tool are required."); return; }
+    if (!slug || !editing.roleDefinition.trim() || !allowedTools.length) { setError("Name, prompt, and at least one tool are required."); return; }
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) { setError("Mode slug must be lowercase alphanumeric with hyphens only."); return; }
+    savedSlugRef.current = slug;
+    setSaving(true);
+    setError("");
     client.send({
       type: "mode/save",
-      mode: { slug: editing.slug.trim(), roleDefinition: editing.roleDefinition, allowedTools, writeGlob: editing.writeGlob || undefined, description: editing.description, whenToUse: editing.whenToUse, model: editing.model || undefined },
+      mode: { slug, roleDefinition: editing.roleDefinition, allowedTools, writeGlob: editing.writeGlob || undefined, description: editing.description, whenToUse: editing.whenToUse, model: editing.model || undefined },
       scope: "workspace",
     });
-    setEditing(null);
   };
   const remove = (slug: string) => client.send({ type: "mode/delete", slug, scope: "workspace" });
   return (
@@ -905,7 +938,7 @@ function ModesTab({ client, models }: { client: RpcClient; models: ModelDescript
           <input className="arc-input" placeholder="description" value={editing.description} onChange={(e) => setEditing({ ...editing, description: e.target.value })} />
           <input className="arc-input" placeholder="when to use" value={editing.whenToUse} onChange={(e) => setEditing({ ...editing, whenToUse: e.target.value })} />
           <div className="arc-form-actions">
-            <button className="arc-btn" onClick={save}><Check size={14} /> Save</button>
+            <button className="arc-btn" onClick={save} disabled={saving}>{saving ? "Saving…" : <><Check size={14} /> Save</>}</button>
             <button className="arc-btn-ghost" onClick={cancel}>Cancel</button>
           </div>
         </div>
@@ -993,11 +1026,11 @@ function CustomTab({ client }: { client: RpcClient }) {
           </ul>
         )}
       </Section>
-      <Section title="Hooks" description="Custom scripts on lifecycle events. Configured in .arc/hooks.json.">
+      <Section title="Hooks" description="Custom scripts on lifecycle events. Configured in ~/.arc/hooks.json or the centralized workspace hooks file.">
         {hooks.length === 0 && (
           <div className="arc-hook-empty">
             <p className="arc-empty">No hooks configured.</p>
-            <p className="arc-hint-text">Add hooks to <code>.arc/hooks.json</code> for events like <strong>session.start</strong>, <strong>pre.tool</strong>, <strong>post.tool</strong>, or <strong>stop</strong>.</p>
+            <p className="arc-hint-text">Add hooks to <code>~/.arc/hooks.json</code> for events like <strong>session.start</strong>, <strong>pre.tool</strong>, <strong>post.tool</strong>, or <strong>stop</strong>.</p>
           </div>
         )}
         <div className="arc-hook-panel">

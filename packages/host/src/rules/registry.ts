@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import * as path from "node:path";
-import { getArcDir, getWorkspaceArcDir } from "../arc-dir.js";
+import { getArcDir, getLocalWorkspaceArcDir, getWorkspaceArcDir } from "../arc-dir.js";
 import type { RuleEntry } from "./types.js";
 export interface RuleDiff {
   added: string[];
@@ -13,13 +13,16 @@ export class RuleRegistry {
   private workspaceRoot: string;
   private watchers: fsSync.FSWatcher[] = [];
   private watchTimer: ReturnType<typeof setTimeout> | undefined;
-  constructor(workspaceRoot?: string) {
+  constructor(workspaceRoot?: string, private includeRepositoryFiles = true) {
     this.workspaceRoot = workspaceRoot ?? "";
   }
   async load(): Promise<void> {
     this.rules.clear();
-    if (this.workspaceRoot) await this.loadFromDir(getWorkspaceArcDir(this.workspaceRoot), "workspace");
     await this.loadFromDir(getArcDir(), "global");
+    if (this.workspaceRoot) {
+      await this.loadFromDir(getWorkspaceArcDir(this.workspaceRoot), "workspace");
+      if (this.includeRepositoryFiles) await this.loadFromDir(getLocalWorkspaceArcDir(this.workspaceRoot), "workspace");
+    }
   }
   private async loadFromDir(baseDir: string, scope: "workspace" | "global"): Promise<void> {
     const rulesDir = path.join(baseDir, "rules");
@@ -37,6 +40,7 @@ export class RuleRegistry {
   get(name: string): RuleEntry | undefined { return this.rules.get(name); }
   list(): RuleEntry[] { return [...this.rules.values()]; }
   async create(name: string, glob: string, description: string, body: string, scope: "workspace" | "global" = "workspace"): Promise<void> {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(name)) throw new Error("Rule name must be a safe 1-64 character slug.");
     const dir = path.join(scope === "global" ? getArcDir() : getWorkspaceArcDir(this.workspaceRoot), "rules");
     await fs.mkdir(dir, { recursive: true });
     const content = `---\nname: ${name}\nglob: ${glob}\ndescription: ${description}\n---\n\n${body}`;
@@ -46,6 +50,7 @@ export class RuleRegistry {
   watch(onChange?: (diff: RuleDiff) => void, debounceMs = 300): () => void {
     const dirs = [
       this.workspaceRoot ? path.join(getWorkspaceArcDir(this.workspaceRoot), "rules") : undefined,
+      this.workspaceRoot && this.includeRepositoryFiles ? path.join(getLocalWorkspaceArcDir(this.workspaceRoot), "rules") : undefined,
       path.join(getArcDir(), "rules"),
     ].filter((d): d is string => !!d);
     const reload = async () => {
@@ -65,7 +70,10 @@ export class RuleRegistry {
     };
     for (const dir of dirs) {
       try {
-        fsSync.mkdirSync(dir, { recursive: true });
+        const localRoot = this.workspaceRoot ? getLocalWorkspaceArcDir(this.workspaceRoot) : "";
+        const isLocal = !!localRoot && (dir === localRoot || dir.startsWith(localRoot + path.sep));
+        if (isLocal && !fsSync.existsSync(dir)) continue;
+        if (!isLocal) fsSync.mkdirSync(dir, { recursive: true });
         const w = fsSync.watch(dir, { recursive: true }, () => schedule());
         this.watchers.push(w);
       } catch {
@@ -96,11 +104,12 @@ function diffRules(before: Map<string, RuleEntry>, after: Map<string, RuleEntry>
 function parseRule(name: string, raw: string, scope: "workspace" | "global"): RuleEntry | undefined {
   const fm = extractYaml(raw);
   const body = bodyAfterYaml(raw);
-  if (!fm.name && !fm.description) return undefined;
+  const description = (fm.description as string) || raw.match(/^#\s+(.+)$/m)?.[1]?.trim() || "";
+  if (!fm.name && !description) return undefined;
   return {
     name: (fm.name as string) || name,
     glob: fm.glob as string | undefined,
-    description: (fm.description as string) || "",
+    description,
     body: body || raw,
     scope,
   };

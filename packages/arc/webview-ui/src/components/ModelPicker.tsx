@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { Search, ChevronDown } from "./icons";
+import ModelIcon from "./ModelIcon";
 import type { ModelDescriptor, ModelTier } from "@arc/host/protocol";
 const TIER_ORDER: Record<ModelTier, number> = { heavy: 0, default: 1, light: 2, free: 3 };
 const TIER_LABELS: Record<ModelTier, string> = { heavy: "heavy", default: "default", light: "light", free: "free" };
@@ -7,9 +8,9 @@ type Props = {
   models: ModelDescriptor[];
   currentModelId: string;
   onSelect: (modelId: string) => void;
-  variant: "sidebar" | "fullscreen";
+  compact?: boolean;
 };
-export default function ModelPicker({ models, currentModelId, onSelect, variant }: Props) {
+export default function ModelPicker({ models, currentModelId, onSelect, compact }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
@@ -94,18 +95,28 @@ export default function ModelPicker({ models, currentModelId, onSelect, variant 
   }
   return (
     <div className="arc-model" ref={containerRef}>
-      <button
-        className={`arc-model-trigger ${open ? "is-open" : ""}`}
-        onClick={() => setOpen((o) => !o)}
-        title={current ? `${current.label} · ${TIER_LABELS[current.tier]}` : "Select model"}
-      >
-        <span className="arc-model-trigger-label">
-          {current ? current.label : "Select model"}
-        </span>
-        <ChevronDown size={12} className={`arc-model-trigger-chevron ${open ? "is-open" : ""}`} />
-      </button>
+      {compact ? (
+        <button
+          className={`arc-model-trigger arc-model-trigger-compact ${open ? "is-open" : ""}`}
+          onClick={() => setOpen((o) => !o)}
+          title={current ? `${current.label} · ${TIER_LABELS[current.tier]}` : "Select model"}
+        >
+          <ModelIcon modelId={currentModelId} size={15} />
+        </button>
+      ) : (
+        <button
+          className={`arc-model-trigger ${open ? "is-open" : ""}`}
+          onClick={() => setOpen((o) => !o)}
+          title={current ? `${current.label} · ${TIER_LABELS[current.tier]}` : "Select model"}
+        >
+          <span className="arc-model-trigger-label">
+            {current ? current.label : "Select model"}
+          </span>
+          <ChevronDown size={12} className={`arc-model-trigger-chevron ${open ? "is-open" : ""}`} />
+        </button>
+      )}
       {open && (
-        <div className={`arc-model-dropdown arc-model-dropdown-${variant}`}>
+        <div className="arc-model-dropdown">
           <div className="arc-model-dropdown-search">
             <Search size={13} className="arc-model-dropdown-search-icon" />
             <input
@@ -117,7 +128,7 @@ export default function ModelPicker({ models, currentModelId, onSelect, variant 
               onKeyDown={handleKey}
             />
           </div>
-          <div className="arc-model-dropdown-list" ref={listRef}>
+          <div className="arc-model-dropdown-list" ref={listRef} onMouseLeave={() => setActiveIdx(-1)}>
             {filtered.length === 0 ? (
               <div className="arc-model-dropdown-empty">No models match "{query}"</div>
             ) : (

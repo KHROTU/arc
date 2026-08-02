@@ -1,11 +1,8 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import { getArcDir, getWorkspaceArcDir } from "../arc-dir.js";
-const pexec = promisify(exec);
-const IS_WIN = process.platform === "win32";
-const EXEC_SHELL: string | undefined = IS_WIN ? "pwsh.exe" : undefined;
+import { minimalEnvironment, PROCESS_OUTPUT_LIMIT, runShellCommand } from "../util/process.js";
+import type { SandboxProfile } from "../sandbox/sandbox.js";
 const ANSI_RE = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
 function stripAnsi(s: string): string { return s.replace(ANSI_RE, ""); }
 export type HookEvent =
@@ -62,6 +59,7 @@ export interface HookEventContext {
   modelTier?: string;
   userMessage?: string;
   extra?: Record<string, unknown>;
+  sandboxProfile?: SandboxProfile;
 }
 export interface HookDecision {
   decision: "allow" | "deny" | "ask";
@@ -115,15 +113,19 @@ export async function runHooks(ctx: HookEventContext): Promise<HookDecision[]> {
   const decisions: HookDecision[] = [];
   for (const hook of cfg.hooks ?? []) {
     if (!matchHook(hook, ctx)) continue;
-    const cmd = IS_WIN && hook.command_windows ? hook.command_windows : hook.command;
+    const cmd = process.platform === "win32" && hook.command_windows ? hook.command_windows : hook.command;
     if (!cmd) continue;
     try {
-      const { stdout } = await pexec(cmd, {
-        windowsHide: true,
-        timeout: (hook.timeout_sec ?? 10) * 1000,
-        shell: EXEC_SHELL,
-        env: { ...process.env, ARC_HOOK: JSON.stringify(ctx) },
+      const result = await runShellCommand(cmd, {
+        cwd: ctx.workspaceRoot,
+        timeoutMs: (hook.timeout_sec ?? 10) * 1000,
+        maxOutputBytes: PROCESS_OUTPUT_LIMIT,
+        sandboxProfile: ctx.sandboxProfile,
+        workspaceRoot: ctx.workspaceRoot,
+        env: minimalEnvironment({ ARC_HOOK: JSON.stringify(ctx) }),
       });
+      if (!result.ok) throw new Error(result.stderr || "hook failed");
+      const stdout = result.stdout;
       const trimmed = stripAnsi(stdout).trim();
       if (!trimmed) continue;
       try {
@@ -141,7 +143,8 @@ export async function runHooks(ctx: HookEventContext): Promise<HookDecision[]> {
         decisions.push({ decision: "deny", message: `Hook ${hook.event} returned invalid JSON: ${trimmed.slice(0, 200)}` });
         return decisions;
       }
-    } catch {
+    } catch (error) {
+      if (ctx.event === "pre.tool") decisions.push({ decision: "deny", message: `Pre-tool hook failed closed: ${(error as Error).message}` });
     }
   }
   return decisions;
@@ -153,13 +156,18 @@ const SECRET_PATTERNS = [
   { pattern: /ghp_[0-9a-zA-Z]{36}/, label: "GitHub personal access token" },
   { pattern: /github_pat_[0-9a-zA-Z_]{36,}/, label: "GitHub fine-grained token" },
   { pattern: /sk-[a-zA-Z0-9]{32,}/, label: "OpenAI API key" },
+  { pattern: /\bsk-proj-[a-zA-Z0-9_-]{20,}\b/, label: "OpenAI project API key" },
   { pattern: /sk-ant-[a-zA-Z0-9]{32,}/, label: "Anthropic API key" },
 ];
-export async function runPreWriteHooks(filePath: string, content: string, workspaceRoot?: string): Promise<HookResult> {
+export async function runPreWriteHooks(filePath: string, content: string, workspaceRoot?: string, sandboxProfile?: SandboxProfile): Promise<HookResult> {
   const cfg = await loadHookConfig(workspaceRoot);
   const errors: string[] = [];
   const warnings: string[] = [];
   const hooks = cfg.preWrite ?? [];
+  for (const candidate of SECRET_PATTERNS) {
+    if (candidate.pattern.test(content)) errors.push(`Secret scan blocked a potential ${candidate.label} in ${filePath}`);
+    candidate.pattern.lastIndex = 0;
+  }
   for (const hook of hooks) {
     if (hook.type === "secret-scan" || (!hook.type && !hook.command)) {
       const patterns = hook.pattern
@@ -168,24 +176,33 @@ export async function runPreWriteHooks(filePath: string, content: string, worksp
       for (const p of patterns) {
         const matches = content.match(p.pattern);
         if (matches && matches.length > 0) {
-          const msg = hook.message ?? `Secret scan: potential ${p.label} detected in ${filePath}`;
-          warnings.push(msg);
+          const msg = hook.message ?? `Secret scan blocked a potential ${p.label} in ${filePath}`;
+          errors.push(msg);
         }
       }
     }
     if (hook.type === "custom" && hook.command) {
       try {
-        const { stdout } = await pexec(hook.command, { windowsHide: true, timeout: 10_000, shell: EXEC_SHELL });
-        const out = stripAnsi(stdout).trim();
+        const result = await runShellCommand(hook.command, {
+          cwd: workspaceRoot ?? process.cwd(),
+          timeoutMs: 10_000,
+          maxOutputBytes: PROCESS_OUTPUT_LIMIT,
+          sandboxProfile,
+          workspaceRoot,
+          env: minimalEnvironment({ ARC_FILE: filePath }),
+          input: content,
+        });
+        const out = stripAnsi(result.stdout).trim();
+        if (!result.ok) throw new Error(result.stderr || "pre-write hook failed");
         if (out) warnings.push(`Pre-write hook "${hook.command}": ${out.slice(0, 500)}`);
       } catch (e) {
-        warnings.push(`Pre-write hook "${hook.command}" failed: ${(e as Error).message}`);
+        errors.push(`Pre-write hook "${hook.command}" failed: ${(e as Error).message}`);
       }
     }
   }
   return { ok: errors.length === 0, errors, warnings };
 }
-export async function runPostEditHooks(filePath: string, root: string): Promise<HookResult> {
+export async function runPostEditHooks(filePath: string, root: string, sandboxProfile?: SandboxProfile): Promise<HookResult> {
   const cfg = await loadHookConfig(root);
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -199,9 +216,10 @@ export async function runPostEditHooks(filePath: string, root: string): Promise<
     }
     try {
       const cwd = path.dirname(filePath);
-      const { stdout, stderr } = await pexec(hook.command, { cwd, windowsHide: true, timeout: 30_000, shell: EXEC_SHELL });
-      const out = stripAnsi(stdout).trim();
-      const err = stripAnsi(stderr).trim();
+      const result = await runShellCommand(hook.command, { cwd, timeoutMs: 30_000, maxOutputBytes: PROCESS_OUTPUT_LIMIT, sandboxProfile, workspaceRoot: root, env: minimalEnvironment({ ARC_FILE: filePath }) });
+      const out = stripAnsi(result.stdout).trim();
+      const err = stripAnsi(result.stderr).trim();
+      if (!result.ok && !err) throw new Error("post-edit hook failed");
       if (out) warnings.push(`[${hook.label}] ${out.slice(0, 500)}`);
       if (err) warnings.push(`[${hook.label}] ${err.slice(0, 500)}`);
     } catch (e) {

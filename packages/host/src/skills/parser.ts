@@ -4,16 +4,15 @@ import type { SkillMetadata } from "./types.js";
 export async function parseSkillMd(filePath: string, scope: "workspace" | "global"): Promise<SkillMetadata | undefined> {
   const raw = await fs.readFile(filePath, "utf-8");
   const frontmatter = extractFrontmatter(raw);
-  if (!frontmatter) return undefined;
-  const name = (frontmatter.name as string)?.trim();
-  const description = (frontmatter.description as string)?.trim();
+  const name = (frontmatter?.name as string)?.trim() ?? path.basename(filePath, ".md");
+  const description = (frontmatter?.description as string)?.trim() ?? firstHeading(raw);
   if (!name || !description) return undefined;
   const skillDir = path.dirname(filePath);
-  const shortDescription = (frontmatter.description as string)?.trim().slice(0, 120);
+  const shortDescription = description.slice(0, 120);
   const scripts = await listDirIfExists(path.join(skillDir, "scripts"));
   const references = await listDirIfExists(path.join(skillDir, "references"));
   const assets = await listDirIfExists(path.join(skillDir, "assets"));
-  const meta = (frontmatter.metadata as Record<string, unknown> | undefined);
+  const meta = frontmatter?.metadata as Record<string, unknown> | undefined;
   return {
     name,
     description,
@@ -39,6 +38,10 @@ function extractFrontmatter(raw: string): Record<string, unknown> | undefined {
   if (end === -1) return undefined;
   const yamlText = lines.slice(1, end).join("\n");
   return parseSimpleYaml(yamlText);
+}
+function firstHeading(raw: string): string | undefined {
+  const heading = raw.match(/^#\s+(.+)$/m)?.[1]?.trim();
+  return heading || undefined;
 }
 function bodyAfterFrontmatter(raw: string): string {
   const lines = raw.split(/\r?\n/);

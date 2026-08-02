@@ -16,6 +16,7 @@ import { runHooks } from "../hooks/hooks.js";
 import { loadVerifyConfig, runVerification, type VerifyConfig } from "../verify/verify.js";
 import { appendAuditEntry } from "../audit/audit.js";
 import { FileEditor } from "../edit/editor.js";
+import { classifyWorkspacePath } from "../security/path-policy.js";
 import type { ModeRegistry } from "../modes/index.js";
 import { type ApprovalsConfig, type SessionApprovals, type ApproveShellMeta, DEFAULT_APPROVALS, initSession, resolveApproval } from "../approvals/index.js";
 import type { ChatMessage, ModelDescriptor, ToolCall, TurnUsage, ExecutionEvent } from "../protocol/protocol.js";
@@ -103,12 +104,12 @@ export class Agent {
     if (this.timeline.length > this.TIMELINE_MAX) {
       this.timeline = this.timeline.slice(-this.TIMELINE_MAX);
     }
-    void appendAuditEntry(this.opts.workspaceRoot, ev.type, ev).catch(() => {});
+    if (!process.env.VITEST) void appendAuditEntry(this.opts.workspaceRoot, ev.type, redactAuditData(ev)).catch((error) => this.sink.error(`Audit log failure: ${(error as Error).message}`));
   }
   getTimeline(): ExecutionEvent[] { return this.timeline.slice(); }
   private async persistPlan(): Promise<void> {
     try {
-      const arcDir = path.join(this.opts.workspaceRoot, ".arc");
+      const arcDir = getWorkspaceArcDir(this.opts.workspaceRoot);
       await fs.mkdir(arcDir, { recursive: true });
       await fs.writeFile(
         path.join(arcDir, "plan-current.json"),
@@ -257,6 +258,7 @@ export class Agent {
       runHooks({
         event: "session.start",
         workspaceRoot: this.opts.workspaceRoot,
+        sandboxProfile: this.opts.toolContext.sandboxProfile,
         mode: this.currentMode,
         userMessage: text,
       }).then((decisions) => {
@@ -270,6 +272,7 @@ export class Agent {
     void runHooks({
       event: "user.submit",
       workspaceRoot: this.opts.workspaceRoot,
+      sandboxProfile: this.opts.toolContext.sandboxProfile,
       mode: this.currentMode,
       userMessage: text,
     });
@@ -319,6 +322,7 @@ export class Agent {
     void runHooks({
       event: "stop",
       workspaceRoot: this.opts.workspaceRoot,
+      sandboxProfile: this.opts.toolContext.sandboxProfile,
       mode: this.currentMode,
     });
     this.abortController?.abort();
@@ -457,7 +461,7 @@ export class Agent {
           proxyUrl: this.resolveProviderProxy(),
           reasoningEffort: this.opts.reasoningEffort,
         });
-      }, { rerank: true });
+      }, { rerank: true, ...(this.opts.reasoningEffort !== "none" ? { stallMs: 180_000, firstByteMs: 180_000 } : {}) });
       let text = "";
       let thinking = "";
       const toolCalls: ToolCall[] = [];
@@ -713,11 +717,21 @@ export class Agent {
       return;
     }
     if (tc.name === "subagent.spawn") {
+      const approvalHandler = this.opts.approveShell ?? (this.opts.toolContext as any).requestApproval;
+      const spawnSummary = Array.isArray(tc.args.batch)
+        ? `Spawn ${tc.args.batch.length} subagent(s):\n\n${JSON.stringify(tc.args.batch, null, 2)}`
+        : `Spawn subagent '${String(tc.args.name ?? "subagent")}':\n\n${String(tc.args.instructions ?? "")}`;
+      if (!approvalHandler || !await approvalHandler(spawnSummary)) {
+        this.appendToolOutput(tc.id, "Subagent spawn denied by user.", false);
+        this.messages.push({ id: randomUUID(), role: "tool", content: "Denied by user.", toolCallId: tc.id, ts: Date.now() });
+        return;
+      }
       void runHooks({
         event: "subagent.spawn",
         tool: tc.name,
         args: tc.args,
         workspaceRoot: this.opts.workspaceRoot,
+        sandboxProfile: this.opts.toolContext.sandboxProfile,
         mode: this.currentMode,
       });
       if (!this.opts.isMain) {
@@ -877,6 +891,11 @@ export class Agent {
       if (!resolvedId) {
         this.appendToolOutput(tc.id, "checkpoint.revert requires a valid index (1=most recent) or turnId. Use checkpoint.list to see available turns.", false);
         this.messages.push({ id: randomUUID(), role: "tool", content: "checkpoint.revert requires a valid index or turnId.", toolCallId: tc.id, ts: Date.now() });
+        return;
+      }
+      const approvalHandler = this.opts.approveShell ?? (this.opts.toolContext as any).requestApproval;
+      if (!approvalHandler || !await approvalHandler(`Restore workspace files from checkpoint '${resolvedId}'?`)) {
+        this.appendToolOutput(tc.id, "Checkpoint restore denied by user.", false);
         return;
       }
       const snap = await this.store.load(this.opts.workspaceRoot, resolvedId);
@@ -1078,6 +1097,33 @@ export class Agent {
       this.messages.push({ id: randomUUID(), role: "tool", content: `Tool '${tc.name}' not allowed in ${this.currentMode} mode.`, toolCallId: tc.id, ts: Date.now() });
       return;
     }
+    const hookTools = new Set(["shell.run", "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage", "web.fetch", "web.search", "mcp.call", "file.edit", "file.write", "file.read", "subagent.spawn", "handoff", "notebook.editCell", "notebook.addCell", "notebook.deleteCell", "notebook.execute"]);
+    if (hookTools.has(tc.name)) {
+      const decisions = await runHooks({
+        event: "pre.tool",
+        tool: tc.name,
+        args: tc.args,
+        workspaceRoot: this.opts.workspaceRoot,
+        sandboxProfile: this.opts.toolContext.sandboxProfile,
+        mode: this.currentMode,
+      });
+      for (const hookDecision of decisions) {
+        if (hookDecision.decision === "deny") {
+          const msg = hookDecision.message ?? `Tool '${tc.name}' blocked by pre.tool hook.`;
+          this.appendToolOutput(tc.id, msg, false);
+          this.messages.push({ id: randomUUID(), role: "tool", content: msg, toolCallId: tc.id, ts: Date.now() });
+          return;
+        }
+        if (hookDecision.decision === "ask") {
+          const approvalHandler = this.opts.approveShell ?? (this.opts.toolContext as any).requestApproval;
+          if (!approvalHandler || !await approvalHandler(hookDecision.message ?? `Hook requires approval for ${tc.name}`)) {
+            this.appendToolOutput(tc.id, `Tool '${tc.name}' denied by user via hook.`, false);
+            return;
+          }
+        }
+        if (hookDecision.modifiedArgs) tc.args = hookDecision.modifiedArgs;
+      }
+    }
     const target = (tc.args.path as string) ?? (tc.args.file as string);
     const shouldSnapshot = target && this.opts.enabledTools.has(tc.name);
     const isShellOrBrowser = tc.name === "shell.run" || tc.name.startsWith("browser.");
@@ -1109,8 +1155,10 @@ export class Agent {
       }
     }
     const approvalCategory = categoryForTool(tc.name);
+    let allowExternalPath = false;
     if (approvalCategory) {
       const extra = buildApprovalExtra(tc.name, tc.args, this.opts.workspaceRoot);
+      allowExternalPath = !!(extra?.filePath && extra.workspaceRoot && classifyWorkspacePath(extra.workspaceRoot, extra.filePath).external);
       const level = resolveApproval(this.opts.approvalsConfig ?? DEFAULT_APPROVALS, this.sessionApprovals, approvalCategory, extra);
       if (level === "ask") {
         const approvalHandler = this.opts.approveShell ?? (this.opts.toolContext as any).requestApproval;
@@ -1129,45 +1177,13 @@ export class Agent {
         }
       }
     }
-    const hookTools = new Set(["shell.run", "browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage", "web.fetch", "web.search", "mcp.call", "file.edit", "file.write", "file.read", "subagent.spawn", "handoff", "notebook.editCell", "notebook.addCell", "notebook.deleteCell", "notebook.execute"]);
-    if (hookTools.has(tc.name)) {
-      const decisions = await runHooks({
-        event: "pre.tool",
-        tool: tc.name,
-        args: tc.args,
-        workspaceRoot: this.opts.workspaceRoot,
-        mode: this.currentMode,
-      });
-      for (const hookDecision of decisions) {
-        if (hookDecision.decision === "deny") {
-          const msg = hookDecision.message ?? `Tool '${tc.name}' blocked by pre.tool hook.`;
-          this.appendToolOutput(tc.id, msg, false);
-          this.messages.push({ id: randomUUID(), role: "tool", content: msg, toolCallId: tc.id, ts: Date.now() });
-          return;
-        }
-        if (hookDecision.decision === "ask") {
-          const approvalHandler = this.opts.approveShell ?? (this.opts.toolContext as any).requestApproval;
-          if (!approvalHandler) {
-            this.appendToolOutput(tc.id, `Hook requires approval for '${tc.name}' but no handler is set.`, false);
-            return;
-          }
-          const approved = await approvalHandler(hookDecision.message ?? `Hook requires approval for ${tc.name}`);
-          if (!approved) {
-            this.appendToolOutput(tc.id, `Tool '${tc.name}' denied by user via hook.`, false);
-            return;
-          }
-        }
-        if (hookDecision.modifiedArgs) {
-          tc.args = hookDecision.modifiedArgs;
-        }
-      }
-    }
     const ctx: ToolContext = {
       ...this.opts.toolContext,
       root: this.opts.workspaceRoot,
       workspacePath: this.opts.workspaceRoot,
       approvalsConfig: this.opts.approvalsConfig ?? DEFAULT_APPROVALS,
       sessionApprovals: this.sessionApprovals,
+      allowExternalPath,
       requestApproval: this.opts.approveShell ?? (this.opts.toolContext as any).requestApproval,
       addSessionCommand: (cmd: string) => { this.sessionApprovals.sessionCommandAllowlist.push(cmd); },
       onChunk: this.makeChunkHandler(tc),
@@ -1214,6 +1230,7 @@ export class Agent {
       tool: tc.name,
       args: tc.args,
       workspaceRoot: this.opts.workspaceRoot,
+      sandboxProfile: this.opts.toolContext.sandboxProfile,
       mode: this.currentMode,
       extra: { ok: result.ok },
     }).then((decisions) => {
@@ -1246,7 +1263,7 @@ export class Agent {
       const verifyConfig = verifyMode === "none" ? undefined : await this.getVerifyConfig();
       if (verifyConfig && verifyConfig.commands.length) {
         const maxRetries = verifyMode === "custom" && this.opts.verifyMaxRetries != null ? this.opts.verifyMaxRetries : verifyConfig.maxRetries;
-        const verifyResult = await runVerification(this.opts.workspaceRoot, verifyConfig, result.touchedFiles);
+        const verifyResult = await runVerification(this.opts.workspaceRoot, verifyConfig, result.touchedFiles, this.opts.toolContext.sandboxProfile);
         if (!verifyResult.ok) {
           this.verifyAttempts++;
           const failing = verifyResult.results.filter((r) => !r.ok);
@@ -1438,9 +1455,10 @@ export class Agent {
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const name = toolName.replace(/[^a-zA-Z0-9_.-]/g, "_");
     const filePath = path.join(dir, `${name}_${ts}.txt`);
-    await fs.writeFile(filePath, output, "utf-8");
+    const persisted = output.slice(0, 1024 * 1024);
+    await fs.writeFile(filePath, persisted, { encoding: "utf-8", mode: 0o600 });
     const truncated = output.slice(0, TOOL_OUTPUT_MAX_CHARS);
-    return `${truncated}\n\n...(output truncated from ${output.length} to ${TOOL_OUTPUT_MAX_CHARS} chars, full output saved to ${filePath})`;
+    return `${truncated}\n\n...(output truncated from ${output.length} to ${TOOL_OUTPUT_MAX_CHARS} chars, capped output saved to ${filePath})`;
   }
   private emitLiveAssistant(id: string, thinking: string, startTs: number) {
     if (!thinking) return;
@@ -1463,6 +1481,16 @@ export class Agent {
       this.sink.steps(this.steps);
     }
   }
+}
+function redactAuditData<T>(value: T): T {
+  const sensitive = /^(?:args|content|replace|search|code|command|env|input|instructions|systemPrompt|apiKey|headers|authorization|token|password|secret)$/i;
+  const visit = (input: unknown, key = ""): unknown => {
+    if (sensitive.test(key)) return "[REDACTED]";
+    if (Array.isArray(input)) return input.map((item) => visit(item));
+    if (input && typeof input === "object") return Object.fromEntries(Object.entries(input as Record<string, unknown>).map(([name, item]) => [name, visit(item, name)]));
+    return input;
+  };
+  return visit(value) as T;
 }
 function addUsage(a: TurnUsage | undefined, b: TurnUsage): TurnUsage {
   return {
@@ -1753,16 +1781,21 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, state: "pr
     default: return name;
   }
 }
-const READ_TOOLS = new Set(["file.read", "file.grep", "file.glob", "file.semanticSearch"]);
+const READ_TOOLS = new Set(["file.read", "file.grep", "file.glob", "file.semanticSearch", "notebook.read"]);
 const WRITE_TOOLS = new Set(["file.edit", "file.write", "notebook.editCell", "notebook.addCell", "notebook.deleteCell"]);
 const SHELL_TOOLS = new Set(["shell.run", "shell.backgroundRun", "shell.check", "shell.write", "shell.customRun", "shell.editCustomRun", "shell.runCustomRun"]);
 const BROWSER_TOOLS = new Set(["browser.navigate", "browser.click", "browser.type", "browser.screenshot", "browser.evaluate", "browser.readDom", "browser.close", "browser.hover", "browser.scroll", "browser.waitFor", "browser.console", "browser.network", "browser.domSnapshot", "browser.drag", "browser.dialog", "browser.runCode", "browser.readPage", "browser.newTab", "browser.switchTab", "browser.closeTab", "browser.listTabs", "browser.intercept", "browser.unintercept"]);
 const MCP_TOOLS = new Set(["mcp.call", "mcp.create", "mcp.remove", "mcp.toggle", "mcp.resources/list", "mcp.resources/read", "mcp.prompts/list", "mcp.prompts/get"]);
 const GIT_TOOLS = new Set(["git.diffStaged", "git.diffUnstaged", "git.changedFiles", "git.branchDiff", "git.commitMessage"]);
+const CODE_EXECUTE_TOOLS = new Set(["test.run", "browser.runCode", "notebook.execute"]);
 function categoryForTool(name: string): string | undefined {
   if (READ_TOOLS.has(name)) return "read";
   if (WRITE_TOOLS.has(name)) return "write.local";
   if (SHELL_TOOLS.has(name)) return "shell.other";
+  if (CODE_EXECUTE_TOOLS.has(name)) return "code.execute";
+  if (name === "subagent.spawn") return "subagent";
+  if (name === "rule.create") return "write.external";
+  if (name === "mcp.create" || name === "mcp.remove" || name === "mcp.toggle") return "mcp.configure";
   if (BROWSER_TOOLS.has(name)) return "browser";
   if (name === "web.fetch") return "web.fetch";
   if (name === "web.search") return "web.fetch";
@@ -1771,9 +1804,10 @@ function categoryForTool(name: string): string | undefined {
   return undefined;
 }
 function buildApprovalExtra(name: string, args: Record<string, unknown>, workspaceRoot: string): { filePath?: string; workspaceRoot?: string; command?: string; mcpServer?: string } | undefined {
-  if (WRITE_TOOLS.has(name)) return { filePath: String(args.path ?? ""), workspaceRoot };
+  if (WRITE_TOOLS.has(name) || name === "file.read" || name === "notebook.read" || name === "notebook.execute") return { filePath: String(args.path ?? ""), workspaceRoot };
+  if (name === "rule.create") return { filePath: path.join(getWorkspaceArcDir(workspaceRoot), "rules", `${String(args.name ?? "")}.md`), workspaceRoot };
   if (SHELL_TOOLS.has(name)) return { command: String(args.command ?? ""), workspaceRoot };
-  if (MCP_TOOLS.has(name)) return { mcpServer: String(args.server ?? ""), workspaceRoot };
+  if (MCP_TOOLS.has(name)) return { mcpServer: String(args.server ?? args.name ?? ""), workspaceRoot };
   return undefined;
 }
 function prettyToolSummary(name: string, args: Record<string, unknown>): string {
@@ -1796,7 +1830,7 @@ function prettyToolSummary(name: string, args: Record<string, unknown>): string 
     case "browser.readDom": return "Read page DOM";
     case "browser.drag": return `Drag ${clip(String(args.from ?? ""))}`;
     case "browser.dialog": return "Handle dialog";
-    case "browser.runCode": return "Run Playwright code";
+    case "browser.runCode": return `Run Playwright code:\n\n${String(args.code ?? "")}`;
     case "browser.readPage": return "Read page content";
     case "browser.close": return "Close browser";
     case "browser.newTab": return `Open new tab${args.url ? " for " + clip(String(args.url)) : ""}`;
@@ -1808,7 +1842,7 @@ function prettyToolSummary(name: string, args: Record<string, unknown>): string 
     case "web.fetch": return `Fetch ${clip(String(args.url ?? ""))}`;
     case "web.search": return `Search for ${clip(String(args.query ?? ""), 40)}`;
     case "mcp.call": return `MCP ${args.server ?? ""}/${args.tool ?? ""}`;
-    case "mcp.create": return `Register MCP server ${args.name ?? ""}`;
+    case "mcp.create": return `Register MCP server ${args.name ?? ""}:\n\n${JSON.stringify(args.transport ?? {}, null, 2)}`;
     case "mcp.remove": return `Remove MCP server ${args.name ?? ""}`;
     case "mcp.toggle": return `Toggle MCP server ${args.name ?? ""}`;
     case "git.diffStaged": return "Staged diff";
@@ -1819,12 +1853,12 @@ function prettyToolSummary(name: string, args: Record<string, unknown>): string 
     case "browser.console": return "Browser console";
     case "browser.network": return "Browser network";
     case "browser.domSnapshot": return "Browser snapshot";
-    case "test.run": return "Run tests";
+    case "test.run": return `Run tests (${args.scope ?? "workspace"}${args.path ? `: ${args.path}` : ""})`;
     case "notebook.read": return args.cellIndex !== undefined ? `Read notebook cell ${args.cellIndex}` : "List notebook cells";
     case "notebook.editCell": return `Edit notebook cell ${args.cellIndex ?? ""}`;
     case "notebook.addCell": return "Add notebook cell";
     case "notebook.deleteCell": return `Delete notebook cell ${args.cellIndex ?? ""}`;
-    case "notebook.execute": return `Execute notebook cell ${args.cellIndex ?? ""}`;
+    case "notebook.execute": return `Execute notebook cell ${args.cellIndex ?? ""} in ${String(args.path ?? "")}`;
     default: return name;
   }
 }

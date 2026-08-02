@@ -1,7 +1,7 @@
 node_modules/
 dist/
 out/
-.vsix
+*.vsix
 *.log
 .DS_Store
 .reference/
@@ -11,3 +11,4 @@ coverage/
 .env.*
 playground/.arc/mcp.json
 scripts/
+temp/

@@ -35,6 +35,16 @@ describe("RuleRegistry", () => {
     expect(rule?.description).toBe("Style rules");
     expect(rule?.body).toBe("Use 2-space indent.");
   });
+  it("loads flat project-local rules without frontmatter", async () => {
+    const projectRulesDir = path.join(root, ".arc", "rules");
+    await fs.mkdir(projectRulesDir, { recursive: true });
+    await fs.writeFile(path.join(projectRulesDir, "playground.md"), "# Playground conventions\n\nAvoid destructive commands.", "utf-8");
+    const registry = new RuleRegistry(root);
+    await registry.load();
+    const rule = registry.get("playground");
+    expect(rule?.description).toBe("Playground conventions");
+    expect(rule?.body).toContain("Avoid destructive commands.");
+  });
   it("skips invalid rule files gracefully without affecting others", async () => {
     await fs.writeFile(path.join(rulesDir, "good.md"), "---\nname: good\ndescription: Good rule\n---\n\nBody", "utf-8");
     await fs.writeFile(path.join(rulesDir, "bad.md"), "not frontmatter, no name/description markers at all just prose", "utf-8");

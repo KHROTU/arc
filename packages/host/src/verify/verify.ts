@@ -1,11 +1,8 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import { getWorkspaceArcDir } from "../arc-dir.js";
-const pexec = promisify(exec);
-const IS_WIN = process.platform === "win32";
-const EXEC_SHELL: string | undefined = IS_WIN ? "pwsh.exe" : undefined;
+import { PROCESS_OUTPUT_LIMIT, runShellCommand } from "../util/process.js";
+import type { SandboxProfile } from "../sandbox/sandbox.js";
 const ANSI_RE = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
 function stripAnsi(s: string): string { return s.replace(ANSI_RE, ""); }
 export interface VerifyCommand { name: string; command: string; glob?: string }
@@ -74,15 +71,15 @@ export function matchesVerifyGlob(rel: string, glob: string): boolean {
   re += "$";
   return new RegExp(re).test(rel);
 }
-export async function runVerification(workspaceRoot: string, config: VerifyConfig, changedFiles: string[]): Promise<VerifyRunResult> {
+export async function runVerification(workspaceRoot: string, config: VerifyConfig, changedFiles: string[], sandboxProfile?: SandboxProfile): Promise<VerifyRunResult> {
   const results: VerifyCommandResult[] = [];
   for (const cmd of config.commands) {
     const rels = changedFiles.map((f) => f.replace(/\\/g, "/"));
     if (cmd.glob && rels.length && !rels.some((f) => matchesVerifyGlob(f, cmd.glob!))) continue;
     try {
-      const { stdout, stderr } = await pexec(cmd.command, { cwd: workspaceRoot, windowsHide: true, timeout: 120_000, maxBuffer: 4 * 1024 * 1024, shell: EXEC_SHELL });
-      const output = (stripAnsi(stdout) + (stderr ? `\n${stripAnsi(stderr)}` : "")).trim();
-      results.push({ name: cmd.name, ok: true, output: output.slice(0, 2000) });
+      const result = await runShellCommand(cmd.command, { cwd: workspaceRoot, timeoutMs: 120_000, maxOutputBytes: PROCESS_OUTPUT_LIMIT, sandboxProfile, workspaceRoot });
+      const output = (stripAnsi(result.stdout) + (result.stderr ? `\n${stripAnsi(result.stderr)}` : "")).trim();
+      results.push({ name: cmd.name, ok: result.ok, output: output.slice(0, 2000) });
     } catch (e: unknown) {
       const err = e as { stdout?: string; stderr?: string; message?: string };
       const output = (stripAnsi(err.stdout ?? "") + (err.stderr ? `\n${stripAnsi(err.stderr)}` : "") || err.message || "verification failed").toString();

@@ -39,6 +39,7 @@ export class SubagentRunner {
     onStep?: (steps: ProcessStep[]) => void,
     onApprovalRequest?: (description: string) => void,
   ): Promise<SubagentResult> {
+    void askParent;
     const tier = spec.tier ?? subagentTierFor(parent);
     const model = spec.modelId ? this.registry.get(spec.modelId) : pickForTier(this.registry, tier);
     if (!model) {
@@ -76,25 +77,15 @@ export class SubagentRunner {
       ...ctx,
       requestApproval: async (description: string, meta?: import("../approvals/index.js").ApproveShellMeta): Promise<boolean> => {
         onApprovalRequest?.(description);
-        if (!askParent) return false;
         const baseCmd = meta?.command?.trim().split(/\s+/)[0]
           ?? description.split("\n\n")[1]?.trim().split(/\s+/)[0]
           ?? "";
         if (blockedCommands.has(baseCmd)) {
           return false;
         }
-        if (needsApproval) {
-          const answer = await askParent(
-            `Subagent "${spec.name}" needs approval for:\n\n${description}`,
-            ["Allow", "Deny"],
-          );
-          return answer.toLowerCase().includes("allow");
-        }
-        const answer = await askParent(
-          `Subagent "${spec.name}" wants to run:\n\n${description}\n\nAllow?`,
-          ["Allow", "Deny"],
-        );
-        return answer.toLowerCase().includes("allow");
+        if (!ctx.requestApproval) return false;
+        const prefix = needsApproval ? "Subagent requires approval" : "Subagent requested a privileged operation";
+        return ctx.requestApproval(`${prefix} (${spec.name}):\n\n${description}`, meta);
       },
     };
     const modeReg = this.modeRegistry ?? new ModeRegistry(ctx.root);

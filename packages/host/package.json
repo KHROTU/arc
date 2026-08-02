@@ -1,6 +1,6 @@
 {
   "name": "@arc/host",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "private": true,
   "type": "commonjs",
   "main": "dist/index.js",
@@ -27,17 +27,14 @@
     "watch": "tsc -p tsconfig.json --watch",
     "test": "vitest run"
   },
-  "dependencies": {
-    "diff": "5.2.2"
-  },
+  "dependencies": {},
   "devDependencies": {
+    "@types/node": "22.18.0",
     "typescript": "5.5.4",
-    "@types/node": "20.14.10",
-    "@types/diff": "5.2.2",
-    "vitest": "2.0.5"
+    "vitest": "4.1.10"
   },
   "optionalDependencies": {
-    "playwright": "1.55.1"
+    "playwright": "1.62.0"
   },
   "peerDependencies": {
     "playwright": "1.55.1"

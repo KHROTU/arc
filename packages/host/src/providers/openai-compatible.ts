@@ -3,6 +3,8 @@ import { makeProxyDispatcher } from "../util/proxy.js";
 import { fromApiToolName, toApiToolName, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
 import { caps } from "./capability-tracker.js";
 import { withRetry, policyFor } from "./retry.js";
+import { readBodyLimited } from "../security/network.js";
+import { redactSecrets } from "../security/redact.js";
 const UNSUPPORTED_PARAM_RE = /does not support|unsupported.*param(?:eter)?|unknown.*param(?:eter)?|invalid.*param(?:eter)?/i;
 export const openAICompatibleTransport: Transport & { withBase: (base: string) => Transport } = {
   kind: "openai",
@@ -79,7 +81,7 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
       }),
       policy,
     );
-    if (!res.ok) lastText = await res.text().catch(() => "");
+    if (!res.ok) lastText = await readBodyLimited(res).catch((error) => (error as Error).message);
     if (res.ok && res.body) break;
     if (res.status === 400 && UNSUPPORTED_PARAM_RE.test(lastText)) {
       if (eff && lastText.includes("reasoning_effort")) {
@@ -96,10 +98,10 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
       skipReasoning = true;
       continue;
     }
-    if (!res.ok) throw new Error(`Provider ${req.provider.kind} returned ${res.status}: ${lastText}`);
+    if (!res.ok) throw new Error(`Provider ${req.provider.kind} returned ${res.status}: ${redactSecrets(lastText, [req.provider.apiKey])}`);
   }
   if (!res!.ok || !res!.body) {
-    throw new Error(`Provider ${req.provider.kind} returned ${res!.status}: ${lastText}`);
+    throw new Error(`Provider ${req.provider.kind} returned ${res!.status}: ${redactSecrets(lastText, [req.provider.apiKey])}`);
   }
   const q = new AsyncEventQueue<StreamEvent>();
   let aborted = false;
@@ -119,13 +121,17 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
   };
   void (async () => {
     let buffer = "";
+    let streamBytes = 0;
     let inThink = false;
     let thinkingBuf = "";
     const reasoningDetailTextById = new Map<string, string>();
     try {
       for await (const chunk of readableToAsyncIterable(res.body as ReadableStream<Uint8Array>)) {
         if (aborted) break;
+        streamBytes += Buffer.byteLength(chunk);
+        if (streamBytes > 4 * 1024 * 1024) throw new Error("Provider stream exceeded 4 MiB.");
         buffer += chunk;
+        if (buffer.length > 1024 * 1024) throw new Error("Provider stream event exceeded 1 MiB.");
         let idx: number;
         while ((idx = buffer.indexOf("\n")) >= 0) {
           const line = buffer.slice(0, idx).trim();

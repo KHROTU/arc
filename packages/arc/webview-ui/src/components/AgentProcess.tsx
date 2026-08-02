@@ -79,13 +79,13 @@ const DiffView = memo(({ hunks, filePath, onOpenFile, onOpenFullscreenDiff, reso
           <span className="arc-diff-file-icon">+</span>
           <span className="arc-diff-file-name">{filePath}</span>
                     {onOpenFile && (
-            <button className="arc-diff-file-open" title="Open file" onClick={(e) => { e.stopPropagation(); onOpenFile(filePath!); }}>
+            <button className="arc-diff-file-open" title="Open file" aria-label={`Open ${filePath}`} onClick={(e) => { e.stopPropagation(); onOpenFile(filePath!); }}>
               <ExternalLink size={12} />
             </button>
           )}
           <span className="arc-diff-file-spacer" />
           {onOpenFullscreenDiff && (
-            <button className="arc-diff-file-open" title="Open fullscreen diff" onClick={(e) => { e.stopPropagation(); onOpenFullscreenDiff({ filePath, hunks }); }}>
+            <button className="arc-diff-file-open" title="Open fullscreen diff" aria-label="Open fullscreen diff" onClick={(e) => { e.stopPropagation(); onOpenFullscreenDiff({ filePath, hunks }); }}>
               <Maximize2 size={12} />
             </button>
           )}
@@ -127,7 +127,7 @@ const DiffView = memo(({ hunks, filePath, onOpenFile, onOpenFullscreenDiff, reso
   );
 });
 DiffView.displayName = "DiffView";
-function StatusDot({ type, interrupted }: { type: StepType; interrupted?: boolean }) {
+function StatusDot({ type, interrupted, pending }: { type: StepType; interrupted?: boolean; pending?: boolean }) {
   if (interrupted) return <StopCircle className="arc-proc-dot-icon is-err" size={12} strokeWidth={2.25} />;
   if (type === "result") return <Check className="arc-proc-dot-icon is-ok" size={13} strokeWidth={2.5} />;
   if (type === "error") return <AlertTriangle className="arc-proc-dot-icon is-err" size={12} strokeWidth={2.25} />;
@@ -135,7 +135,7 @@ function StatusDot({ type, interrupted }: { type: StepType; interrupted?: boolea
   if (type === "clarification") return <HelpCircle className="arc-proc-dot-icon is-accent" size={12} strokeWidth={2.25} />;
   if (type === "thought") return <Sparkles className="arc-proc-dot-icon is-muted" size={11} strokeWidth={2} />;
   if (type === "todo_list") return <CircleDot className="arc-proc-dot-icon is-muted" size={11} strokeWidth={2} />;
-  return <span className="arc-proc-dot" />;
+  return <span className={`arc-proc-dot${pending ? " is-live" : ""}`} />;
 }
 const HandoffBlock = memo(({ from, to, reason }: { from?: string; to?: string; reason?: string }) => (
   <div className="arc-proc-handoff">
@@ -191,7 +191,7 @@ const ClarificationBlock = memo(({ question, options }: { question?: string; opt
     )}
     <div className="arc-proc-clar-input">
       <input type="text" placeholder="Type an answer…" />
-      <button aria-label="Submit"><CornerDownLeft size={13} /></button>
+      <button type="button" aria-label="Submit answer"><CornerDownLeft size={13} /></button>
     </div>
   </div>
 ));
@@ -202,7 +202,7 @@ const GroupNode = memo(({ step, onOpenFile, onOpenFullscreenDiff, toolTreeMode, 
   const childCount = step.children?.length || 0;
   return (
     <div className="arc-proc-group">
-      <button className="arc-proc-group-toggle" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+      <button className={`arc-proc-group-toggle${open ? " is-open" : ""}`} onClick={() => setOpen((o) => !o)} aria-expanded={open}>
         <span className="arc-proc-group-icon-wrap">
           <ChevronRight size={14} className="arc-proc-group-icon-chevron" style={{ transform: open ? "rotate(90deg)" : "rotate(0deg)" }} />
           {step.type === "subagent" ? <Bot size={14} className="arc-proc-group-icon is-accent" /> : <Terminal size={13} className="arc-proc-group-icon" />}
@@ -239,7 +239,7 @@ const ThoughtNode = memo(({ step }: { step: ProcessStep }) => {
         disabled={!hasContent}
         aria-expanded={hasContent ? showBody : undefined}
       >
-        <span className="arc-proc-row-mark"><StatusDot type="thought" interrupted={step.interrupted} /></span>
+        <span className="arc-proc-row-mark"><StatusDot type="thought" interrupted={step.interrupted} pending={step.pending} /></span>
         <span className="arc-proc-title arc-proc-title-thought">
           {step.pending ? <>Thinking<span className="arc-working-dots" /></> : `Thought for ${secs} seconds`}
         </span>
@@ -271,12 +271,12 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, onOpenFullscre
   return (
     <FadeSlideIn className={`arc-proc-node arc-proc-node-${step.type}`}>
       <button
-        className="arc-proc-row"
+        className={`arc-proc-row${step.pending ? " is-pending" : ""}`}
         onClick={() => hasDetails && onToggle()}
         disabled={!hasDetails}
         aria-expanded={hasDetails ? isActive : undefined}
       >
-        <span className="arc-proc-row-mark"><StatusDot type={step.type} interrupted={step.interrupted} /></span>
+        <span className="arc-proc-row-mark"><StatusDot type={step.type} interrupted={step.interrupted} pending={step.pending} /></span>
         <span className="arc-proc-title">{step.title}{step.pending ? <span className="arc-working-dots" /> : null}{step.interrupted ? <span className="arc-proc-interrupted">(stopped)</span> : null}</span>
         {hasDetails && (
           <RotateArrow open={isActive} />

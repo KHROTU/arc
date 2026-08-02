@@ -2,10 +2,13 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { applyEdit, type ApplyEditResult } from "./apply.js";
 import { fileLock } from "./lock.js";
+import { resolveAuthorizedPath } from "../security/path-policy.js";
 export class FileEditor {
-  constructor(private root: string) {}
+  constructor(private root: string, private allowExternal = false) {}
   async read(file: string, opts?: { offset?: number; limit?: number }): Promise<string> {
     const full = this.resolve(file);
+    const stat = await fs.stat(full);
+    if (stat.size > 4 * 1024 * 1024) throw new Error("File exceeds the 4 MiB read limit; read a smaller generated artifact instead.");
     const raw = await fs.readFile(full, "utf-8");
     const offset = opts?.offset ?? 1;
     const limit = opts?.limit;
@@ -23,7 +26,7 @@ export class FileEditor {
       return false;
     }
   }
-  async apply(file: string, search: string, replace: string, opts?: { replaceAll?: boolean }): Promise<ApplyEditResult & { file: string }> {
+  async apply(file: string, search: string, replace: string, opts?: { replaceAll?: boolean; validate?: (content: string) => Promise<void> }): Promise<ApplyEditResult & { file: string }> {
     const full = this.resolve(file);
     await fileLock.acquire(full);
     try {
@@ -39,7 +42,9 @@ export class FileEditor {
         return { ...result, file };
       }
       if (created) {
+        await opts?.validate?.(replace);
         await fs.mkdir(path.dirname(full), { recursive: true });
+        this.resolve(file);
         await fs.writeFile(full, replace, "utf-8");
         return {
           ok: true,
@@ -50,6 +55,7 @@ export class FileEditor {
           file,
         };
       }
+      await opts?.validate?.(result.after);
       await fs.writeFile(full, result.after, "utf-8");
       return { ...result, file };
     } finally {
@@ -57,7 +63,7 @@ export class FileEditor {
     }
   }
   resolve(file: string): string {
-    return path.isAbsolute(file) ? path.normalize(file) : path.join(this.root, file);
+    return resolveAuthorizedPath(this.root, file, this.allowExternal);
   }
   applyInline(before: string, after: string): { ok: boolean; diff: { value: string; added?: boolean; removed?: boolean; count: number }[] } {
     const result = applyEdit({ before, search: "", replace: after });

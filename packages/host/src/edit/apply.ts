@@ -1,4 +1,6 @@
-import { diffLines, type Change } from "diff";
+import { diffLines } from "./line-diff.js";
+import type { LineChange as Change } from "./line-diff.js";
+export type { LineChange } from "./line-diff.js";
 export interface ApplyEditInput {
   before: string;
   search: string;

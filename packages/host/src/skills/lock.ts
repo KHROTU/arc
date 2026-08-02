@@ -1,9 +1,10 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { SkillsLock } from "./types.js";
+import { getWorkspaceArcDir } from "../arc-dir.js";
 export async function loadSkillsLock(workspaceRoot: string): Promise<SkillsLock> {
   try {
-    const p = path.join(workspaceRoot, ".arc", "skills-lock.json");
+    const p = path.join(getWorkspaceArcDir(workspaceRoot), "skills-lock.json");
     const raw = await fs.readFile(p, "utf-8");
     return JSON.parse(raw);
   } catch {
@@ -11,7 +12,7 @@ export async function loadSkillsLock(workspaceRoot: string): Promise<SkillsLock>
   }
 }
 export async function saveSkillsLock(workspaceRoot: string, lock: SkillsLock): Promise<void> {
-  const dir = path.join(workspaceRoot, ".arc");
+  const dir = getWorkspaceArcDir(workspaceRoot);
   await fs.mkdir(dir, { recursive: true });
   const p = path.join(dir, "skills-lock.json");
   await fs.writeFile(p, JSON.stringify(lock, null, 2), "utf-8");

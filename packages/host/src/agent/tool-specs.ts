@@ -408,7 +408,7 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
     parameters: obj({ name: str("Rule name to read.") }, ["name"]),
   },
   "rule.create": {
-    description: "Create a new .arc/rules/<name>.md rule file.",
+    description: "Create a workspace-scoped rule under ~/.arc/workspaces/<workspace>/rules/.",
     parameters: obj({
       name: str("Rule name (filename without .md)."),
       glob: str("File glob pattern to match (e.g. *.ts)."),

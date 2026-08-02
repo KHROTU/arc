@@ -1,6 +1,7 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { resolveAuthorizedPath } from "../security/path-policy.js";
 export interface TurnSnapshot {
   turnId: string;
   ts: number;
@@ -12,6 +13,8 @@ export interface TurnSnapshot {
 export type TurnSnapshotWithTodo = TurnSnapshot;
 export interface CheckpointStoreOptions {
   dir: string;
+  encrypt?: (content: Buffer) => Promise<Buffer>;
+  decrypt?: (content: Buffer) => Promise<Buffer>;
 }
 export class CheckpointStore {
   constructor(private opts: CheckpointStoreOptions) {}
@@ -21,7 +24,7 @@ export class CheckpointStore {
   async snapshot(turnId: string, root: string, files: string[], todoItems?: TurnSnapshot["todoItems"], label?: string): Promise<TurnSnapshot> {
     const map: Record<string, string> = {};
     for (const rel of files) {
-      const abs = path.join(root, rel);
+      const abs = resolveAuthorizedPath(root, rel);
       let content: Buffer;
       try {
         content = await fs.readFile(abs);
@@ -35,16 +38,16 @@ export class CheckpointStore {
       try {
         await fs.access(blobPath);
       } catch {
-        await fs.mkdir(path.dirname(blobPath), { recursive: true });
-        await fs.writeFile(blobPath, content);
+        await fs.mkdir(path.dirname(blobPath), { recursive: true, mode: 0o700 });
+        await fs.writeFile(blobPath, this.opts.encrypt ? await this.opts.encrypt(content) : content, { mode: 0o600 });
       }
     }
     const snap: TurnSnapshot = { turnId, ts: Date.now(), files: map, root };
     if (todoItems && todoItems.length) snap.todoItems = todoItems;
     if (label) snap.label = label;
     const metaPath = this.metaPath(root, turnId);
-    await fs.mkdir(path.dirname(metaPath), { recursive: true });
-    await fs.writeFile(metaPath, JSON.stringify(snap, null, 2), "utf-8");
+    await fs.mkdir(path.dirname(metaPath), { recursive: true, mode: 0o700 });
+    await fs.writeFile(metaPath, JSON.stringify(snap, null, 2), { encoding: "utf-8", mode: 0o600 });
     return snap;
   }
   async listTurns(root: string): Promise<string[]> {
@@ -81,7 +84,7 @@ export class CheckpointStore {
     const restored: string[] = [];
     const conflicts: string[] = [];
     for (const [rel, hash] of Object.entries(snap.files)) {
-      const abs = path.join(root, rel);
+      const abs = resolveAuthorizedPath(root, rel);
       if (hash === "__none__") {
         try {
           await fs.unlink(abs);
@@ -98,7 +101,8 @@ export class CheckpointStore {
       if (current && CheckpointStore.hash(current) !== hash) {
         conflicts.push(rel);
       }
-      const blob = await fs.readFile(this.blobPath(hash));
+      const stored = await fs.readFile(this.blobPath(hash));
+      const blob = this.opts.decrypt ? await this.opts.decrypt(stored) : stored;
       await fs.mkdir(path.dirname(abs), { recursive: true });
       await fs.writeFile(abs, blob);
       restored.push(rel);
@@ -166,6 +170,7 @@ export class CheckpointStore {
     return path.join(this.opts.dir, "turns", id);
   }
   private metaPath(root: string, turnId: string): string {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9-]{0,127}$/.test(turnId)) throw new Error("Invalid checkpoint turn id.");
     return path.join(this.turnsDir(root), `${turnId}.json`);
   }
 }

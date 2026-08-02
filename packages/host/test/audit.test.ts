@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import { appendAuditEntry, readAuditLog, verifyAuditChain, verifyAuditLogFile, auditLogPath } from "../src/audit/audit";
+import { appendAuditEntry, configureAuditSecurity, readAuditLog, verifyAuditChain, verifyAuditLogFile, auditLogPath } from "../src/audit/audit";
 async function tmpRoot(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), "arc-audit-"));
 }
@@ -55,10 +55,33 @@ describe("audit log hash chain", () => {
     const result = verifyAuditChain(entries);
     expect(result.ok).toBe(true);
   });
-  it("returns ok for an empty/nonexistent log", async () => {
+  it("fails closed for an empty/nonexistent log", async () => {
     const root = await tmpRoot();
     const result = await verifyAuditLogFile(auditLogPath(root));
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
     expect(result.entries).toBe(0);
+  });
+  it("fails closed for a malformed log", async () => {
+    const root = await tmpRoot();
+    const file = auditLogPath(root);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, "not json\n", "utf-8");
+    const result = await verifyAuditLogFile(file);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("Malformed");
+  });
+  it("rejects truncation relative to a protected HMAC anchor", async () => {
+    const root = await tmpRoot();
+    let head: string | undefined;
+    configureAuditSecurity({ getKey: async () => "test-key", getHead: async () => head, setHead: async (_root, hash) => { head = hash; } });
+    try {
+      await appendAuditEntry(root, "tool_call", { path: "a.ts" });
+      await fs.writeFile(auditLogPath(root), "", "utf-8");
+      await expect(appendAuditEntry(root, "tool_call", { path: "b.ts" })).rejects.toThrow("rolled back");
+      const result = await verifyAuditLogFile(auditLogPath(root), root);
+      expect(result.ok).toBe(false);
+    } finally {
+      configureAuditSecurity({});
+    }
   });
 });

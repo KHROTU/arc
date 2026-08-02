@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
+import { helper } from "../src/utils";
 
 describe("Playground Utils", () => {
   it("should not contain REPLACE_ME sentinel in helper output", () => {
-    const helperOutput = "REPLACE_ME";
-    expect(helperOutput).not.toBe("REPLACE_ME");
+    expect(helper()).not.toBe("REPLACE_ME");
   });
 
   it("should have valid config version", () => {

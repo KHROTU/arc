@@ -109,7 +109,7 @@ describe("shell.run streams stdout", () => {
         onChunk: (_s, t) => chunks.push(t),
       } as any,
     );
-    expect(result.ok).toBe(true);
+    expect(result.ok, result.output).toBe(true);
     expect(chunks.length).toBeGreaterThan(0);
     expect(chunks.join("")).toContain("a");
   });

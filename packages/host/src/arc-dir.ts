@@ -11,3 +11,6 @@ export function getWorkspaceArcDir(workspaceRoot: string): string {
 export function getSkillsDir(): string {
   return path.join(getArcDir(), "skills");
 }
+export function getLocalWorkspaceArcDir(workspaceRoot: string): string {
+  return path.join(workspaceRoot, ".arc");
+}

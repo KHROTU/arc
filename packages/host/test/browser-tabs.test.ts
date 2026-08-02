@@ -57,4 +57,13 @@ describe("createBrowser multi-tab and interception", () => {
     const again = await browser.unintercept("**/toggle-api*");
     expect(again.ok).toBe(false);
   });
+  it("keeps browser.runCode inside the constrained page operation DSL", async () => {
+    browser = await createBrowser("chromium", true);
+    await browser.navigate("data:text/html,<h1>safe</h1>");
+    const blocked = await browser.runCode("return process.env;", undefined);
+    expect(blocked.ok).toBe(false);
+    const allowed = await browser.runCode('await page.evaluate("document.querySelector(\\"h1\\").textContent")', undefined);
+    expect(allowed.ok).toBe(true);
+    expect(allowed.output).toContain("safe");
+  });
 });

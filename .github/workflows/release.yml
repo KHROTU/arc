@@ -9,8 +9,36 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 9.0.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.3
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Audit production dependencies
+        run: |
+          pnpm audit --audit-level high
+          pnpm audit --prod --audit-level high
+
+      - name: Install browser test runtime
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Test and build
+        run: |
+          pnpm build:ext
+          pnpm test
+          pnpm package
 
       - name: Resolve version and VSIX
         id: meta
@@ -18,17 +46,32 @@ jobs:
           VERSION=$(node -p "require('./packages/arc/package.json').version")
           VSIX="packages/arc/arc-code-${VERSION}.vsix"
           TAG="v${VERSION}"
-          if [ ! -f "$VSIX" ]; then echo "VSIX not found: $VSIX"; exit 1; fi
+          if [ ! -f "$VSIX" ]; then echo "VSIX not found after clean build: $VSIX"; exit 1; fi
+          sha256sum "$VSIX" > "${VSIX}.sha256"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "vsix=$VSIX" >> $GITHUB_OUTPUT
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
+      - name: Generate SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          artifact-name: arc-code-${{ steps.meta.outputs.version }}.spdx.json
+          output-file: arc-code-${{ steps.meta.outputs.version }}.spdx.json
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          subject-path: ${{ steps.meta.outputs.vsix }}
+
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           name: v${{ steps.meta.outputs.version }}
           tag_name: ${{ steps.meta.outputs.tag }}
-          files: ${{ steps.meta.outputs.vsix }}
+          files: |
+            ${{ steps.meta.outputs.vsix }}
+            ${{ steps.meta.outputs.vsix }}.sha256
+            arc-code-${{ steps.meta.outputs.version }}.spdx.json
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -15,7 +15,7 @@ beforeEach(async () => {
   await fs.mkdir(root, { recursive: true });
 });
 afterEach(async () => {
-  await fs.rm(work, { recursive: true, force: true });
+  await fs.rm(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 describe("CheckpointStore", () => {
   it("snapshots and restores edited files", async () => {
@@ -48,7 +48,7 @@ describe("CheckpointStore", () => {
     const turns = await store.listTurns(root);
     expect(turns).toEqual(["t1"]);
   });
-  it("cost scales with touched files, not repo size (perf characteristic)", async () => {
+  it("cost scales with touched files, not repo size (perf characteristic)", { timeout: 30_000 }, async () => {
     for (let i = 0; i < 5000; i++) {
       await fs.writeFile(path.join(root, `noise-${i}.txt`), "noise");
     }

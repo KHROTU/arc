@@ -27,11 +27,11 @@ function renderInline(s: string): string {
   s = s.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, (_, p, t) => `${p}<em>${t}</em>`);
   s = s.replace(/\u0001I(\d+)\u0001/g, (_, idx) => {
     const { alt, src } = JSON.parse(images[Number(idx)]) as { alt: string; src: string };
-    return `<img src="${src}" alt="${alt}" loading="lazy" />`;
+    return `<img src="${escape(src)}" alt="${escape(alt)}" loading="lazy" />`;
   });
   s = s.replace(/\u0001L(\d+)\u0001/g, (_, idx) => {
     const { text, href } = JSON.parse(links[Number(idx)]) as { text: string; href: string };
-    return `<a href="${href}" rel="noopener noreferrer" target="_blank">${text}</a>`;
+    return `<a href="${escape(href)}" rel="noopener noreferrer" target="_blank">${escape(text)}</a>`;
   });
   s = s.replace(/\u0001C(\d+)\u0001/g, (_, idx) => {
     return `<code>${escape(codes[Number(idx)])}</code>`;

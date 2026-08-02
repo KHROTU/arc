@@ -1,13 +1,11 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Settings, Plus, Trash2, Pencil, Maximize2, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search, ArrowLeft, Undo2 } from "./icons";
+import { Settings, Plus, Trash2, Pencil, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search, ArrowLeft, Undo2 } from "./icons";
 import { FadeSlideIn } from "./anim";
 import ArcProcessUI, { type ProcessStep } from "./AgentProcess";
 import Composer from "./Composer";
-import ModelPicker from "./ModelPicker";
-import ModePicker from "./ModePicker";
-import EffortPicker, { type Effort } from "./EffortPicker";
-import type { ModelDescriptor, TurnUsage, ChatMessage, ProviderConfig, ProviderKind } from "@arc/host/protocol";
+import type { Effort } from "./EffortPicker";
+import type { ModelDescriptor, TurnUsage, ChatMessage, ProviderSummary, ProviderKind } from "@arc/host/protocol";
 import { useArcLogo, swapOnError } from "../hooks/useArcLogo";
 import { renderMarkdown } from "../util/markdown";
 import type { RpcClient } from "../rpc";
@@ -58,7 +56,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [activeId, setActiveId] = useState<string>("");
   const [steps, setSteps] = useState<ProcessStep[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [streaming, setStreaming] = useState<{ id: string; text: string } | null>(null);
+  const [streaming, setStreaming] = useState<{ id: string; text: string; ts?: number } | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showSidebarList, setShowSidebarList] = useState(false);
   const [waiting, setWaiting] = useState(false);
@@ -68,7 +66,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [ctxStats, setCtxStats] = useState<{ usedPct: number; tokens: number; window: number; cost: number } | null>(null);
   const [models, setModels] = useState<ModelDescriptor[]>([]);
   const [currentModel, setCurrentModel] = useState<string>("");
-  const [modes, setModes] = useState<{ slug: string; description: string }[]>([]);
+  const [modes, setModes] = useState<{ slug: string; description: string; source?: string }[]>([]);
   const [currentMode, setCurrentMode] = useState<string>("code");
   const [pendingAttachment, setPendingAttachment] = useState<string | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(true);
@@ -77,7 +75,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
-  const [providers, setProviders] = useState<ProviderConfig[]>([]);
+  const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [approval, setApproval] = useState<{ id: string; description: string; kind: string; command?: string } | null>(null);
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
   const [prefillText, setPrefillText] = useState<string | null>(null);
@@ -104,6 +102,9 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           if (e.currentMode) setCurrentMode(e.currentMode);
           if (e.reasoningEffort) setReasoningEffort(e.reasoningEffort);
           break;
+        case "mode/list":
+          if (e.modes) setModes(e.modes);
+          break;
         case "chat/list": setChats(e.chats); break;
         case "chat/current":
           cancelStreamFlush();
@@ -124,7 +125,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
             rafRef.current = requestAnimationFrame(() => {
               rafRef.current = null;
               const p = pendingTextRef.current;
-              if (p) setStreaming((s) => (s ? { ...s, id: p.id, text: p.text } : { id: p.id, text: p.text }));
+              if (p) setStreaming((s) => (s ? { ...s, id: p.id, text: p.text, ts: s.ts ?? Date.now() } : { id: p.id, text: p.text, ts: Date.now() }));
             });
           }
           break;
@@ -260,7 +261,6 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const compact = () => client.send({ type: "chat/compact" });
   const openSettings = () => setShowSettings(true);
   const openFile = (path: string) => { client.send({ type: "ui/openFile", path }); };
-  const openFullscreen = () => client.send({ type: "ui/openFullscreen" });
   const selectModel = (id: string) => client.send({ type: "model/select", modelId: id });
   const selectEffort = (e: Effort) => {
     setReasoningEffort(e);
@@ -332,7 +332,8 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const isEmpty = steps.length === 0 && streaming === null && !hasEverSent && !lastTurnError;
   type TimelineItem =
     | { kind: "msg"; ts: number; seq: number; msg: ChatMessage }
-    | { kind: "step"; ts: number; seq: number; step: ProcessStep };
+    | { kind: "step"; ts: number; seq: number; step: ProcessStep }
+    | { kind: "stream"; ts: number; seq: number };
   const timeline = useMemo<TimelineItem[]>(() => {
     const items: TimelineItem[] = [];
     let seq = 0;
@@ -343,8 +344,11 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     for (const s of steps) {
       items.push({ kind: "step", ts: s.ts ?? 0, seq: seq++, step: s });
     }
+    if (streaming?.text && streaming.ts) {
+      items.push({ kind: "stream", ts: streaming.ts, seq: seq++ });
+    }
     return items.sort((a, b) => a.ts - b.ts || a.seq - b.seq);
-  }, [messages, steps]);
+  }, [messages, steps, streaming]);
   const timelineNodes = useMemo<ReactNode[]>(() => {
     const out: ReactNode[] = [];
     let run: ProcessStep[] = [];
@@ -378,13 +382,22 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     for (const item of timeline) {
       if (item.kind === "step") {
         run.push(item.step);
-      } else {
-        const m = item.msg;
-        if (m.role === "assistant" && m.toolCalls?.length) continue;
-        if (m.role === "tool") continue;
-        flush();
-        out.push(<MessageBubble key={m.id} message={m} client={client} />);
+        continue;
       }
+      if (item.kind === "stream") {
+        flush();
+        out.push(
+          <div key="stream" className="arc-streaming" aria-live="polite">
+            <span className="arc-streaming-text arc-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(streaming?.text ?? "") }} />
+          </div>,
+        );
+        continue;
+      }
+      const m = item.msg;
+      if (m.role === "assistant" && m.toolCalls?.length && !m.content) continue;
+      if (m.role === "tool") continue;
+      flush();
+      out.push(<MessageBubble key={m.id} message={m} client={client} />);
     }
     flush();
     return out;
@@ -415,6 +428,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     client.send({ type: "ui/openFileDiff", path: latestStreamingDiff.filePath, hunks: latestStreamingDiff.hunks });
   }, [variant, streaming, latestStreamingDiff, client]);
   const activeTitle = chats.find((c) => c.id === activeId)?.title ?? "Chat";
+  const currentModelLabel = models.find((m) => m.id === currentModel)?.label;
   return (
     <div className={`arc-shell arc-shell-${variant}`}>
       {variant === "sidebar" && showSidebarList ? (
@@ -449,24 +463,13 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
             {sidebarCollapsed ? <PanelLeft size={14} /> : <PanelLeftClose size={14} />}
           </button>
         )}
-        <ModelPicker
-          models={models}
-          currentModelId={currentModel}
-          onSelect={selectModel}
-          variant={variant}
-        />
-        <EffortPicker
-          effort={reasoningEffort}
-          onSelect={selectEffort}
-          variant={variant}
-        />
-        {modes.length > 0 && (
-          <ModePicker
-            modes={modes}
-            currentMode={currentMode}
-            onSelect={selectMode}
-            variant={variant}
-          />
+        {variant === "sidebar" && (
+          <>
+            <button className="arc-iconbtn" title="Back to chat list" onClick={() => setShowSidebarList(true)}>
+              <ArrowLeft size={15} />
+            </button>
+            <span className="arc-topbar-title" title={activeTitle}>{activeTitle}</span>
+          </>
         )}
         <span className="arc-topbar-spacer" />
         <span className="arc-ctx-pct" title={`Context ${pct.toFixed(0)}% used`}>{pct.toFixed(0)}%</span>
@@ -475,26 +478,15 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         <button className="arc-iconbtn" title="Compress context" onClick={compact} disabled={!!streaming}>
           <FoldVertical size={15} />
         </button>
-        {variant === "sidebar" && (
-          <button className="arc-iconbtn" title="Open full-screen" onClick={openFullscreen}>
-            <Maximize2 size={14} />
-          </button>
-        )}
         <button className={`arc-iconbtn ${autoApproveActive ? "arc-iconbtn-active" : ""}`} title={autoApproveActive ? "Disable auto-approve" : "Enable auto-approve (approve all tool calls)"} onClick={toggleAutoApprove}>
           {autoApproveActive ? <ShieldCheck size={15} /> : <ShieldOff size={15} />}
         </button>
-        <button className="arc-iconbtn" title="Settings" onClick={() => { if (variant === "sidebar") client.send({ type: "ui/openFullscreen", show: "settings" } as any); else openSettings(); }}>
-          <Settings size={15} />
-        </button>
-      </header>
-      {variant === "sidebar" && (
-        <div className="arc-sidebar-nav">
-          <button className="arc-iconbtn" title="Back to chat list" onClick={() => setShowSidebarList(true)}>
-            <ArrowLeft size={15} />
+        {variant === "fullscreen" && (
+          <button className="arc-iconbtn" title="Settings" onClick={openSettings}>
+            <Settings size={15} />
           </button>
-          <span className="arc-sidebar-nav-title" title={activeTitle}>{activeTitle}</span>
-        </div>
-      )}
+        )}
+      </header>
       <div className={`arc-body arc-body-${variant}`}>
         {variant === "fullscreen" && !sidebarCollapsed && (
           <ChatList
@@ -527,14 +519,12 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
                 {lastTurnError.message}
               </div>
             )}
-            {streaming && (
+            {streaming && !streaming.text && (
               <div className="arc-streaming" aria-live="polite">
-                {streaming.text
-                  ? <span className="arc-streaming-text arc-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(streaming.text) }} />
-                  : <span className="arc-working">
-                      {waiting ? <RippleSpinner /> : <WaveSpinner />}
-                      {waiting ? "Waiting…" : "Working…"}
-                    </span>}
+                <span className="arc-working">
+                  {waiting ? <RippleSpinner /> : <WaveSpinner />}
+                  {waiting ? "Waiting…" : "Working…"}
+                </span>
               </div>
             )}
           </div>
@@ -617,6 +607,16 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
               queuedText={queuedMessage}
               onCancelQueue={cancelQueue}
               prefillText={prefillText}
+              placeholder={currentModelLabel ? `Ask ${currentModelLabel}` : undefined}
+              variant={variant}
+              models={models}
+              currentModelId={currentModel}
+              onSelectModel={selectModel}
+              modes={modes}
+              currentMode={currentMode}
+              onSelectMode={selectMode}
+              effort={reasoningEffort}
+              onSelectEffort={selectEffort}
             />
           </footer>
         </main>

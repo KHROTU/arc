@@ -44,11 +44,16 @@ export class McpAggregator {
   private persist?: McpPersistence;
   private roots: McpRoot[] = [];
   private samplingHandler?: McpSamplingHandler;
+  private removeHandler?: (serverName: string) => void | Promise<void>;
+  constructor(private clientOptions: import("./client.js").McpClientOptions = {}) {}
   setRoots(roots: McpRoot[]): void {
     this.roots = roots;
   }
   setSamplingHandler(handler: McpSamplingHandler): void {
     this.samplingHandler = handler;
+  }
+  setRemoveHandler(handler: (serverName: string) => void | Promise<void>): void {
+    this.removeHandler = handler;
   }
   private async handleServerRequest(entry: ServerEntry, method: string, params: unknown): Promise<unknown> {
     if (method === "roots/list") {
@@ -102,6 +107,7 @@ export class McpAggregator {
     if (!s) return;
     await s.client?.stop();
     this.servers.delete(name);
+    await this.removeHandler?.(name);
     this.notify();
     await this.persistNow();
   }
@@ -205,7 +211,7 @@ export class McpAggregator {
     for (const l of this.listeners) l();
   }
   private async startServer(entry: ServerEntry) {
-    const client = new McpClient(entry.config);
+    const client = new McpClient(entry.config, this.clientOptions);
     client.on("notification", (n) => {
       void this.handleNotification(entry, n);
     });

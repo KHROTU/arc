@@ -1,6 +1,8 @@
 import { AsyncEventQueue, readableToAsyncIterable } from "../util/stream.js";
 import { makeProxyDispatcher } from "../util/proxy.js";
 import { fromApiToolName, toApiToolName, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
+import { readBodyLimited } from "../security/network.js";
+import { redactSecrets } from "../security/redact.js";
 export const ollamaTransport: Transport = {
   kind: "ollama",
   async stream(req: StreamRequest): Promise<StreamHandle> {
@@ -59,7 +61,7 @@ export const ollamaTransport: Transport = {
       ...(req.proxyUrl ? { dispatcher: makeProxyDispatcher(req.proxyUrl) } : {}),
     });
     if (!res.ok || !res.body) {
-      throw new Error(`Ollama returned ${res.status}: ${await res.text()}`);
+      throw new Error(`Ollama returned ${res.status}: ${redactSecrets(await readBodyLimited(res), [req.provider.apiKey])}`);
     }
     const q = new AsyncEventQueue<StreamEvent>();
     let aborted = false;
@@ -101,10 +103,14 @@ export const ollamaTransport: Transport = {
       return false;
     };
     (async () => {
+      let streamBytes = 0;
       try {
         for await (const chunk of readableToAsyncIterable(res.body as ReadableStream<Uint8Array>)) {
           if (aborted) break;
+          streamBytes += Buffer.byteLength(chunk);
+          if (streamBytes > 4 * 1024 * 1024) throw new Error("Provider stream exceeded 4 MiB.");
           buffer += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+          if (buffer.length > 1024 * 1024) throw new Error("Provider stream event exceeded 1 MiB.");
           let idx: number;
           while ((idx = buffer.indexOf("\n")) >= 0) {
             const line = buffer.slice(0, idx);

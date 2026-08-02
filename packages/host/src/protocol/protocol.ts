@@ -132,6 +132,7 @@ export type ProviderKind =
   | "apexit"
   | "deepgram"
   | "elevenlabs"
+  | "poolside"
   | "llamagate"
   | "nanogpt"
   | "nlp-cloud"
@@ -174,7 +175,8 @@ export type ProviderKind =
   | "portkey-gateway"
   | "braintrust-gateway"
   | "vercel-ai-gateway"
-  | "tongyi";
+  | "tongyi"
+  | "tokenrouter";
 export interface ProviderConfig {
   id: string;
   kind: ProviderKind;
@@ -184,6 +186,7 @@ export interface ProviderConfig {
   startCommand?: string;
   enabled: boolean;
 }
+export type ProviderSummary = Omit<ProviderConfig, "apiKey"> & { hasApiKey: boolean };
 export interface ChatMessage {
   id: string;
   role: Role;
@@ -246,7 +249,7 @@ export type HostMsg =
   | { type: "chat/current"; chatId: string }
   | { type: "context/stats"; usedPct: number; tokens: number; window: number; cost: number }
   | { type: "model/list"; models: ModelDescriptor[]; currentModelId: string }
-  | { type: "provider/list"; providers: ProviderConfig[] }
+  | { type: "provider/list"; providers: ProviderSummary[] }
   | { type: "config/get"; value: unknown; inReplyTo: string }
   | { type: "mcp/list"; servers: { name: string; enabled: boolean; transport: "stdio" | "http"; toolCount: number }[] }
   | { type: "mode/list"; modes: { slug: string; roleDefinition: string; allowedTools: string[]; writeGlob?: string; description: string; whenToUse: string; model?: string; source: "builtin" | "workspace" | "global" }[] }
@@ -300,7 +303,7 @@ export type WebviewMsg =
   | { type: "ui/attachChangedFiles" }
   | { type: "ui/attachPullRequest" }
   | { type: "ui/showProblems" }
-  | { type: "ui/openFullscreen" }
+  | { type: "ui/openFullscreen"; show?: "settings" | "search" }
   | { type: "ui/openSettings" }
   | { type: "ui/openFile"; path: string }
   | { type: "ui/openFileDiff"; path: string; hunks: DiffHunk[] }
