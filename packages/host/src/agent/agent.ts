@@ -4,7 +4,8 @@ import * as path from "node:path";
 import { getWorkspaceArcDir } from "../arc-dir.js";
 import { ModelRegistry } from "../routing/registry.js";
 import { pickProvider, routeStream, recordSuccess, estimateCost } from "../routing/router.js";
-import { transportFor } from "../providers/transport.js";
+import { transportFor, sanitizeToolChains } from "../providers/transport.js";
+export { sanitizeToolChains } from "../providers/transport.js";
 import { CheckpointStore } from "../checkpoint/store.js";
 import { compactAsync, decideCompaction, CompactionTracker } from "../compaction/compaction.js";
 import { defaultPolicy, nextModelForHandoff, type HandoffRecord } from "../routing/handoff.js";
@@ -51,7 +52,7 @@ export interface AgentOptions {
   reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   askUser?: (question: string, options: string[]) => Promise<string>;
   approveShell?: (description: string, meta?: ApproveShellMeta) => Promise<boolean>;
-  toolContext: Omit<ToolContext, "shell" | "requestApproval" | "root" | "workspacePath" | "approvalsConfig" | "sessionApprovals" | "addSessionCommand" | "onChunk" | "skillRegistry">;
+  toolContext: Omit<ToolContext, "shell" | "root" | "workspacePath" | "approvalsConfig" | "sessionApprovals" | "addSessionCommand" | "onChunk" | "skillRegistry">;
   isMain: boolean;
   ownerTier?: import("../protocol/protocol.js").ModelTier;
   parent?: Agent;
@@ -64,6 +65,7 @@ export interface AgentOptions {
   fileContextTracker?: import("../context/tracker.js").FileContextTracker;
   verifyMode?: "none" | "default" | "custom";
   verifyMaxRetries?: number;
+  condensingPrompt?: string;
   getBrowserTabs?: () => Promise<{ id: string; url: string; active: boolean }[]>;
   getBackgroundProcesses?: () => { id: string; command: string }[];
   restoreBrowserTabs?: (tabs: { url: string }[]) => Promise<void>;
@@ -94,6 +96,21 @@ export class Agent {
   private timeline: ExecutionEvent[] = [];
   private readonly TIMELINE_MAX = 2000;
   private verifyAttempts = 0;
+  private consecutiveMistakes = 0;
+  private consecutiveStreamErrors = 0;
+  private lastToolSig = "";
+  private sessionToolCounts = new Map<string, number>();
+  private readonly maxSessionCaps: Record<string, number> = (() => {
+    const num = (name: string, def: number): number => {
+      const v = Number(process.env[name]);
+      return Number.isFinite(v) && v >= 0 ? v : def;
+    };
+    return {
+      "web.search": num("ARC_MAX_WEB_SEARCHES_PER_SESSION", Number.POSITIVE_INFINITY),
+      "subagent.spawn": num("ARC_MAX_SUBAGENTS_PER_SESSION", Number.POSITIVE_INFINITY),
+      "mcp.call": num("ARC_MAX_MCP_CALLS_PER_SESSION", Number.POSITIVE_INFINITY),
+    };
+  })();
   private verifyConfigPromise?: Promise<VerifyConfig | undefined>;
   private getVerifyConfig(): Promise<VerifyConfig | undefined> {
     if (!this.verifyConfigPromise) this.verifyConfigPromise = loadVerifyConfig(this.opts.workspaceRoot);
@@ -116,7 +133,9 @@ export class Agent {
         JSON.stringify({ todoItems: this.todoItems, updatedAt: new Date().toISOString() }, null, 2),
         "utf-8",
       );
-    } catch {}
+    } catch (e) {
+      console.warn(`[arc] plan persistence failed: ${(e as Error)?.message ?? e}`);
+    }
   }
   constructor(
     private registry: ModelRegistry,
@@ -147,6 +166,9 @@ export class Agent {
   }
   setModelOverride(model: ModelDescriptor | undefined): void {
     this.opts.modelOverride = model;
+  }
+  getModelOverride(): ModelDescriptor | undefined {
+    return this.opts.modelOverride;
   }
   private resolveProviderProxy(): string | undefined {
     return this.opts.proxyProvider || this.opts.proxyUrl;
@@ -253,6 +275,7 @@ export class Agent {
   async send(text: string, attachments?: { uri: string; preview?: string }[], images?: string[]): Promise<void> {
     if (this.active) throw new Error("Agent is already running");
     this.verifyAttempts = 0;
+    this.consecutiveStreamErrors = 0;
     if (!this.sessionStarted) {
       this.sessionStarted = true;
       runHooks({
@@ -300,6 +323,7 @@ export class Agent {
         role: "system",
         content: "The user's request appears to need planning. Before making ANY changes, you MUST:\n1. Create a detailed todo list via `todo.write` breaking the work into sequential, verifiable steps.\n2. Ask the user for sign-off via `clarification.askUser` with the question \"Review the plan above. Ready to proceed?\" and options [\"Proceed\", \"Revise plan\"].\n3. After approval, use `mode.switch` to switch to \"code\" mode to implement.\nDo NOT call file.edit, file.write, or shell.run until the user approves the plan.",
         ts: Date.now(),
+        noCompact: true,
       };
       this.messages.push(planMsg);
       this.sink.message(planMsg);
@@ -338,6 +362,10 @@ export class Agent {
     }
     if (killed.count > 0) {
       this.sink.steps(this.steps);
+    }
+    this.active = false;
+    if (this.turnCount > 0) {
+      this.sink.turnEnd(`stop-${Date.now()}`, true);
     }
   }
   async retract(turnId: string, skipSteps = false): Promise<{ restored: string[]; conflicts: string[] }> {
@@ -433,10 +461,19 @@ export class Agent {
       if (current) {
         const dec = decideCompaction(this.messages, current, this.tracker, undefined, this.lastPromptTokens, toolSpecs);
         if (dec.shouldCompact) {
-          const before = this.messages.length;
-          this.messages = await compactAsync(this.messages, (msgs) => this.summarizeForCompaction(msgs, current));
-          this.sink.compaction(before, this.messages.length, dec.reason);
-          this.pushTimeline({ type: "compaction", turnId, before, after: this.messages.length, reason: dec.reason, ts: Date.now() });
+          const hookDecisions = await runHooks({
+            event: "pre.compact",
+            workspaceRoot: this.opts.workspaceRoot,
+            sandboxProfile: this.opts.toolContext.sandboxProfile,
+            mode: this.currentMode,
+            extra: { reason: dec.reason, estimatedTokens: dec.currentUsage },
+          });
+          if (!hookDecisions.some((d) => d.decision === "block")) {
+            const before = this.messages.length;
+            this.messages = await compactAsync(this.messages, (msgs) => this.summarizeForCompaction(msgs, current));
+            this.sink.compaction(before, this.messages.length, dec.reason);
+            this.pushTimeline({ type: "compaction", turnId, before, after: this.messages.length, reason: dec.reason, ts: Date.now() });
+          }
         }
       }
       let model = this.getCurrentModel();
@@ -448,6 +485,7 @@ export class Agent {
         this.active = false;
         return;
       }
+      this.messages = sanitizeToolChains(this.messages);
       let usedProvider: import("../providers/transport.js").StreamRequest["provider"] | undefined;
       const stream = await routeStream(this.registry, model, (decision) => {
         usedProvider = decision.provider;
@@ -472,6 +510,7 @@ export class Agent {
       this.toolAcc.clear();
       for await (const ev of stream.events) {
         if (this.abortController.signal.aborted) break;
+        if (ev.type !== "error") this.consecutiveStreamErrors = 0;
         switch (ev.type) {
           case "text": {
             if (!firstTextTs) firstTextTs = Date.now();
@@ -543,7 +582,11 @@ export class Agent {
             break;
           }
           case "error": {
+            this.consecutiveStreamErrors++;
             this.sink.error(ev.message);
+            if (this.consecutiveStreamErrors >= 3) {
+              throw new Error(`Provider stream failed ${this.consecutiveStreamErrors} consecutive times: ${ev.message}`);
+            }
             break;
           }
           case "done": {
@@ -553,17 +596,20 @@ export class Agent {
       }
       if (thoughtStart) this.finalizeThought(assistantId, thoughtStart);
       this.pushTimeline({ type: "model_call", turnId, modelId: model.id, providerId: usedProvider!.id, tier: model.tier, ts: Date.now(), durationMs: Date.now() - turnTs, usage: this.usageByModel[model.id] });
+      const abortedTurn = this.abortController.signal.aborted;
       const finalAssistant: ChatMessage = {
         id: assistantId,
         role: "assistant",
         content: text,
         thinking: thinking || undefined,
-        toolCalls: toolCalls.length ? toolCalls : undefined,
+        toolCalls: (!abortedTurn && toolCalls.length) ? toolCalls : undefined,
         ts: firstTextTs || turnTs,
         meta: { modelId: model.id, providerId: usedProvider!.id, tier: model.tier },
       };
-      this.messages.push(finalAssistant);
-      this.sink.message(finalAssistant);
+      if (!abortedTurn || text.trim() || thinking) {
+        this.messages.push(finalAssistant);
+        this.sink.message(finalAssistant);
+      }
       if (toolCalls.length) {
         const tcs = this.abortController.signal.aborted ? [] : this.partitionToolCalls(toolCalls);
         for (const phase of tcs) {
@@ -610,7 +656,10 @@ export class Agent {
         this.sink.done();
       }
     } catch (e) {
-      if (!this.abortController?.signal.aborted) {
+      if (this.abortController?.signal.aborted) {
+        this.sink.turnEnd(turnId, true);
+        this.sink.done();
+      } else {
         this.sink.turnEnd(turnId, false, (e as Error).message);
         this.sink.error((e as Error).message);
       }
@@ -682,6 +731,22 @@ export class Agent {
       this.messages.push({ id: randomUUID(), role: "tool", content: output, toolCallId: tc.id, ts: Date.now() });
       return;
     }
+    const cap = this.maxSessionCaps[tc.name];
+    if (cap !== undefined) {
+      const used = this.sessionToolCounts.get(tc.name) ?? 0;
+      if (used >= cap) {
+        const envVar = {
+          "web.search": "ARC_MAX_WEB_SEARCHES_PER_SESSION",
+          "subagent.spawn": "ARC_MAX_SUBAGENTS_PER_SESSION",
+          "mcp.call": "ARC_MAX_MCP_CALLS_PER_SESSION",
+        }[tc.name];
+        const out = { ok: false, output: `Session cap reached for ${tc.name}: ${used} used, max ${cap} per session (${envVar}). Stop using this tool.` };
+        this.appendToolOutput(tc.id, out.output, out.ok);
+        this.messages.push({ id: randomUUID(), role: "tool", content: out.output, toolCallId: tc.id, ts: Date.now() });
+        return;
+      }
+      this.sessionToolCounts.set(tc.name, used + 1);
+    }
     const def = builtinTools[tc.name];
     const isPseudo = PSEUDO_TOOLS.has(tc.name);
     if (!def && !isPseudo) {
@@ -717,7 +782,7 @@ export class Agent {
       return;
     }
     if (tc.name === "subagent.spawn") {
-      const approvalHandler = this.opts.approveShell ?? (this.opts.toolContext as any).requestApproval;
+      const approvalHandler = this.opts.approveShell ?? this.opts.toolContext.requestApproval;
       const spawnSummary = Array.isArray(tc.args.batch)
         ? `Spawn ${tc.args.batch.length} subagent(s):\n\n${JSON.stringify(tc.args.batch, null, 2)}`
         : `Spawn subagent '${String(tc.args.name ?? "subagent")}':\n\n${String(tc.args.instructions ?? "")}`;
@@ -775,7 +840,14 @@ export class Agent {
           const result = results[i];
           const spec = specs[i];
           if (result.steps.length) {
-            allChildren.push({ id: `sub-${tc.id}-${i}`, type: "subagent", title: spec.name, children: result.steps, ts: Date.now() });
+            allChildren.push({
+              id: `sub-${tc.id}-${i}`,
+              type: "subagent",
+              title: spec.name,
+              children: result.steps,
+              ts: Date.now(),
+              ...(result.model ? { modelId: result.model.id, modelLabel: result.model.label } : {}),
+            });
           }
           if (result.todo.length) {
             const idPrefix = `sub-${tc.id}-${i}-`;
@@ -820,7 +892,9 @@ export class Agent {
         toolCallId: tc.id,
         ts: Date.now(),
       });
-      if (result.steps.length) {
+      if (result.model) {
+        this.appendStepChildren(tc.id, result.steps, { modelId: result.model.id, modelLabel: result.model.label });
+      } else if (result.steps.length) {
         this.appendStepChildren(tc.id, result.steps);
       }
       this.pushTimeline({ type: "subagent_spawn", turnId, name: spec.name, tier: spec.tier ?? parent.tier, ts: Date.now() });
@@ -893,7 +967,7 @@ export class Agent {
         this.messages.push({ id: randomUUID(), role: "tool", content: "checkpoint.revert requires a valid index or turnId.", toolCallId: tc.id, ts: Date.now() });
         return;
       }
-      const approvalHandler = this.opts.approveShell ?? (this.opts.toolContext as any).requestApproval;
+      const approvalHandler = this.opts.approveShell ?? this.opts.toolContext.requestApproval;
       if (!approvalHandler || !await approvalHandler(`Restore workspace files from checkpoint '${resolvedId}'?`)) {
         this.appendToolOutput(tc.id, "Checkpoint restore denied by user.", false);
         return;
@@ -1115,7 +1189,7 @@ export class Agent {
           return;
         }
         if (hookDecision.decision === "ask") {
-          const approvalHandler = this.opts.approveShell ?? (this.opts.toolContext as any).requestApproval;
+          const approvalHandler = this.opts.approveShell ?? this.opts.toolContext.requestApproval;
           if (!approvalHandler || !await approvalHandler(hookDecision.message ?? `Hook requires approval for ${tc.name}`)) {
             this.appendToolOutput(tc.id, `Tool '${tc.name}' denied by user via hook.`, false);
             return;
@@ -1140,7 +1214,9 @@ export class Agent {
         const filesToSnapshot = shouldSnapshot ? [target] : [];
         await this.store.snapshot(turnId, this.opts.workspaceRoot, filesToSnapshot, this.todoItems, label);
         this.pushTimeline({ type: "checkpoint_snapshot", turnId, fileCount: filesToSnapshot.length || 1, ts: Date.now() });
-} catch {  }
+      } catch (e) {
+        console.error(`[arc] checkpoint snapshot failed: ${(e as Error)?.message ?? e}`);
+      }
     }
     if (WRITE_TOOLS.has(tc.name)) {
       const writeFilePath = String(tc.args.path);
@@ -1161,7 +1237,7 @@ export class Agent {
       allowExternalPath = !!(extra?.filePath && extra.workspaceRoot && classifyWorkspacePath(extra.workspaceRoot, extra.filePath).external);
       const level = resolveApproval(this.opts.approvalsConfig ?? DEFAULT_APPROVALS, this.sessionApprovals, approvalCategory, extra);
       if (level === "ask") {
-        const approvalHandler = this.opts.approveShell ?? (this.opts.toolContext as any).requestApproval;
+        const approvalHandler = this.opts.approveShell ?? this.opts.toolContext.requestApproval;
         if (!approvalHandler) {
           this.appendToolOutput(tc.id, `Tool '${tc.name}' requires approval and no approval handler is set.`, false);
           this.messages.push({ id: randomUUID(), role: "tool", content: `Approval required but no handler available.`, toolCallId: tc.id, ts: Date.now() });
@@ -1184,7 +1260,7 @@ export class Agent {
       approvalsConfig: this.opts.approvalsConfig ?? DEFAULT_APPROVALS,
       sessionApprovals: this.sessionApprovals,
       allowExternalPath,
-      requestApproval: this.opts.approveShell ?? (this.opts.toolContext as any).requestApproval,
+      requestApproval: this.opts.approveShell ?? this.opts.toolContext.requestApproval,
       addSessionCommand: (cmd: string) => { this.sessionApprovals.sessionCommandAllowlist.push(cmd); },
       onChunk: this.makeChunkHandler(tc),
       onDiff: (diffHunks, filePath) => {
@@ -1221,7 +1297,8 @@ export class Agent {
     const toolContent = result.runAfter
       ? `${truncatedOutput}\n[runAfter] ${result.runAfter.command}\n${result.runAfter.output}`
       : truncatedOutput;
-    this.messages.push({ id: randomUUID(), role: "tool", content: toolContent, toolCallId: tc.id, ts: Date.now() });
+    const toolMsg: ChatMessage = { id: randomUUID(), role: "tool", content: toolContent, toolCallId: tc.id, ts: Date.now() };
+    this.messages.push(toolMsg);
     if (result.images?.length) {
       this.messages.push({ id: randomUUID(), role: "user", content: result.output, images: result.images, ts: Date.now() });
     }
@@ -1249,13 +1326,7 @@ export class Agent {
       if (summary.text) {
         const fbId = `lsp-fb-${randomUUID()}`;
         this.openStep({ id: fbId, type: "tool", title: "Checked diagnostics", output: summary.text });
-        this.messages.push({
-          id: randomUUID(),
-          role: "tool",
-          content: summary.text,
-          toolCallId: tc.id,
-          ts: Date.now(),
-        });
+        toolMsg.content = toolMsg.content ? `${toolMsg.content}\n\n${summary.text}` : summary.text;
       }
     }
     if (result.ok && result.touchedFiles && result.touchedFiles.length && isEditOrWrite) {
@@ -1274,7 +1345,7 @@ export class Agent {
             : `Post-edit verification failed (attempt ${this.verifyAttempts}/${maxRetries}). Fix the issues below before continuing:\n\n${report}`;
           const vfId = `verify-fb-${randomUUID()}`;
           this.openStep({ id: vfId, type: "tool", title: exhausted ? "Verification failed (retries exhausted)" : "Verification failed", output: note });
-          this.messages.push({ id: randomUUID(), role: "tool", content: note, toolCallId: tc.id, ts: Date.now() });
+          toolMsg.content = toolMsg.content ? `${toolMsg.content}\n\n${note}` : note;
         } else {
           this.verifyAttempts = 0;
         }
@@ -1346,7 +1417,9 @@ export class Agent {
         {
           id: randomUUID(),
           role: "system",
-          content: "You are a context compressor for an agentic coding assistant. Summarize the prior conversation so the assistant can continue the task. Preserve:\n- Concrete decisions made and the reasoning.\n- File paths touched and what changed (read/edit/write, with brief description).\n- Error messages and their resolutions.\n- Outstanding TODOs or unfinished work.\n- Key user preferences or constraints mentioned.\n\nUse terse bullet points. Skip pleasantries. Do not invent facts.",
+          content: this.opts.condensingPrompt?.trim()
+            ? this.opts.condensingPrompt
+            : "You are a context compressor for an agentic coding assistant. Summarize the prior conversation so the assistant can continue the task. Preserve:\n- Concrete decisions made and the reasoning.\n- File paths touched and what changed (read/edit/write, with brief description).\n- Error messages and their resolutions.\n- Outstanding TODOs or unfinished work.\n- Key user preferences or constraints mentioned.\n\nUse terse bullet points. Skip pleasantries. Do not invent facts.",
           ts: Date.now(),
         },
         {
@@ -1371,7 +1444,8 @@ export class Agent {
       const cleaned = text.trim();
       if (!cleaned) return summarizeInProcess(msgs);
       return cleaned.length > 4000 ? cleaned.slice(0, 4000) + "\n…(truncated)" : cleaned;
-    } catch {
+    } catch (e) {
+      console.warn(`[arc] LLM compaction summary failed, falling back to in-process summary: ${(e as Error)?.message ?? e}`);
       return summarizeInProcess(msgs);
     }
   }
@@ -1435,14 +1509,36 @@ export class Agent {
           ...(runAfterOutput ? { runAfterOutput } : {}),
         };
         this.sink.steps(this.steps);
+        this.trackToolMistakes(id, ok);
         return;
       }
     }
   }
-  private appendStepChildren(id: string, children: ProcessStep[]) {
+  private trackToolMistakes(id: string, ok: boolean): void {
+    if (ok) {
+      this.consecutiveMistakes = 0;
+      this.lastToolSig = "";
+      return;
+    }
+    const meta = this.toolMeta.get(id);
+    const name = meta?.name ?? "";
+    if (name === "web.fetch" || name === "web.search") return;
+    const sig = `${name}|${JSON.stringify(meta?.args ?? {})}`;
+    this.consecutiveMistakes = sig === this.lastToolSig ? Math.max(2, this.consecutiveMistakes + 1) : this.consecutiveMistakes + 1;
+    this.lastToolSig = sig;
+    if (this.consecutiveMistakes >= 3) {
+      this.consecutiveMistakes = 0;
+      this.lastToolSig = "";
+      const question = "You have made 3 consecutive failing or identical tool calls. Stop retrying the same action and tell me how you'd like to proceed.";
+      const clId = `clar-${Date.now()}-${randomUUID().slice(0, 4)}`;
+      this.sink.clarification(clId, question, []);
+      this.messages.push({ id: randomUUID(), role: "system", content: `[Paused] ${question}`, ts: Date.now() });
+    }
+  }
+  private appendStepChildren(id: string, children: ProcessStep[], model?: { modelId: string; modelLabel: string }) {
     for (let i = this.steps.length - 1; i >= 0; i--) {
       if (this.steps[i].id === id) {
-        this.steps[i] = { ...this.steps[i], children };
+        this.steps[i] = { ...this.steps[i], children, ...(model ?? {}) };
         this.sink.steps(this.steps);
         return;
       }
@@ -1665,6 +1761,8 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, state: "pr
       case "mcp.prompts/get": return `Failed to get MCP prompt ${args.name ?? ""}`;
       case "subagent.spawn": return `Subagent ${args.name ?? ""} failed`;
       case "handoff": return `Handoff failed`;
+      case "subagent.askParent": return `Failed to ask parent: ${clip(String(args.question ?? ""), 80)}`;
+      case "clarification.askUser": return `Failed to ask: ${clip(String(args.question ?? ""), 80)}`;
       case "checkpoint.revert": return `Failed to revert to ${String(args.turnId ?? args.index ?? "")}`;
       case "checkpoint.list": return "Failed to list checkpoints";
       case "checkpoint.compare": return "Failed to compare checkpoints";

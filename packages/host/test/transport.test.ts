@@ -221,6 +221,33 @@ describe("transports end the stream cleanly", () => {
       globalThis.fetch = real;
     }
   });
+  it("drops orphaned tool messages before they reach the provider", async () => {
+    const real = globalThis.fetch;
+    let sentBody: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (typeof init?.body === "string") sentBody = JSON.parse(init.body);
+      return new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+    try {
+      const req: any = {
+        ...mkReq(),
+        provider: { id: "p1", kind: "openai", label: "p1", enabled: true, baseUrl: "https://api.openai.com/v1" },
+        messages: [
+          { id: "u1", role: "user", content: "hi", ts: 0 },
+          { id: "orphan", role: "tool", content: "stray output", toolCallId: "gone", ts: 1 },
+          { id: "a1", role: "assistant", content: "", toolCalls: [{ id: "t1", name: "x", args: {} }], ts: 2 },
+          { id: "r1", role: "tool", content: "out", toolCallId: "t1", ts: 3 },
+        ],
+      };
+      const handle = await openAICompatibleTransport.stream(req);
+      for await (const _ev of handle.events) { }
+      const sentMessages = (sentBody?.messages ?? []) as Array<Record<string, unknown>>;
+      expect(sentMessages.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
+      expect(sentMessages[2]?.tool_call_id).toBe("t1");
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
   it("anthropic: terminates the for-await after message_stop", async () => {
     const real = globalThis.fetch;
     const sse = [

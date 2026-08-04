@@ -1,13 +1,22 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { existsSync } from "node:fs";
 import { createBrowser } from "../src/browser/browser";
 import type { BrowserAdapter } from "../src/browser/browser";
+let chromiumAvailable = false;
+try {
+  const pw = (await import("playwright")) as { chromium?: { executablePath?: () => string } };
+  const exe = pw.chromium?.executablePath?.();
+  chromiumAvailable = !!(exe && existsSync(exe));
+} catch {
+  chromiumAvailable = false;
+}
 describe("createBrowser multi-tab and interception", () => {
   let browser: BrowserAdapter | undefined;
   afterEach(async () => {
     if (browser) await browser.close();
     browser = undefined;
   });
-  it("opens, lists, switches, and closes tabs", async () => {
+  it.skipIf(!chromiumAvailable)("opens, lists, switches, and closes tabs", async () => {
     browser = await createBrowser("chromium", true);
     await browser.navigate("data:text/html,<h1>first</h1>");
     const opened = await browser.newTab("data:text/html,<h1>second</h1>");
@@ -26,12 +35,12 @@ describe("createBrowser multi-tab and interception", () => {
     const listAfterClose = await browser.listTabs();
     expect(listAfterClose.tabs?.length).toBe(1);
   });
-  it("reports an error for an unknown tab id", async () => {
+  it.skipIf(!chromiumAvailable)("reports an error for an unknown tab id", async () => {
     browser = await createBrowser("chromium", true);
     const res = await browser.switchTab("nonexistent-tab");
     expect(res.ok).toBe(false);
   });
-  it("intercepts and blocks matching requests", async () => {
+  it.skipIf(!chromiumAvailable)("intercepts and blocks matching requests", async () => {
     browser = await createBrowser("chromium", true);
     const intercepted = await browser.intercept("**/blocked-resource*", { block: true });
     expect(intercepted.ok).toBe(true);
@@ -40,7 +49,7 @@ describe("createBrowser multi-tab and interception", () => {
     `);
     expect(result.output).toContain("rejected");
   });
-  it("mocks a response body for matching requests", async () => {
+  it.skipIf(!chromiumAvailable)("mocks a response body for matching requests", async () => {
     browser = await createBrowser("chromium", true);
     await browser.navigate("data:text/html,<h1>mock</h1>");
     await browser.intercept("**/mock-api*", { status: 200, body: "{\"mocked\":true}", contentType: "application/json" });
@@ -49,7 +58,7 @@ describe("createBrowser multi-tab and interception", () => {
     `);
     expect(result.output).toContain("mocked");
   });
-  it("stops intercepting after unintercept", async () => {
+  it.skipIf(!chromiumAvailable)("stops intercepting after unintercept", async () => {
     browser = await createBrowser("chromium", true);
     await browser.intercept("**/toggle-api*", { block: true });
     const unintercepted = await browser.unintercept("**/toggle-api*");
@@ -57,7 +66,7 @@ describe("createBrowser multi-tab and interception", () => {
     const again = await browser.unintercept("**/toggle-api*");
     expect(again.ok).toBe(false);
   });
-  it("keeps browser.runCode inside the constrained page operation DSL", async () => {
+  it.skipIf(!chromiumAvailable)("keeps browser.runCode inside the constrained page operation DSL", async () => {
     browser = await createBrowser("chromium", true);
     await browser.navigate("data:text/html,<h1>safe</h1>");
     const blocked = await browser.runCode("return process.env;", undefined);

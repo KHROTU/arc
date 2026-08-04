@@ -9,6 +9,12 @@ type Props = {
 export default function ModelIcon({ modelId, size = 14, className, title }: Props) {
   const name = modelId ? iconForModel(modelId) : DEFAULT_ICON;
   const svg = ICON_SVGS[name] ?? ICON_SVGS[DEFAULT_ICON];
+  const paths = svg.paths.map((p, i) =>
+    createElement("path", { key: i, d: p.d, ...(p.fillRule ? { fillRule: p.fillRule } : {}) }),
+  );
+  const content = svg.transform
+    ? createElement("g", { key: "fit", transform: svg.transform }, paths)
+    : paths;
   return createElement(
     "svg",
     {
@@ -25,8 +31,6 @@ export default function ModelIcon({ modelId, size = 14, className, title }: Prop
       strokeLinejoin: svg.mode === "stroke" ? ("round" as const) : undefined,
       "aria-hidden": true,
     },
-    svg.paths.map((p, i) =>
-      createElement("path", { key: i, d: p.d, ...(p.fillRule ? { fillRule: p.fillRule } : {}) }),
-    ),
+    content,
   );
 }

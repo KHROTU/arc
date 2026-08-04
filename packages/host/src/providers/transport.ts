@@ -1,5 +1,61 @@
 import type { ProviderKind } from "../protocol/protocol.js";
+import type { ChatMessage } from "../protocol/protocol.js";
 import { getProviderSpec } from "./catalog.js";
+export function sanitizeToolChains(messages: ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  let dropped = 0;
+  for (const m of messages) {
+    if (m.role === "tool") {
+      const id = (m.toolCallId ?? "").trim();
+      if (!id) {
+        out.push(m);
+        continue;
+      }
+      let i = out.length - 1;
+      while (i >= 0 && out[i].role === "tool") i--;
+      const prev = out[i];
+      if (!prev || prev.role !== "assistant" || !prev.toolCalls?.some((t) => t.id === id)) {
+        dropped++;
+        continue;
+      }
+      const consumed = new Set<string>();
+      for (let j = out.length - 1; j >= 0 && out[j].role === "tool"; j--) {
+        const cid = out[j].toolCallId;
+        if (cid) consumed.add(cid);
+      }
+      if (consumed.has(id)) {
+        dropped++;
+        continue;
+      }
+    }
+    out.push(m);
+  }
+  for (let i = 0; i < out.length; i++) {
+    const m = out[i];
+    if (m.role !== "assistant" || !m.toolCalls?.length) continue;
+    const unique = new Map<string, NonNullable<ChatMessage["toolCalls"]>[number]>();
+    for (const t of m.toolCalls) {
+      if (!unique.has(t.id)) unique.set(t.id, t);
+    }
+    const ids = [...unique.keys()];
+    const answered = new Set<string>();
+    for (let j = i + 1; j < out.length && out[j].role === "tool"; j++) {
+      const cid = out[j].toolCallId;
+      if (cid) answered.add(cid);
+    }
+    const complete = ids.every((id) => answered.has(id));
+    if (!complete) {
+      out[i] = { ...m, toolCalls: undefined };
+      dropped++;
+    } else if (unique.size !== m.toolCalls.length) {
+      out[i] = { ...m, toolCalls: [...unique.values()] };
+    }
+  }
+  if (dropped > 0) {
+    console.warn(`[arc] sanitizeToolChains cleaned ${dropped} orphaned/duplicate/incomplete tool message(s) before sending to the provider`);
+  }
+  return out;
+}
 export type StreamEvent =
   | { type: "text"; delta: string }
   | { type: "thinking"; delta: string }
@@ -19,7 +75,7 @@ export const fromApiToolName = (name: string): string => name.replace(/__/g, "."
 export interface StreamRequest {
   model: import("../protocol/protocol.js").ModelDescriptor;
   provider: import("../protocol/protocol.js").ProviderConfig;
-  messages: import("../protocol/protocol.js").ChatMessage[];
+  messages: ChatMessage[];
   tools?: ToolSpec[];
   temperature?: number;
   maxTokens?: number;

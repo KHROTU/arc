@@ -36,6 +36,22 @@ describe("applyEdit", () => {
     expect(r.ok).toBe(true);
     expect(r.strategy).toBe("fuzzy");
   });
+  it("fuzzy match on CRLF files replaces at correct offsets", () => {
+    const r = applyEdit({ before: "bb\r\ncc\r\n", search: "  bb\n  cc", replace: "XX" });
+    expect(r.ok).toBe(true);
+    expect(r.strategy).toBe("fuzzy");
+    expect(r.after).toBe("XX\r\n");
+  });
+  it("fuzzy match on mixed line endings keeps the trailing line", () => {
+    const r = applyEdit({
+      before: "aa\r\nbb\r\ncc",
+      search: "  bb\n  cc",
+      replace: "YY",
+    });
+    expect(r.ok).toBe(true);
+    expect(r.strategy).toBe("fuzzy");
+    expect(r.after).toBe("aa\r\nYY");
+  });
   it("returns ok=false with a clear error when no match", () => {
     const r = applyEdit({ before: "hello", search: "missing", replace: "x" });
     expect(r.ok).toBe(false);

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { Search, ChevronDown } from "./icons";
 import ModelIcon from "./ModelIcon";
 import type { ModelDescriptor, ModelTier } from "@arc/host/protocol";
+export const AUTO_MODEL_ID = "auto";
 const TIER_ORDER: Record<ModelTier, number> = { heavy: 0, default: 1, light: 2, free: 3 };
 const TIER_LABELS: Record<ModelTier, string> = { heavy: "heavy", default: "default", light: "light", free: "free" };
 type Props = {
@@ -17,6 +18,7 @@ export default function ModelPicker({ models, currentModelId, onSelect, compact 
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const autoSelected = currentModelId === AUTO_MODEL_ID;
   const sorted = useMemo(
     () => [...models].sort((a, b) => (TIER_ORDER[a.tier] ?? 99) - (TIER_ORDER[b.tier] ?? 99)),
     [models],
@@ -53,24 +55,31 @@ export default function ModelPicker({ models, currentModelId, onSelect, compact 
   }, [query]);
   useEffect(() => {
     if (!open || !listRef.current) return;
-    const el = listRef.current.children[activeIdx] as HTMLElement | undefined;
-    el?.scrollIntoView({ block: "nearest" });
+    const focusable = listRef.current.querySelectorAll<HTMLElement>(".arc-model-dropdown-item");
+    focusable[activeIdx]?.scrollIntoView({ block: "nearest" });
   }, [activeIdx, open]);
+  const showAuto = !query.trim() || query.toLowerCase().includes("auto");
+  const autoActiveIdx = showAuto ? 0 : -1;
+  const modelStartIdx = showAuto ? 1 : 0;
   const handleKey = (e: React.KeyboardEvent) => {
     if (!open) return;
+    const total = filtered.length + (showAuto ? 1 : 0);
     switch (e.key) {
       case "ArrowDown":
         e.preventDefault();
-        setActiveIdx((i) => (i + 1) % Math.max(1, filtered.length));
+        setActiveIdx((i) => (i + 1) % Math.max(1, total));
         break;
       case "ArrowUp":
         e.preventDefault();
-        setActiveIdx((i) => (i - 1 + filtered.length) % Math.max(1, filtered.length));
+        setActiveIdx((i) => (i - 1 + total) % Math.max(1, total));
         break;
       case "Enter":
         e.preventDefault();
-        if (filtered[activeIdx]) {
-          onSelect(filtered[activeIdx].id);
+        if (activeIdx === autoActiveIdx) {
+          onSelect(AUTO_MODEL_ID);
+          reset();
+        } else if (filtered[activeIdx - modelStartIdx]) {
+          onSelect(filtered[activeIdx - modelStartIdx].id);
           reset();
         }
         break;
@@ -84,6 +93,9 @@ export default function ModelPicker({ models, currentModelId, onSelect, compact 
     onSelect(id);
     reset();
   };
+  const triggerTitle = autoSelected
+    ? "Auto · route by difficulty"
+    : current ? `${current.label} · ${TIER_LABELS[current.tier]}` : "Select model";
   if (models.length === 0) {
     return (
       <div className="arc-model">
@@ -94,23 +106,23 @@ export default function ModelPicker({ models, currentModelId, onSelect, compact 
     );
   }
   return (
-    <div className="arc-model" ref={containerRef}>
+    <div className="arc-model" ref={containerRef} onKeyDown={handleKey}>
       {compact ? (
         <button
           className={`arc-model-trigger arc-model-trigger-compact ${open ? "is-open" : ""}`}
           onClick={() => setOpen((o) => !o)}
-          title={current ? `${current.label} · ${TIER_LABELS[current.tier]}` : "Select model"}
+          title={triggerTitle}
         >
-          <ModelIcon modelId={currentModelId} size={15} />
+          {autoSelected ? <ModelIcon modelId={AUTO_MODEL_ID} size={15} /> : <ModelIcon modelId={currentModelId} size={15} />}
         </button>
       ) : (
         <button
           className={`arc-model-trigger ${open ? "is-open" : ""}`}
           onClick={() => setOpen((o) => !o)}
-          title={current ? `${current.label} · ${TIER_LABELS[current.tier]}` : "Select model"}
+          title={triggerTitle}
         >
           <span className="arc-model-trigger-label">
-            {current ? current.label : "Select model"}
+            {autoSelected ? "Auto" : current ? current.label : "Select model"}
           </span>
           <ChevronDown size={12} className={`arc-model-trigger-chevron ${open ? "is-open" : ""}`} />
         </button>
@@ -129,22 +141,35 @@ export default function ModelPicker({ models, currentModelId, onSelect, compact 
             />
           </div>
           <div className="arc-model-dropdown-list" ref={listRef} onMouseLeave={() => setActiveIdx(-1)}>
+            {showAuto && (
+              <button
+                className={`arc-model-dropdown-item ${autoSelected ? "is-selected" : ""} ${activeIdx === 0 ? "is-active" : ""}`}
+                onClick={() => selectModel(AUTO_MODEL_ID)}
+                onMouseEnter={() => setActiveIdx(0)}
+              >
+                <span className="arc-model-dropdown-item-label">Auto</span>
+              </button>
+            )}
+            {showAuto && <div className="arc-mode-dropdown-sep" />}
             {filtered.length === 0 ? (
               <div className="arc-model-dropdown-empty">No models match "{query}"</div>
             ) : (
-              filtered.map((m, i) => (
-                <button
-                  key={m.id}
-                  className={`arc-model-dropdown-item ${m.id === currentModelId ? "is-selected" : ""} ${i === activeIdx ? "is-active" : ""}`}
-                  onClick={() => selectModel(m.id)}
-                  onMouseEnter={() => setActiveIdx(i)}
-                >
-                  <span className="arc-model-dropdown-item-label">{m.label}</span>
-                  <span className="arc-model-dropdown-item-tier">
-                    {TIER_LABELS[m.tier]}
-                  </span>
-                </button>
-              ))
+              filtered.map((m, i) => {
+                const idx = modelStartIdx + i;
+                return (
+                  <button
+                    key={m.id}
+                    className={`arc-model-dropdown-item ${m.id === currentModelId ? "is-selected" : ""} ${idx === activeIdx ? "is-active" : ""}`}
+                    onClick={() => selectModel(m.id)}
+                    onMouseEnter={() => setActiveIdx(idx)}
+                  >
+                    <span className="arc-model-dropdown-item-label">{m.label}</span>
+                    <span className="arc-model-dropdown-item-tier">
+                      {TIER_LABELS[m.tier]}
+                    </span>
+                  </button>
+                );
+              })
             )}
           </div>
         </div>

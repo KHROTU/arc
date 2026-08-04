@@ -1,6 +1,6 @@
 import { AsyncEventQueue, readableToAsyncIterable } from "../util/stream.js";
 import { makeProxyDispatcher } from "../util/proxy.js";
-import { fromApiToolName, toApiToolName, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
+import { fromApiToolName, toApiToolName, sanitizeToolChains, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
 import { withRetry, policyFor } from "./retry.js";
 import { readBodyLimited } from "../security/network.js";
 import { redactSecrets } from "../security/redact.js";
@@ -62,7 +62,7 @@ export const anthropicTransport: Transport = {
     const base = (req.provider.baseUrl || "https://api.anthropic.com").replace(/\/$/, "");
     const remoteModel = req.model.providers.find((p) => p.id === req.provider.id)?.remoteModel ?? req.model.id;
     const systemMsgs = req.messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
-    const conv = req.messages.filter((m) => m.role !== "system").map((m) => {
+    const conv = sanitizeToolChains(req.messages).filter((m) => m.role !== "system").map((m) => {
       if (m.role === "tool") {
         const content: unknown[] = [{ type: "tool_result", tool_use_id: m.toolCallId ?? "", content: m.content }];
         const images = (m as any).images as { image_url: { url: string } }[] | undefined;

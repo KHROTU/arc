@@ -1,8 +1,8 @@
 {
   "name": "arc-code",
   "displayName": "Arc",
-  "description": "0.18 MB agentic coding assistant. 150+ providers with tiered model routing, failover, and multi-model subagents.",
-  "version": "0.5.4",
+  "description": "0.19 MB agentic coding assistant. 150+ providers with tiered model routing, failover, and multi-model subagents.",
+  "version": "0.6.0",
   "publisher": "khrotu",
   "license": "Apache-2.0",
   "repository": {
@@ -110,6 +110,21 @@
         "title": "Open Settings",
         "category": "Arc",
         "icon": "$(gear)"
+      },
+      {
+        "command": "arc.notebook.generate",
+        "title": "Generate Notebook Cell",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.notebook.explain",
+        "title": "Explain Notebook Cell",
+        "category": "Arc"
+      },
+      {
+        "command": "arc.notebook.improve",
+        "title": "Improve Notebook Cell",
+        "category": "Arc"
       },
       {
         "command": "arc.newTask",
@@ -239,6 +254,23 @@
           "command": "arc.inlineChat.pickModel",
           "group": "navigation",
           "when": "commentController == arc.inlineChat && comment == arcModelHeader"
+        }
+      ],
+      "notebook/cell/title": [
+        {
+          "command": "arc.notebook.generate",
+          "group": "arc@1",
+          "when": "notebookEditorFocused"
+        },
+        {
+          "command": "arc.notebook.explain",
+          "group": "arc@2",
+          "when": "notebookEditorFocused"
+        },
+        {
+          "command": "arc.notebook.improve",
+          "group": "arc@3",
+          "when": "notebookEditorFocused"
         }
       ]
     },
@@ -466,6 +498,31 @@
           "default": "first-words",
           "description": "Method for generating chat titles. 'first-words' uses the first 40 chars of the first message. 'ollama' uses the titlegemma model via Ollama."
         },
+        "arc.promptPolish": {
+          "type": "string",
+          "enum": [
+            "off",
+            "basic",
+            "polish"
+          ],
+          "default": "off",
+          "description": "Polish prompts before sending. 'off' sends the prompt as typed. 'basic' fixes only grammar and spelling (prefers a free-tier model). 'polish' enhances clarity and structure (prefers a light-tier model). The polished prompt is shown in the composer for approval before it is sent."
+        },
+        "arc.router.qualityBias": {
+          "type": "string",
+          "enum": [
+            "off",
+            "prefer-cheap",
+            "prefer-powerful"
+          ],
+          "default": "off",
+          "description": "Quality/cost tradeoff when using the Auto model. 'off' balances cost and quality (default calibration). 'prefer-cheap' favors cheaper models that still clear the difficulty bar. 'prefer-powerful' favors stronger models even when a cheaper one would likely suffice."
+        },
+        "arc.router.modelUrl": {
+          "type": "string",
+          "default": "https://raw.githubusercontent.com/KHROTU/arc/main/packages/arc/resources/router/difficulty.json",
+          "description": "URL of the Auto router difficulty model. Downloaded to ~/.arc/router/difficulty.json on first use; Auto routing falls back to a normal send if it cannot be fetched."
+        },
         "arc.model.multimodalIds": {
           "type": "array",
           "items": {
@@ -552,6 +609,51 @@
           ],
           "default": "high",
           "description": "Default reasoning effort level used when starting a new chat. Controls how much the model reasons before responding."
+        },
+        "arc.outputStyle": {
+          "type": "string",
+          "default": "default",
+          "description": "Output style appended to the system prompt. Set to a name with a matching ~/.arc/output-styles/<name>.md file to shape how Arc presents responses."
+        },
+        "arc.compaction.customPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Optional custom context-compression prompt template used instead of the built-in one when Arc compacts history."
+        },
+        "arc.memory.teamStores": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra MEMORY.md files (absolute paths) merged into memory.list under a '(team)' category, for org-wide conventions."
+        },
+        "arc.attention.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Play short attention sounds on task completion, errors, and approval requests."
+        },
+        "arc.attention.volume": {
+          "type": "number",
+          "default": 70,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Attention sound volume (0-100)."
+        },
+        "arc.attention.completion": {
+          "type": "boolean",
+          "default": true,
+          "description": "Play a sound when a task/turn completes."
+        },
+        "arc.attention.approval": {
+          "type": "boolean",
+          "default": true,
+          "description": "Play a sound when Arc asks for approval."
+        },
+        "arc.attention.error": {
+          "type": "boolean",
+          "default": true,
+          "description": "Play a sound when a turn fails."
         }
       }
     },

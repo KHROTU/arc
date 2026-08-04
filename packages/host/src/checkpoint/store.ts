@@ -54,18 +54,15 @@ export class CheckpointStore {
     const dir = this.turnsDir(root);
     try {
       const entries = await fs.readdir(dir, { withFileTypes: true });
-      const turns = entries
+      const ids = entries
         .filter((e) => e.isFile() && e.name.endsWith(".json"))
-        .map((e) => ({ id: e.name.replace(/\.json$/, ""), mtimeMs: 0 }));
-      const stats = await Promise.allSettled(
-        turns.map((t) => fs.stat(path.join(dir, `${t.id}.json`))),
-      );
-      for (let i = 0; i < turns.length; i++) {
-        const s = stats[i];
-        if (s.status === "fulfilled") turns[i].mtimeMs = s.value.mtimeMs;
-      }
-      turns.sort((a, b) => b.mtimeMs - a.mtimeMs);
-      return turns.map((t) => t.id);
+        .map((e) => e.name.replace(/\.json$/, ""));
+      const loaded = await Promise.all(ids.map(async (id) => {
+        const snap = await this.load(root, id);
+        return { id, ts: snap?.ts ?? 0 };
+      }));
+      loaded.sort((a, b) => b.ts - a.ts || (a.id < b.id ? 1 : -1));
+      return loaded.map((t) => t.id);
     } catch {
       return [];
     }

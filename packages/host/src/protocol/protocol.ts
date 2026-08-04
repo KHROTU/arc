@@ -197,6 +197,7 @@ export interface ChatMessage {
   ts: number;
   meta?: { modelId: string; providerId: string; tier: ModelTier };
   images?: { type: string; image_url: { url: string } }[];
+  noCompact?: boolean;
 }
 export interface ToolCall {
   id: string;
@@ -251,11 +252,13 @@ export type HostMsg =
   | { type: "model/list"; models: ModelDescriptor[]; currentModelId: string }
   | { type: "provider/list"; providers: ProviderSummary[] }
   | { type: "config/get"; value: unknown; inReplyTo: string }
+  | { type: "config/changed"; key: string; value: unknown }
   | { type: "mcp/list"; servers: { name: string; enabled: boolean; transport: "stdio" | "http"; toolCount: number }[] }
   | { type: "mode/list"; modes: { slug: string; roleDefinition: string; allowedTools: string[]; writeGlob?: string; description: string; whenToUse: string; model?: string; source: "builtin" | "workspace" | "global" }[] }
   | { type: "chat/searchResults"; results: { id: string; title: string; matches: string[] }[] }
   | { type: "ui/showSettings" }
   | { type: "ui/showSearch" }
+  | { type: "ui/showUpdate"; version: string; url: string }
   | { type: "approval/request"; id: string; description: string; kind: "shell" | "destructive"; command?: string }
   | { type: "autoApproveState"; active: boolean }
   | { type: "search/indexProgress"; filesScanned: number; filesIndexed: number; chunksEmbedded: number; errors: number }
@@ -269,9 +272,15 @@ export type HostMsg =
   | { type: "session/guidance"; text: string }
   | { type: "error"; message: string; code?: "timeout" | "rate_limit" | "auth" | "provider" | "malformed" | "network" | "aborted"; inReplyTo?: string }
   | { type: "provider/internalSetupProgress"; phase: string; pct: number; error?: string }
-  | { type: "provider/serverState"; providerId: string; running: boolean; pid?: number };
+  | { type: "provider/serverState"; providerId: string; running: boolean; pid?: number }
+  | { type: "chat/polishResult"; original: string; polished: string }
+  | { type: "chat/polishFailed"; original: string }
+  | { type: "chat/routeResult"; original: string; modelId: string; modelLabel: string; aaScore: number; requiredScore: number; difficulty: number; confidence: number }
+  | { type: "chat/routeFailed"; original: string; reason?: "no-model" | "model-unavailable" | "error" };
 export type WebviewMsg =
-  | { type: "chat/send"; text: string; attachments?: { uri: string; preview?: string }[]; images?: string[] }
+  | { type: "chat/send"; text: string; attachments?: { uri: string; preview?: string }[]; images?: string[]; modelId?: string }
+  | { type: "chat/route"; text: string; attachments?: { uri: string; preview?: string }[]; images?: string[] }
+  | { type: "chat/polish"; text: string }
   | { type: "chat/guidance"; text: string }
   | { type: "chat/stop" }
   | { type: "chat/retract"; turnId: string }
@@ -304,6 +313,7 @@ export type WebviewMsg =
   | { type: "ui/attachPullRequest" }
   | { type: "ui/showProblems" }
   | { type: "ui/openFullscreen"; show?: "settings" | "search" }
+  | { type: "ui/openExternal"; url: string }
   | { type: "ui/openSettings" }
   | { type: "ui/openFile"; path: string }
   | { type: "ui/openFileDiff"; path: string; hunks: DiffHunk[] }

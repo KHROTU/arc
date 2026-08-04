@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Plus, Trash2, Plug, Braces, Cpu, KeyRound, X, Check, Info, ListChecks, Play, RefreshCw, CircleDot, AlertTriangle, Layers, Pencil } from "./icons";
 import type { RpcClient, HostEvent } from "../rpc";
 import type { ModelDescriptor, ModelTier, ProviderKind, ProviderSummary } from "@arc/host/protocol";
@@ -19,40 +19,17 @@ const TABS: { value: Tab; label: string; icon: React.ReactNode }[] = [
 export default function SettingsModal({ client, onClose, models, providers, monoLogoText, version, providerCatalog }: Props) {
   const [tab, setTab] = useState<Tab>("models");
   const logoTextUri = monoLogoText;
-  const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
-  const navRef = useRef<HTMLElement>(null);
-  const [indicator, setIndicator] = useState({ left: 0, width: 0 });
-  const setRef = useCallback((value: string) => (el: HTMLButtonElement | null) => {
-    if (el) tabRefs.current.set(value, el);
-    else tabRefs.current.delete(value);
-  }, []);
-  useEffect(() => {
-    const nav = navRef.current;
-    if (!nav) return;
-    const update = () => {
-      const el = tabRefs.current.get(tab);
-      if (!el) return;
-      const navRect = nav.getBoundingClientRect();
-      const tabRect = el.getBoundingClientRect();
-      setIndicator({ left: tabRect.left - navRect.left, width: tabRect.width });
-    };
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(nav);
-    return () => ro.disconnect();
-  }, [tab]);
   return (
     <div className="arc-modal-overlay" onClick={onClose}>
       <div className="arc-modal" onClick={(e) => e.stopPropagation()}>
         <header className="arc-modal-head">
           <h2>Settings</h2>
-          <nav ref={navRef} className="arc-settings-tabs">
+          <nav className="arc-settings-tabs">
             {TABS.map((t) => (
-              <button key={t.value} ref={setRef(t.value)} className={`arc-tab ${tab === t.value ? "is-active" : ""}`} onClick={() => setTab(t.value)}>
+              <button key={t.value} className={`arc-tab ${tab === t.value ? "is-active" : ""}`} onClick={() => setTab(t.value)}>
                 {t.icon}<span>{t.label}</span>
               </button>
             ))}
-            {indicator.width > 0 && <div className="arc-tab-indicator" style={{ transform: `translateX(${indicator.left}px)`, width: `${indicator.width}px` }} />}
           </nav>
           <button className="arc-iconbtn" onClick={onClose} title="Close"><X size={16} /></button>
         </header>
@@ -344,14 +321,14 @@ function ProvidersTab({ client, providers, models, providerCatalog }: { client: 
   return (
     <Section
       title="Providers"
-      description="API keys are stored in securely."
+      description="API keys are stored securely."
       action={!adding && <button className="arc-btn" onClick={() => setAdding(true)}><Plus size={14} /> Add provider</button>}
     >
       {adding && (
         <div className="arc-form">
           <div className="arc-form-row">
             <div style={{ position: "relative", minWidth: 220 }}>
-              <input className="arc-input" placeholder="Search providers…" value={providerSearch} onChange={(e) => setProviderSearch(e.target.value)} autoFocus style={{ width: "100%" }} />
+              <input className="arc-input" placeholder="search providers…" value={providerSearch} onChange={(e) => setProviderSearch(e.target.value)} autoFocus style={{ width: "100%" }} />
               {providerSearch && filteredProviders.length > 0 && (
                 <ul style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, maxHeight: 200, overflowY: "auto", background: "var(--vscode-dropdown-background, var(--vscode-input-background, #2d2d2d))", border: "1px solid var(--vscode-input-border, var(--arc-line))", borderRadius: 6, marginTop: 2, padding: "4px 0", listStyle: "none", margin: "2px 0 0 0" }}>
                   {filteredProviders.slice(0, 30).map((p) => (
@@ -361,12 +338,12 @@ function ProvidersTab({ client, providers, models, providerCatalog }: { client: 
                 </ul>
               )}
             </div>
-            <input className="arc-input" placeholder={spec?.label ?? "Label"} value={label} onChange={(e) => setLabel(e.target.value)} />
+            <input className="arc-input" placeholder={spec?.label ?? "label"} value={label} onChange={(e) => setLabel(e.target.value)} />
           </div>
           <input className="arc-input" placeholder={spec?.defaultBaseUrl || "https://…"} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
-          <input className="arc-input" type="password" placeholder="API key" value={apiKey} onChange={(e) => setApiKey(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
+          <input className="arc-input" type="password" placeholder="api key" value={apiKey} onChange={(e) => setApiKey(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
           {(baseUrl.startsWith("http://127.") || baseUrl.startsWith("http://localhost")) && (
-            <input className="arc-input" placeholder="Start command (runs from ~)" value={startCommand} onChange={(e) => setStartCommand(e.target.value)} />
+            <input className="arc-input" placeholder="start command (runs from ~)" value={startCommand} onChange={(e) => setStartCommand(e.target.value)} />
           )}
           <div className="arc-form-actions">
             <button className="arc-btn" onClick={add}><Check size={14} /> Save</button>
@@ -453,12 +430,12 @@ function EditProviderForm({ client, provider, onDone }: { client: RpcClient; pro
   return (
     <div className="arc-form" style={{ width: "100%" }}>
       <div className="arc-form-row">
-        <input className="arc-input" placeholder="Label" value={label} onChange={(e) => setLabel(e.target.value)} autoFocus />
+        <input className="arc-input" placeholder="label" value={label} onChange={(e) => setLabel(e.target.value)} autoFocus />
       </div>
       <input className="arc-input" placeholder="https://…" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
-      <input className="arc-input" type="password" placeholder="API key (leave blank to keep current)" value={apiKey} onChange={(e) => setApiKey(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
+      <input className="arc-input" type="password" placeholder="api key (leave blank to keep current)" value={apiKey} onChange={(e) => setApiKey(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
       {isLocal && (
-        <input className="arc-input" placeholder="Start command (runs from ~)" value={startCmd} onChange={(e) => setStartCmd(e.target.value)} />
+        <input className="arc-input" placeholder="start command (runs from ~)" value={startCmd} onChange={(e) => setStartCmd(e.target.value)} />
       )}
       <div className="arc-form-actions">
         <button className="arc-btn" onClick={save}><Check size={14} /> Save</button>
@@ -517,7 +494,7 @@ function McpTab({ client }: { client: RpcClient }) {
         {adding && (
           <div className="arc-form">
             <div className="arc-form-row">
-              <input className="arc-input" placeholder="Server name" value={name} autoFocus onChange={(e) => setName(e.target.value)} />
+              <input className="arc-input" placeholder="server name" value={name} autoFocus onChange={(e) => setName(e.target.value)} />
               <select className="arc-input" value={transportType} onChange={(e) => setTransportType(e.target.value as "stdio" | "http")}>
                 <option value="stdio">stdio</option>
                 <option value="http">http</option>
@@ -627,7 +604,7 @@ function McpMarketplace({ client, existingServers }: { client: RpcClient; existi
   return (
     <Section title="Marketplace" description="Browse the official MCP registry for ready-to-install servers.">
       <div style={{ marginBottom: 12 }}>
-        <input className="arc-input arc-input-grow" placeholder="Filter by name…" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && search()} />
+        <input className="arc-input arc-input-grow" placeholder="filter by name…" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && search()} />
       </div>
       {loading && <p className="arc-empty">Loading marketplace…</p>}
       {error && <p className="arc-empty" style={{ color: "var(--arc-err)" }}>{error}</p>}
@@ -672,6 +649,13 @@ function GeneralTab({ client }: { client: RpcClient }) {
   const [proxyShellUrl, setProxyShellUrl] = useState("");
   const [verifyMode, setVerifyMode] = useState<"none" | "default" | "custom">("default");
   const [verifyMaxRetries, setVerifyMaxRetries] = useState(3);
+  const [attentionEnabled, setAttentionEnabled] = useState(false);
+  const [attentionVolume, setAttentionVolume] = useState(70);
+  const [attentionCompletion, setAttentionCompletion] = useState(true);
+  const [attentionApproval, setAttentionApproval] = useState(true);
+  const [attentionError, setAttentionError] = useState(true);
+  const [polishLevel, setPolishLevel] = useState<"off" | "basic" | "polish">("off");
+  const [qualityBias, setQualityBias] = useState<"off" | "prefer-cheap" | "prefer-powerful">("off");
   useEffect(() => {
     void client.request("arc.compaction.strategy").then((v) => setCompactionStrategy((v as typeof compactionStrategy) ?? "model-aware"));
     void client.request("arc.compaction.safetyMargin").then((v) => setSafetyMargin(typeof v === "number" ? v : 0.15));
@@ -683,6 +667,13 @@ function GeneralTab({ client }: { client: RpcClient }) {
     void client.request("arc.proxy.shellUrl").then((v) => setProxyShellUrl(typeof v === "string" ? v : ""));
     void client.request("arc.verify.mode").then((v) => setVerifyMode(v === "none" || v === "custom" ? v : "default"));
     void client.request("arc.verify.customMaxRetries").then((v) => setVerifyMaxRetries(typeof v === "number" ? v : 3));
+    void client.request("arc.attention.enabled").then((v) => setAttentionEnabled(v === true));
+    void client.request("arc.attention.volume").then((v) => setAttentionVolume(typeof v === "number" ? v : 70));
+    void client.request("arc.attention.completion").then((v) => setAttentionCompletion(v !== false));
+    void client.request("arc.attention.approval").then((v) => setAttentionApproval(v !== false));
+    void client.request("arc.attention.error").then((v) => setAttentionError(v !== false));
+    void client.request("arc.promptPolish").then((v) => setPolishLevel(v === "basic" || v === "polish" ? v : "off"));
+    void client.request("arc.router.qualityBias").then((v) => setQualityBias(v === "prefer-cheap" || v === "prefer-powerful" ? v : "off"));
   }, [client]);
   return (
     <>
@@ -695,7 +686,7 @@ function GeneralTab({ client }: { client: RpcClient }) {
             <select className="arc-input arc-input-sm" value={verifyMode} onChange={(e) => { const v = e.target.value as typeof verifyMode; setVerifyMode(v); client.send({ type: "config/set", key: "arc.verify.mode", value: v }); }}>
               <option value="none">off</option>
               <option value="default">default</option>
-              <option value="custom">custom...</option>
+              <option value="custom">custom…</option>
             </select>
           </div></li>
           {verifyMode === "custom" && (
@@ -729,13 +720,13 @@ function GeneralTab({ client }: { client: RpcClient }) {
         <ul className="arc-rows">
           <li className="arc-row"><div className="arc-row-main">
             <span className="arc-row-label">URL</span>
-            <span className="arc-row-meta">Fallback for all categories</span>
+            <span className="arc-row-meta">fallback for all categories</span>
             <span className="arc-spacer" />
             <input className="arc-input arc-input-sm" type="text" placeholder="http://proxy:8080" value={proxyUrl} onChange={(e) => setProxyUrl(e.target.value)} onBlur={() => client.send({ type: "config/set", key: "arc.proxy.url", value: proxyUrl.trim() })} style={{ width: 280 }} />
           </div></li>
           <li className="arc-row"><div className="arc-row-main">
             <span className="arc-row-label">Provider</span>
-            <span className="arc-row-meta">Model provider API calls (OpenAI, Anthropic, Ollama, etc.)</span>
+            <span className="arc-row-meta">model provider API calls (OpenAI, Anthropic, Ollama, etc.)</span>
             <span className="arc-spacer" />
             <input className="arc-input arc-input-sm" type="text" placeholder="http://proxy:8080" value={proxyProviderUrl} onChange={(e) => setProxyProviderUrl(e.target.value)} onBlur={() => client.send({ type: "config/set", key: "arc.proxy.providerUrl", value: proxyProviderUrl.trim() })} style={{ width: 280 }} />
           </div></li>
@@ -747,7 +738,7 @@ function GeneralTab({ client }: { client: RpcClient }) {
           </div></li>
           <li className="arc-row"><div className="arc-row-main">
             <span className="arc-row-label">Shell</span>
-            <span className="arc-row-meta">Sets HTTP_PROXY / HTTPS_PROXY env vars on shell commands</span>
+            <span className="arc-row-meta">sets HTTP_PROXY / HTTPS_PROXY env vars on shell commands</span>
             <span className="arc-spacer" />
             <input className="arc-input arc-input-sm" type="text" placeholder="http://proxy:8080" value={proxyShellUrl} onChange={(e) => setProxyShellUrl(e.target.value)} onBlur={() => client.send({ type: "config/set", key: "arc.proxy.shellUrl", value: proxyShellUrl.trim() })} style={{ width: 280 }} />
           </div></li>
@@ -769,7 +760,7 @@ function GeneralTab({ client }: { client: RpcClient }) {
         <ul className="arc-rows">
           <li className="arc-row"><div className="arc-row-main">
             <span className="arc-row-label">Spoof RPC</span>
-            <span className="arc-row-meta">Report agent file edits to Discord extensions</span>
+            <span className="arc-row-meta">report agent file edits to Discord extensions</span>
             <span className="arc-spacer" />
             <Toggle checked={spoofRpc} onChange={(v) => { setSpoofRpc(v); client.send({ type: "config/set", key: "arc.discord.spoofRpc", value: v }); }} />
           </div></li>
@@ -777,6 +768,64 @@ function GeneralTab({ client }: { client: RpcClient }) {
       </Section>
       <Section title="Images" description="How attached images are handled when the active model is not multimodal.">
         <ImageProcessingSection client={client} />
+      </Section>
+      <Section title="Composer" description="Prompt handling before sending.">
+        <ul className="arc-rows">
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Prompt polish</span>
+            <span className="arc-row-meta">rewrite prompts before sending</span>
+            <span className="arc-spacer" />
+            <select className="arc-input arc-input-sm" value={polishLevel} onChange={(e) => { const v = e.target.value as "off" | "basic" | "polish"; setPolishLevel(v); client.send({ type: "config/set", key: "arc.promptPolish", value: v }); }}>
+              <option value="off">off</option>
+              <option value="basic">basic</option>
+              <option value="polish">polish</option>
+            </select>
+          </div></li>
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Auto quality bias</span>
+            <span className="arc-row-meta">cost/quality tradeoff for the Auto model</span>
+            <span className="arc-spacer" />
+            <select className="arc-input arc-input-sm" value={qualityBias} onChange={(e) => { const v = e.target.value as typeof qualityBias; setQualityBias(v); client.send({ type: "config/set", key: "arc.router.qualityBias", value: v }); }}>
+              <option value="off">off</option>
+              <option value="prefer-cheap">prefer cheap</option>
+              <option value="prefer-powerful">prefer powerful</option>
+            </select>
+          </div></li>
+        </ul>
+      </Section>
+      <Section title="Sounds" description="Optional attention sounds for agent activity (pure WebAudio, no assets).">
+        <ul className="arc-rows">
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Enabled</span>
+            <span className="arc-row-meta">play sounds on agent events</span>
+            <span className="arc-spacer" />
+            <Toggle checked={attentionEnabled} onChange={(v) => { setAttentionEnabled(v); client.send({ type: "config/set", key: "arc.attention.enabled", value: v }); }} />
+          </div></li>
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Volume</span>
+            <span className="arc-row-meta">beep loudness (0–100)</span>
+            <span className="arc-spacer" />
+            <input className="arc-input arc-input-sm" type="number" min={0} max={100} step={5} value={attentionVolume} onChange={(e) => setAttentionVolume(Number(e.target.value))} onBlur={() => client.send({ type: "config/set", key: "arc.attention.volume", value: attentionVolume })} style={{ width: 64 }} />
+          </div></li>
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Task complete</span>
+            <span className="arc-row-meta">when a turn finishes</span>
+            <span className="arc-spacer" />
+            <Toggle checked={attentionCompletion} onChange={(v) => { setAttentionCompletion(v); client.send({ type: "config/set", key: "arc.attention.completion", value: v }); }} />
+          </div></li>
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Approval needed</span>
+            <span className="arc-row-meta">when Arc asks for permission</span>
+            <span className="arc-spacer" />
+            <Toggle checked={attentionApproval} onChange={(v) => { setAttentionApproval(v); client.send({ type: "config/set", key: "arc.attention.approval", value: v }); }} />
+          </div></li>
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Errors</span>
+            <span className="arc-row-meta">when a turn fails</span>
+            <span className="arc-spacer" />
+            <Toggle checked={attentionError} onChange={(v) => { setAttentionError(v); client.send({ type: "config/set", key: "arc.attention.error", value: v }); }} />
+          </div></li>
+        </ul>
       </Section>
     </>
   );
@@ -815,7 +864,7 @@ function SearchTab({ client }: { client: RpcClient }) {
       <ul className="arc-rows">
         <li className="arc-row"><div className="arc-row-main">
           <span className="arc-row-label">Enable</span>
-          <span className="arc-row-meta">Index the workspace on activation and keep it in sync</span>
+            <span className="arc-row-meta">index the workspace on activation and keep it in sync</span>
           <span className="arc-spacer" />
           <Toggle checked={searchEnabled} onChange={(v) => { setSearchEnabled(v); client.send({ type: "config/set", key: "arc.search.enabled", value: v }); }} />
         </div></li>
@@ -829,7 +878,7 @@ function SearchTab({ client }: { client: RpcClient }) {
         </div></li>
         <li className="arc-row"><div className="arc-row-main">
           <span className="arc-row-label">Automatic reindexing</span>
-          <span className="arc-row-meta">Periodically rebuild the full index, in addition to live file watching</span>
+            <span className="arc-row-meta">periodically rebuild the full index, in addition to live file watching</span>
           <span className="arc-spacer" />
           <select className="arc-input arc-input-sm" value={autoReindex} onChange={(e) => { const v = e.target.value as typeof autoReindex; setAutoReindex(v); client.send({ type: "config/set", key: "arc.search.autoReindex", value: v }); }}>
             <option value="off">off</option>
@@ -991,7 +1040,7 @@ function CustomTab({ client }: { client: RpcClient }) {
         <ul className="arc-rows">
           <li className="arc-row"><div className="arc-row-main">
             <span className="arc-row-label">Pride logo</span>
-            <span className="arc-row-meta">When to show the pride variant in the welcome text and sidebar</span>
+            <span className="arc-row-meta">when to show the pride variant in the welcome text and sidebar</span>
             <span className="arc-spacer" />
             <select className="arc-input arc-input-sm" value={prideLogo} onChange={(e) => { const v = e.target.value as typeof prideLogo; setPrideLogo(v); client.send({ type: "config/set", key: "arc.appearance.prideLogo", value: v }); }}>
               <option value="june">june</option>
@@ -1001,7 +1050,7 @@ function CustomTab({ client }: { client: RpcClient }) {
           </div></li>
           <li className="arc-row"><div className="arc-row-main">
             <span className="arc-row-label">Tool call tree</span>
-            <span className="arc-row-meta">How tool call trees expand and collapse</span>
+            <span className="arc-row-meta">how tool call trees expand and collapse</span>
             <span className="arc-spacer" />
             <select className="arc-input arc-input-sm" value={toolTree} onChange={(e) => { const v = e.target.value as typeof toolTree; setToolTree(v); client.send({ type: "config/set", key: "arc.appearance.toolTree", value: v }); }}>
               <option value="auto">auto</option>

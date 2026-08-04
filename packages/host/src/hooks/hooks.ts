@@ -15,7 +15,8 @@ export type HookEvent =
   | "pre.handoff"
   | "notification"
   | "stop"
-  | "subagent.spawn";
+  | "subagent.spawn"
+  | "instructions.loaded";
 export interface HookMatcher {
   tool?: string;
   mode?: string;
@@ -62,7 +63,7 @@ export interface HookEventContext {
   sandboxProfile?: SandboxProfile;
 }
 export interface HookDecision {
-  decision: "allow" | "deny" | "ask";
+  decision: "allow" | "deny" | "ask" | "block";
   modifiedArgs?: Record<string, unknown>;
   message?: string;
   contextMessage?: string;
@@ -130,7 +131,7 @@ export async function runHooks(ctx: HookEventContext): Promise<HookDecision[]> {
       if (!trimmed) continue;
       try {
         const d = JSON.parse(trimmed) as HookDecision;
-        if (d.decision === "deny" || d.decision === "ask") {
+        if (d.decision === "deny" || d.decision === "ask" || d.decision === "block") {
           decisions.push(d);
           return decisions;
         }
@@ -149,7 +150,7 @@ export async function runHooks(ctx: HookEventContext): Promise<HookDecision[]> {
   }
   return decisions;
 }
-const SECRET_PATTERNS = [
+export const SECRET_PATTERNS = [
   { pattern: /-----BEGIN\s+(?:RSA|EC|DSA|OPENSSH|PGP)?\s*PRIVATE\s+KEY-----/i, label: "private key" },
   { pattern: /\bAKIA[0-9A-Z]{16}\b/, label: "AWS access key" },
   { pattern: /(?:sk|secret|password|token|apikey|api_key)\s*[:=]\s*['"][^'"]{8,}['"]/i, label: "hardcoded secret" },

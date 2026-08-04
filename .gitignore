@@ -10,5 +10,7 @@ coverage/
 .eslintcache
 .env.*
 playground/.arc/mcp.json
+/router/
 scripts/
 temp/
+video/

@@ -66,17 +66,18 @@ export function decideCompaction(
 export function compact(messages: ChatMessage[], cfg: CompactionConfig = defaultCompactionConfig, summarize: (msgs: ChatMessage[]) => string): ChatMessage[] {
   if (messages.length <= cfg.keepTail + 1) return messages;
   const sys = messages.filter((m) => m.role === "system");
-  const tail = messages.slice(-cfg.keepTail);
-  const middle = messages.slice(sys.length, messages.length - cfg.keepTail);
-  if (middle.length === 0) return messages;
-  const summary = summarize(middle);
+  const { middle, tail } = splitTail(messages, cfg.keepTail);
+  const preserved = middle.filter((m) => m.noCompact);
+  const compactable = middle.filter((m) => !m.noCompact);
+  if (compactable.length === 0) return messages;
+  const summary = summarize(compactable);
   const summaryMsg: ChatMessage = {
     id: `summary-${Date.now()}`,
     role: "system",
-    content: `## Compaction summary of ${middle.length} earlier messages\n\n${summary}`,
+    content: `## Compaction summary of ${compactable.length} earlier messages\n\n${summary}`,
     ts: Date.now(),
   };
-  return [...sys, summaryMsg, ...tail];
+  return [...sys, ...preserved, summaryMsg, ...tail];
 }
 export async function compactAsync(
   messages: ChatMessage[],
@@ -85,17 +86,26 @@ export async function compactAsync(
 ): Promise<ChatMessage[]> {
   if (messages.length <= cfg.keepTail + 1) return messages;
   const sys = messages.filter((m) => m.role === "system");
-  const tail = messages.slice(-cfg.keepTail);
-  const middle = messages.slice(sys.length, messages.length - cfg.keepTail);
-  if (middle.length === 0) return messages;
-  const summary = await summarize(middle);
+  const { middle, tail } = splitTail(messages, cfg.keepTail);
+  const preserved = middle.filter((m) => m.noCompact);
+  const compactable = middle.filter((m) => !m.noCompact);
+  if (compactable.length === 0) return messages;
+  const summary = await summarize(compactable);
   const summaryMsg: ChatMessage = {
     id: `summary-${Date.now()}`,
     role: "system",
-    content: `## Compaction summary of ${middle.length} earlier messages\n\n${summary}`,
+    content: `## Compaction summary of ${compactable.length} earlier messages\n\n${summary}`,
     ts: Date.now(),
   };
-  return [...sys, summaryMsg, ...tail];
+  return [...sys, ...preserved, summaryMsg, ...tail];
+}
+function splitTail(messages: ChatMessage[], keepTail: number): { middle: ChatMessage[]; tail: ChatMessage[] } {
+  let tailStart = Math.max(0, messages.length - keepTail);
+  while (tailStart > 0 && messages[tailStart].role === "tool") tailStart--;
+  const tail = messages.slice(tailStart);
+  const sysCount = messages.filter((m) => m.role === "system").length;
+  const middle = messages.slice(sysCount, tailStart);
+  return { middle, tail };
 }
 export function estimateTokens(messages: ChatMessage[], tools?: { description?: string; inputSchema?: unknown }[]): number {
   let chars = 0;

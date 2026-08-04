@@ -1,6 +1,6 @@
 import { AsyncEventQueue, readableToAsyncIterable } from "../util/stream.js";
 import { makeProxyDispatcher } from "../util/proxy.js";
-import { fromApiToolName, toApiToolName, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
+import { fromApiToolName, toApiToolName, sanitizeToolChains, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
 import { caps } from "./capability-tracker.js";
 import { withRetry, policyFor } from "./retry.js";
 import { readBodyLimited } from "../security/network.js";
@@ -29,7 +29,7 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
       model: remoteModel,
       stream: true,
       temperature: req.temperature ?? 0.2,
-      messages: req.messages.map((m) => toOpenAIMessage(m, wantsThink, req.provider.kind)),
+      messages: sanitizeToolChains(req.messages).map((m) => toOpenAIMessage(m, wantsThink, req.provider.kind)),
     };
     if (req.tools?.length) {
       body.tools = req.tools.map((t) => ({

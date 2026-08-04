@@ -2,14 +2,22 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getArcDir, getWorkspaceArcDir } from "../arc-dir.js";
 import type { MemoryEntry } from "./types.js";
-export async function loadMemory(workspaceRoot: string, scope: "workspace" | "global" = "workspace"): Promise<MemoryEntry[]> {
+export async function loadMemory(workspaceRoot: string, scope: "workspace" | "global" = "workspace", teamStores?: string[]): Promise<MemoryEntry[]> {
   const p = memoryPath(workspaceRoot, scope);
+  let entries: MemoryEntry[] = [];
   try {
     const raw = await fs.readFile(p, "utf-8");
-    return parseMemoryMd(raw);
+    entries = parseMemoryMd(raw);
   } catch {
-    return [];
   }
+  for (const store of teamStores ?? []) {
+    try {
+      const raw = await fs.readFile(path.resolve(store), "utf-8");
+      const extra = parseMemoryMd(raw).map((e) => ({ ...e, category: `${e.category} (team)` }));
+      entries = [...entries, ...extra];
+} catch {  }
+  }
+  return entries;
 }
 export async function addMemory(workspaceRoot: string, category: string, content: string, scope: "workspace" | "global" = "workspace"): Promise<MemoryEntry> {
   const entries = await loadMemory(workspaceRoot, scope);

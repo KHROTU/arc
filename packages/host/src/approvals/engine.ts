@@ -18,6 +18,7 @@ export function resolveApproval(
   if (category === "code.execute" || category === "subagent" || category === "mcp.configure") return "ask";
   if (category === "read" && extra?.filePath && extra.workspaceRoot && classifyWorkspacePath(extra.workspaceRoot, extra.filePath).external) return "ask";
   if ((category === "write.local" || category === "write.external") && classifyWritePath(extra?.filePath, extra?.workspaceRoot) === "write.external") return "ask";
+  if ((category === "write.local" || category === "write.external") && extra?.filePath && extra?.workspaceRoot && isProtectedConfigPath(extra.workspaceRoot, extra.filePath)) return "ask";
   if (session.autoApproveAll) return "auto";
   if (category === "mcp" && extra?.mcpServer) {
     const perServer = taskConfig.mcp.perServer[extra.mcpServer];
@@ -42,6 +43,19 @@ export function resolveApproval(
 function classifyWritePath(filePath: string | undefined, workspaceRoot: string | undefined): "write.local" | "write.external" {
   if (!filePath || !workspaceRoot) return "write.external";
   return classifyWorkspacePath(workspaceRoot, filePath).external ? "write.external" : "write.local";
+}
+const PROTECTED_CONFIG_DIRS = [".arc", ".vscode", ".cursor", ".claude"];
+const PROTECTED_CONFIG_FILES = [".arcignore", ".arcmodes", ".arcrules", ".arcrules.md", "AGENTS.md", "CLAUDE.md"];
+function isProtectedConfigPath(workspaceRoot: string, filePath: string): boolean {
+  const rel = path.relative(workspaceRoot, filePath).replace(/\\/g, "/");
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return false;
+  const parts = rel.split("/");
+  if (PROTECTED_CONFIG_DIRS.includes(parts[0])) return true;
+  const base = parts[parts.length - 1];
+  if (PROTECTED_CONFIG_FILES.includes(base)) return true;
+  if (base.startsWith(".arcrules.")) return true;
+  if (base.endsWith(".code-workspace")) return true;
+  return false;
 }
 function isSessionAllowed(session: SessionApprovals, command: string): boolean {
   const trimmed = command.trim();

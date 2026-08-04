@@ -1,9 +1,11 @@
-import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Settings, Plus, Trash2, Pencil, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search, ArrowLeft, Undo2 } from "./icons";
+import { Settings, Plus, Trash2, Pencil, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search, ArrowLeft, Undo2, X } from "./icons";
+import { TodoList, type TodoItemUI } from "./TodoList";
 import { FadeSlideIn } from "./anim";
 import ArcProcessUI, { type ProcessStep } from "./AgentProcess";
 import Composer from "./Composer";
+import { AUTO_MODEL_ID } from "./ModelPicker";
 import type { Effort } from "./EffortPicker";
 import type { ModelDescriptor, TurnUsage, ChatMessage, ProviderSummary, ProviderKind } from "@arc/host/protocol";
 import { useArcLogo, swapOnError } from "../hooks/useArcLogo";
@@ -57,6 +59,25 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [steps, setSteps] = useState<ProcessStep[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState<{ id: string; text: string; ts?: number } | null>(null);
+  const attentionRef = useRef({ enabled: false, volume: 70, completion: true, approval: true, error: true });
+  const beep = useCallback((freq: number, dur = 0.12) => {
+    const a = attentionRef.current;
+    if (!a.enabled) return;
+    try {
+      const Ctx = (window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext
+        ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.07 * (a.volume / 70), ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + dur);
+} catch {  }
+  }, []);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showSidebarList, setShowSidebarList] = useState(false);
   const [waiting, setWaiting] = useState(false);
@@ -74,11 +95,18 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [lastTurnError, setLastTurnError] = useState<{ message: string; code?: string } | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showUpdate, setShowUpdate] = useState<{ version: string; url: string } | null>(null);
   const [showSearch, setShowSearch] = useState(false);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
-  const [approval, setApproval] = useState<{ id: string; description: string; kind: string; command?: string } | null>(null);
+  const [approvalQueue, setApprovalQueue] = useState<{ id: string; description: string; kind: string; command?: string }[]>([]);
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
   const [prefillText, setPrefillText] = useState<string | null>(null);
+  const [polishLevel, setPolishLevel] = useState<"off" | "basic" | "polish">("off");
+  const [polishing, setPolishing] = useState(false);
+  const [polishPending, setPolishPending] = useState<{ original: string; polished: string } | null>(null);
+  const [routing, setRouting] = useState(false);
+  const [routePending, setRoutePending] = useState<{ original: string; modelId: string; modelLabel: string } | null>(null);
+  const routeRef = useRef<{ text: string; attachments?: { uri: string; preview?: string }[]; images?: string[] } | null>(null);
   const [autoApproveActive, setAutoApproveActive] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState<Effort>("high");
   const [resolvedDiffs, setResolvedDiffs] = useState<Record<string, "accepted" | "rejected">>({});
@@ -87,11 +115,29 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const rafRef = useRef<number | null>(null);
   const sessionIdRef = useRef<string>("");
   const openedStreamingDiffRef = useRef<string>("");
+  const stopSeqRef = useRef(0);
   const cancelStreamFlush = () => {
     if (rafRef.current != null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
     pendingTextRef.current = null;
   };
   useEffect(() => {
+    void Promise.all([
+      client.request<boolean>("arc.attention.enabled"),
+      client.request<number>("arc.attention.volume"),
+      client.request<boolean>("arc.attention.completion"),
+      client.request<boolean>("arc.attention.approval"),
+      client.request<boolean>("arc.attention.error"),
+      client.request<string>("arc.promptPolish"),
+    ]).then(([enabled, volume, completion, approval, error, promptPolish]) => {
+      attentionRef.current = {
+        enabled: enabled === true,
+        volume: typeof volume === "number" ? volume : 70,
+        completion: completion !== false,
+        approval: approval !== false,
+        error: error !== false,
+      };
+      setPolishLevel(promptPolish === "basic" || promptPolish === "polish" ? promptPolish : "off");
+    });
     const off = client.on((e: any) => {
       switch (e.type) {
         case "session/init":
@@ -117,6 +163,9 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           setStreaming(null);
           setLastTurnError(null);
           setPendingAttachment(null);
+          setPolishing(false);
+          setPolishPending(null);
+          setApprovalQueue([]);
           break;
         case "session/assistantText":
           if (e.sessionId && sessionIdRef.current && e.sessionId !== sessionIdRef.current) break;
@@ -182,10 +231,11 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           if (e.loadComposer) setPrefillText(e.loadComposer);
           break;
         case "session/turnStart":
+          stopSeqRef.current++;
           openedStreamingDiffRef.current = "";
           if (e.sessionId && sessionIdRef.current !== e.sessionId) sessionIdRef.current = e.sessionId;
           setStreaming({ id: "pending", text: "" }); setShowOnboarding(false); setLastTurnError(null); break;
-        case "session/turnEnd": cancelStreamFlush(); setStreaming(null); break;
+        case "session/turnEnd": stopSeqRef.current++; if (attentionRef.current.completion) beep(880); cancelStreamFlush(); setStreaming(null); break;
         case "session/clarification": setClarification({ id: e.id, question: e.question, options: e.options }); break;
         case "session/guidance":
           break;
@@ -199,12 +249,42 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         case "model/list": setModels(e.models); setCurrentModel(e.currentModelId); break;
         case "provider/list": setProviders(e.providers); break;
         case "ui/showSettings": setShowSettings(true); break;
+        case "ui/showUpdate": setShowUpdate({ version: e.version, url: e.url }); break;
         case "ui/showSearch": setShowSearch(true); break;
         case "autoApproveState": setAutoApproveActive(e.active); break;
         case "approval/request":
-          setApproval({ id: e.id, description: e.description, kind: e.kind, command: e.command });
+          if (attentionRef.current.approval) beep(440, 0.2);
+          setApprovalQueue((q) => (q.some((a) => a.id === e.id) ? q : [...q.slice(-19), { id: e.id, description: e.description, kind: e.kind, command: e.command }]));
+          break;
+        case "chat/polishResult":
+          setPolishing(false);
+          setPolishPending({ original: e.original, polished: e.polished });
+          break;
+        case "chat/polishFailed":
+          setPolishing(false);
+          setPolishPending({ original: e.original, polished: e.original });
+          break;
+        case "chat/routeResult":
+          setRouting(false);
+          setRoutePending({
+            original: e.original,
+            modelId: e.modelId,
+            modelLabel: e.modelLabel || models.find((m) => m.id === e.modelId)?.label || e.modelId,
+          });
+          break;
+        case "chat/routeFailed":
+          {
+            setRouting(false);
+            const routed = routeRef.current;
+            routeRef.current = null;
+            if (routed) send(routed.text, routed.attachments, routed.images);
+          }
+          break;
+        case "config/changed":
+          if (e.key === "arc.promptPolish") setPolishLevel(e.value === "basic" || e.value === "polish" ? e.value : "off");
           break;
         case "error":
+          if (attentionRef.current.error) beep(220, 0.25);
           setLastTurnError({ message: e.message, code: e.code });
           break;
       }
@@ -230,11 +310,16 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     const el = transcriptRef.current;
     if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
   }, [steps, streaming, clarification, messages]);
-  const send = (text: string, attachments?: { uri: string; preview?: string }[], images?: string[]) => {
+  const send = (text: string, attachments?: { uri: string; preview?: string }[], images?: string[], modelId?: string) => {
     if (streaming) {
       setQueuedMessage(text);
       return;
     }
+    setRouting(false);
+    setRoutePending(null);
+    routeRef.current = null;
+    setPolishing(false);
+    setPolishPending(null);
     setShowOnboarding(false);
     setHasEverSent(true);
     setLastTurnError(null);
@@ -242,9 +327,50 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     setMessages((prev) => prev.find((m) => m.content === text && m.role === "user")
       ? prev
       : [...prev, { id: `local-${Date.now()}`, role: "user", content: text, ts: Date.now() }]);
-    client.send({ type: "chat/send", text, attachments, images });
+    client.send({ type: "chat/send", text, attachments, images, ...(modelId ? { modelId } : {}) });
   };
-  const stop = () => client.send({ type: "chat/stop" });
+  const route = (text: string, attachments?: { uri: string; preview?: string }[], images?: string[]) => {
+    routeRef.current = { text, attachments, images };
+    setPolishing(false);
+    setPolishPending(null);
+    setShowOnboarding(false);
+    setHasEverSent(true);
+    setLastTurnError(null);
+    setPendingAttachment(null);
+    setRouting(true);
+    client.send({ type: "chat/route", text, attachments, images });
+  };
+  const handleSend = (text: string, attachments?: { uri: string; preview?: string }[], images?: string[]) => {
+    if (currentModel === AUTO_MODEL_ID) {
+      route(text, attachments, images);
+      return;
+    }
+    send(text, attachments, images);
+  };
+  const acceptRouted = () => {
+    const r = routeRef.current;
+    const p = routePending;
+    setRoutePending(null);
+    setRouting(false);
+    routeRef.current = null;
+    if (r) send(r.text, r.attachments, r.images, p?.modelId);
+  };
+  const rejectRouted = () => {
+    setRoutePending(null);
+    setRouting(false);
+    routeRef.current = null;
+  };
+  const polish = (text: string) => {
+    setPolishing(true);
+    client.send({ type: "chat/polish", text });
+  };
+  const stop = () => {
+    const seq = ++stopSeqRef.current;
+    client.send({ type: "chat/stop" });
+    window.setTimeout(() => {
+      if (stopSeqRef.current === seq) setStreaming((s) => (s ? null : s));
+    }, 5000);
+  };
   const guide = (text: string) => client.send({ type: "chat/guidance", text });
   const cancelQueue = () => setQueuedMessage(null);
   useEffect(() => {
@@ -260,8 +386,19 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const deleteChat = (id: string) => client.send({ type: "chat/delete", chatId: id });
   const compact = () => client.send({ type: "chat/compact" });
   const openSettings = () => setShowSettings(true);
+  const closeSettings = () => {
+    setShowSettings(false);
+    void client.request<string>("arc.promptPolish").then((v) => setPolishLevel(v === "basic" || v === "polish" ? v : "off"));
+  };
   const openFile = (path: string) => { client.send({ type: "ui/openFile", path }); };
-  const selectModel = (id: string) => client.send({ type: "model/select", modelId: id });
+  const selectModel = (id: string) => {
+    setCurrentModel(id);
+    setRoutePending(null);
+    setRouting(false);
+    routeRef.current = null;
+    if (id === AUTO_MODEL_ID) return;
+    client.send({ type: "model/select", modelId: id });
+  };
   const selectEffort = (e: Effort) => {
     setReasoningEffort(e);
     client.send({ type: "config/set", key: "arc.reasoning.effort", value: e });
@@ -271,10 +408,12 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     client.send({ type: "mode/select", mode });
   };
   const toggleAutoApprove = () => client.send({ type: "autoApprove/toggle" });
+  const approval = approvalQueue[0] ?? null;
   const respondApproval = (allowed: boolean, rememberCommand?: string, rememberPrefix?: string) => {
-    if (!approval) return;
-    client.send({ type: "approval/response", id: approval.id, allowed, ...(rememberCommand ? { rememberCommand } : {}), ...(rememberPrefix ? { rememberPrefix } : {}) });
-    setApproval(null);
+    const current = approvalQueue[0];
+    if (!current) return;
+    client.send({ type: "approval/response", id: current.id, allowed, ...(rememberCommand ? { rememberCommand } : {}), ...(rememberPrefix ? { rememberPrefix } : {}) });
+    setApprovalQueue((q) => q.slice(1));
   };
   const getApprovalCommand = (desc: string): string | undefined => {
     if (approval?.command) return approval.command;
@@ -408,6 +547,24 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     }
     return null;
   }, [steps]);
+  const [todosOpen, setTodosOpen] = useState(true);
+  const [todosVisible, setTodosVisible] = useState(false);
+  const latestTodosSig = useRef<string | null>(null);
+  useEffect(() => {
+    if (!latestTodos?.length) return;
+    const sig = JSON.stringify(latestTodos);
+    if (latestTodosSig.current !== sig) {
+      latestTodosSig.current = sig;
+      setTodosVisible(true);
+      setTodosOpen(true);
+    }
+  }, [latestTodos]);
+  useEffect(() => {
+    if (variant !== "sidebar" || streaming || !latestTodos?.length) return;
+    const allDone = (items: TodoItemUI[]): boolean =>
+      items.every((t) => (t.state === "done" || t.state === "skipped") && (!t.children?.length || allDone(t.children)));
+    if (allDone(latestTodos as TodoItemUI[])) setTodosVisible(false);
+  }, [variant, streaming, latestTodos]);
   const latestStreamingDiff = useMemo(() => {
     for (let i = steps.length - 1; i >= 0; i--) {
       const step = steps[i];
@@ -451,7 +608,6 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
               renaming={renaming}
               setRenaming={setRenaming}
               onCommitRename={(id, value) => { renameChat(id, value); setRenaming(null); }}
-              todos={latestTodos as any}
             />
           </div>
         </div>
@@ -574,7 +730,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
               <div className="arc-approval-row">
                 <span className="arc-approval-dot" />
                 <span className="arc-approval-label">Shell command</span>
-                <span className="arc-approval-meta">needs approval</span>
+                <span className="arc-approval-meta">needs approval{approvalQueue.length > 1 ? ` · ${approvalQueue.length - 1} more queued` : ""}</span>
               </div>
               <div className="arc-approval-q">{approval.description.split("\n\n")[0]}</div>
               {approval.description.includes("\n\n") && (
@@ -599,7 +755,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           <footer className="arc-footer">
             <Composer
               key={activeId}
-              onSend={send}
+              onSend={handleSend}
               onStop={stop}
               onGuidance={guide}
               streaming={!!streaming}
@@ -607,7 +763,20 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
               queuedText={queuedMessage}
               onCancelQueue={cancelQueue}
               prefillText={prefillText}
-              placeholder={currentModelLabel ? `Ask ${currentModelLabel}` : undefined}
+              todos={variant === "sidebar" && todosVisible ? (latestTodos as TodoItemUI[] | null) : null}
+              todosOpen={todosOpen}
+              onToggleTodos={() => setTodosOpen((o) => !o)}
+              polishing={polishing}
+              polishPending={polishPending}
+              onRejectPolished={() => setPolishPending(null)}
+              polishLevel={polishLevel}
+              onPolish={polish}
+              autoMode={currentModel === AUTO_MODEL_ID}
+              routing={routing}
+              routePending={routePending ? { modelLabel: routePending.modelLabel } : null}
+              onAcceptRouted={acceptRouted}
+              onRejectRouted={rejectRouted}
+              placeholder={currentModel === AUTO_MODEL_ID ? "Ask anything" : (currentModelLabel ? `Ask ${currentModelLabel}` : undefined)}
               variant={variant}
               models={models}
               currentModelId={currentModel}
@@ -630,11 +799,31 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           />
         </Suspense>
       )}
+      {showUpdate && (
+        <div className="arc-modal-overlay" onClick={() => setShowUpdate(null)}>
+          <div className="arc-modal" onClick={(e) => e.stopPropagation()}>
+            <header className="arc-modal-head">
+              <h2>Arc has been updated</h2>
+              <button className="arc-iconbtn" onClick={() => setShowUpdate(null)} title="Close"><X size={16} /></button>
+            </header>
+            <main className="arc-modal-body">
+              <div className="arc-settings-inner">
+                <div className="arc-update">
+                  <p>Arc {showUpdate.version} is here. See what's new in this release.</p>
+                  <button className="arc-update-cta" onClick={() => client.send({ type: "ui/openExternal", url: showUpdate.url })}>
+                    Release notes
+                  </button>
+                </div>
+              </div>
+            </main>
+          </div>
+        </div>
+      )}
       {showSettings && (
         <Suspense fallback={null}>
           <SettingsModal
             client={client}
-            onClose={() => setShowSettings(false)}
+            onClose={closeSettings}
             models={models}
             providers={providers}
             monoLogoText={monoLogoText}
@@ -749,7 +938,7 @@ function ChatList({
   renaming: { id: string; value: string } | null;
   setRenaming: (r: { id: string; value: string } | null) => void;
   onCommitRename: (id: string, value: string) => void;
-  todos: { id: string; text: string; state: "pending" | "in_progress" | "done" | "skipped" }[] | null;
+  todos?: { id: string; text: string; state: "pending" | "in_progress" | "done" | "skipped" }[] | null;
 }) {
   return (
     <aside className="arc-chatlist">
@@ -797,22 +986,4 @@ function ChatList({
       )}
     </aside>
   );
-}
-type TodoItemUI = { id: string; text: string; state: string; children?: TodoItemUI[] };
-function TodoList({ items, level }: { items: TodoItemUI[]; level: number }) {
-  return (
-    <ul className="arc-todo-sidebar-list" style={level > 0 ? { marginLeft: 12, marginTop: 2, borderLeft: "1px solid var(--arc-line-faint)", paddingLeft: 8 } : {}}>
-      {items.map((t) => (
-        <li key={t.id}>
-          <div className={`arc-todo-sidebar-item arc-todo-sidebar-item-${t.state}`}>
-            <span className="arc-todo-sidebar-mark">
-              {t.state === "done" ? "✓" : t.state === "in_progress" ? "●" : t.state === "failed" ? "✗" : t.state === "blocked" ? "⊘" : "○"}
-            </span>
-            <span className="arc-todo-sidebar-text">{t.text}</span>
-          </div>
-          {t.children && t.children.length > 0 && <TodoList items={t.children} level={level + 1} />}
-        </li>
-      ))}
-    </ul>
-  );
-}
+}

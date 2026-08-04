@@ -129,6 +129,7 @@ export interface ToolContext {
   fileContextTracker?: FileContextTracker;
   executeNotebookCell?: (path: string, cellIndex: number) => Promise<{ ok: boolean; output: string; images?: string[] }>;
   allowExternalPath?: boolean;
+  teamMemoryStores?: string[];
 }
 export interface ToolResult {
   ok: boolean;
@@ -200,17 +201,20 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       }
       const offset = args.offset ? Number(args.offset) : undefined;
       const limit = args.limit ? Number(args.limit) : undefined;
-      const body = await ed.read(String(args.path), { offset, limit });
-      return { ok: true, output: body, filePath: String(args.path), touchedFiles: [String(args.path)] };
+      if (typeof args.path !== "string") return { ok: false, output: "file.read requires a string `path` argument." };
+      const body = await ed.read(args.path, { offset, limit });
+      return { ok: true, output: body, filePath: args.path, touchedFiles: [args.path] };
     },
   },
   "file.edit": {
     description: "Apply an edit. PREFER passing a SEARCH/REPLACE block in `search`:\n<<<<<<< SEARCH\nexact text\n=======\nreplacement\n>>>>>>> REPLACE\nFallback args: { path, search, replace, replaceAll?, runAfter? }",
     fn: async (args, ctx) => {
+      if (typeof args.path !== "string") return { ok: false, output: "file.edit requires a string `path` argument." };
+      if (typeof args.search !== "string") return { ok: false, output: "file.edit requires a string `search` argument." };
       const ed = new FileEditor(ctx.root, !!ctx.allowExternalPath);
-      const filePath = String(args.path);
+      const filePath = args.path;
       const replace = String(args.replace);
-      const r = await ed.apply(filePath, String(args.search), replace, {
+      const r = await ed.apply(filePath, args.search, replace, {
         replaceAll: !!args.replaceAll,
         validate: async (content) => {
           await enforcePreWrite(filePath, content, ctx);
@@ -237,24 +241,28 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
   "file.write": {
     description: "Write a new file (or overwrite). Args: { path, content, runAfter? }",
     fn: async (args, ctx) => {
+      if (typeof args.path !== "string") return { ok: false, output: "file.write requires a string `path` argument." };
+      if (typeof args.content !== "string") return { ok: false, output: "file.write requires a string `content` argument." };
       const ed = new FileEditor(ctx.root, !!ctx.allowExternalPath);
-      const filePath = String(args.path);
-      const content = String(args.content);
+      const filePath = args.path;
+      const content = args.content;
       const r = await ed.apply(filePath, "", content, {
         validate: async (next) => {
           await enforcePreWrite(filePath, next, ctx);
         },
       });
       const ra = r.ok ? await runAfterCmd(args.runAfter ? String(args.runAfter) : undefined, ctx.workspacePath, ctx) : undefined;
-      runPostEditHooks(filePath, ctx.root, ctx.sandboxProfile).catch(() => {});
+      if (r.ok) {
+        runPostEditHooks(filePath, ctx.root, ctx.sandboxProfile).catch(() => {});
+      }
       const hunks = r.diff.map((c) => ({ added: c.added ?? false, removed: c.removed ?? false, value: c.value }));
       if (hunks.length && ctx.onDiff) {
         await streamDiffHunks(hunks, filePath, ctx.onDiff);
       }
       return {
-        ok: true,
-        output: `Wrote ${filePath}`,
-        touchedFiles: [filePath],
+        ok: r.ok,
+        output: r.ok ? `Wrote ${filePath}` : `Error: ${r.error ?? "write failed"}`,
+        touchedFiles: r.ok ? [filePath] : [],
         diffHunks: hunks,
         filePath: filePath,
         runAfter: ra,
@@ -701,7 +709,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     description: "List stored memories. Args: { limit? }",
     fn: async (args, ctx) => {
       const { loadMemory } = await import("../memory/store.js");
-      const entries = await loadMemory(ctx.root);
+      const entries = await loadMemory(ctx.root, undefined, ctx.teamMemoryStores);
       const limit = args.limit ? Number(args.limit) : 20;
       const slice = entries.slice(-limit);
       if (!slice.length) return { ok: true, output: "No memories stored." };

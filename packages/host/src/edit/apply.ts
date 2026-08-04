@@ -31,11 +31,22 @@ function findRegex(haystack: string, needle: string): { index: number; length: n
   const m = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "m").exec(haystack);
   return m ? { index: m.index, length: m[0].length } : null;
 }
+function lineStartOffsets(s: string): { start: number; termLen: number }[] {
+  const out = [{ start: 0, termLen: 0 }];
+  const re = /\r\n|\r|\n/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    out[out.length - 1].termLen = m[0].length;
+    out.push({ start: m.index + m[0].length, termLen: 0 });
+  }
+  return out;
+}
 function windowedMatch(haystack: string, needle: string): { index: number; length: number } | null {
   const needleLines = needle.split(NL);
   const nLines = needleLines.length;
   if (nLines === 0) return null;
   const hLines = haystack.split(NL);
+  const lineStarts = lineStartOffsets(haystack);
   for (let i = 0; i <= hLines.length - nLines; i++) {
     let all = true;
     for (let j = 0; j < nLines; j++) {
@@ -45,9 +56,9 @@ function windowedMatch(haystack: string, needle: string): { index: number; lengt
       }
     }
     if (all) {
-      const length = hLines.slice(i, i + nLines).join("\n").length;
-      const index = hLines.slice(0, i).join("\n").length + (i > 0 ? 1 : 0);
-      return { index, length };
+      const last = lineStarts[i + nLines - 1];
+      const end = (i + nLines < lineStarts.length ? lineStarts[i + nLines].start : haystack.length) - last.termLen;
+      return { index: lineStarts[i].start, length: end - lineStarts[i].start };
     }
   }
   return null;

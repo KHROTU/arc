@@ -22,6 +22,24 @@ export class RuleRegistry {
     if (this.workspaceRoot) {
       await this.loadFromDir(getWorkspaceArcDir(this.workspaceRoot), "workspace");
       if (this.includeRepositoryFiles) await this.loadFromDir(getLocalWorkspaceArcDir(this.workspaceRoot), "workspace");
+      if (this.includeRepositoryFiles) await this.loadCrossToolRules();
+    }
+  }
+  private async loadCrossToolRules(): Promise<void> {
+    const candidates: { file: string; name: string }[] = [
+      { file: ".cursorrules", name: ".cursorrules" },
+      { file: ".windsurfrules", name: ".windsurfrules" },
+      { file: ".clinerules", name: ".clinerules" },
+      { file: "copilot-instructions.md", name: "copilot-instructions" },
+      { file: ".github/copilot-instructions.md", name: "github-copilot-instructions" },
+      { file: ".github/instructions/copilot-instructions.md", name: "github-copilot-instructions" },
+    ];
+    for (const { file, name } of candidates) {
+      try {
+        const raw = await fs.readFile(path.join(this.workspaceRoot, file), "utf-8");
+        const parsed = parseRule(name, raw, "workspace");
+        if (parsed) this.rules.set(`cross-tool:${name}`, parsed);
+} catch {  }
     }
   }
   private async loadFromDir(baseDir: string, scope: "workspace" | "global"): Promise<void> {

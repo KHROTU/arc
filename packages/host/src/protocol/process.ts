@@ -46,6 +46,8 @@ export interface ProcessStep {
   fromModel?: string;
   toModel?: string;
   reason?: string;
+  modelId?: string;
+  modelLabel?: string;
   todos?: TodoItem[];
   options?: string[];
   children?: ProcessStep[];

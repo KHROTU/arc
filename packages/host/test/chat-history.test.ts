@@ -61,4 +61,27 @@ describe("ChatHistory", () => {
     expect(b.list().find((c) => c.id === y.id)?.title).toBe("Y renamed");
     expect(b.list().find((c) => c.id === x.id)?.cost).toBeCloseTo(0.10, 6);
   });
+  it("keeps steps regardless of size (no byte-based step trimming)", () => {
+    const h = new ChatHistory();
+    const id = h.create("big").id;
+    const big = "x".repeat(256 * 1024);
+    const steps = Array.from({ length: 40 }, (_, i) => ({ id: `s${i}`, title: `step ${i}`, content: big, ts: i }));
+    h.setSteps(id, steps);
+    expect(h.getSteps(id).length).toBe(40);
+  });
+  it("drops orphaned leading tool messages when byte-trimming messages", () => {
+    const h = new ChatHistory();
+    const id = h.create("trim").id;
+    const big = "x".repeat(1024 * 1024);
+    const msgs = [
+      { id: "u1", role: "user", content: "first", ts: 1 },
+      { id: "a1", role: "assistant", content: "tool time", toolCalls: [{ id: "t1", name: "x", args: {} }], ts: 2 },
+      { id: "r1", role: "tool", content: big, toolCallId: "t1", ts: 3 },
+      { id: "u2", role: "user", content: "more", ts: 4 },
+    ];
+    h.setMessages(id, msgs);
+    const kept = h.getMessages(id) as { role?: string }[];
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept[0].role).not.toBe("tool");
+  });
 });

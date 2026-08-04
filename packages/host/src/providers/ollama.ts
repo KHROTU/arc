@@ -1,6 +1,6 @@
 import { AsyncEventQueue, readableToAsyncIterable } from "../util/stream.js";
 import { makeProxyDispatcher } from "../util/proxy.js";
-import { fromApiToolName, toApiToolName, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
+import { fromApiToolName, toApiToolName, sanitizeToolChains, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
 import { readBodyLimited } from "../security/network.js";
 import { redactSecrets } from "../security/redact.js";
 export const ollamaTransport: Transport = {
@@ -19,7 +19,7 @@ export const ollamaTransport: Transport = {
     const body: Record<string, unknown> = {
       model: remoteModel,
       stream: true,
-      messages: req.messages.map((m) => {
+      messages: sanitizeToolChains(req.messages).map((m) => {
         if (m.role === "tool") {
           const images = (m as any).images as { image_url: { url: string } }[] | undefined;
           const msg: Record<string, unknown> = { role: "tool", tool_name: toApiToolName(toolNameCache.get(m.toolCallId ?? "") ?? "unknown"), content: m.content };

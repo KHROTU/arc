@@ -4,6 +4,7 @@ import {
   ChevronRight, Bot, ArrowRight, Check, Circle, CircleDot,
   HelpCircle, CornerDownLeft, Sparkles, AlertTriangle, Terminal, ExternalLink, StopCircle, Maximize2,
 } from "./icons";
+import ModelIcon from "./ModelIcon";
 type StepType =
   | "tool_group" | "tool" | "subagent" | "handoff"
   | "todo_list" | "clarification" | "thought" | "result" | "error";
@@ -36,6 +37,8 @@ export interface ProcessStep {
   fromModel?: string;
   toModel?: string;
   reason?: string;
+  modelId?: string;
+  modelLabel?: string;
   todos?: TodoItem[];
   options?: string[];
   children?: ProcessStep[];
@@ -154,6 +157,8 @@ const TodoListBlock = memo(({ todos }: { todos: TodoItem[] }) => (
       const active = todo.state === "in_progress";
       const done = todo.state === "done";
       const skipped = todo.state === "skipped";
+      const blocked = todo.state === "blocked";
+      const failed = todo.state === "failed";
       return (
           <li key={todo.id} className={`arc-proc-todo arc-proc-todo-${todo.state}`}>
           <span className="arc-proc-todo-mark">
@@ -165,6 +170,10 @@ const TodoListBlock = memo(({ todos }: { todos: TodoItem[] }) => (
               <span className="arc-proc-todo-pulse" />
             ) : skipped ? (
               <Circle size={12} />
+            ) : blocked ? (
+              <StopCircle size={12} />
+            ) : failed ? (
+              <AlertTriangle size={12} />
             ) : (
               <Circle size={12} />
             )}
@@ -205,7 +214,15 @@ const GroupNode = memo(({ step, onOpenFile, onOpenFullscreenDiff, toolTreeMode, 
       <button className={`arc-proc-group-toggle${open ? " is-open" : ""}`} onClick={() => setOpen((o) => !o)} aria-expanded={open}>
         <span className="arc-proc-group-icon-wrap">
           <ChevronRight size={14} className="arc-proc-group-icon-chevron" style={{ transform: open ? "rotate(90deg)" : "rotate(0deg)" }} />
-          {step.type === "subagent" ? <Bot size={14} className="arc-proc-group-icon is-accent" /> : <Terminal size={13} className="arc-proc-group-icon" />}
+          {step.type === "subagent" ? (
+            step.modelId ? (
+              <ModelIcon modelId={step.modelId} size={14} className="arc-proc-group-icon" title={step.modelLabel} />
+            ) : (
+              <Bot size={14} className="arc-proc-group-icon is-accent" />
+            )
+          ) : (
+            <Terminal size={13} className="arc-proc-group-icon" />
+          )}
         </span>
         <span className="arc-proc-group-title">{step.title || "Called"}</span>
         {step.type === "tool_group" && (
@@ -218,6 +235,7 @@ const GroupNode = memo(({ step, onOpenFile, onOpenFullscreenDiff, toolTreeMode, 
         {step.children && (
           <div className="arc-proc-children">
             <span className="arc-proc-treeline" />
+            {step.modelLabel && <div className="arc-proc-model-line">{step.modelLabel}</div>}
             <StepList steps={step.children} onOpenFile={onOpenFile} onOpenFullscreenDiff={onOpenFullscreenDiff} toolTreeMode={toolTreeMode} resolvedDiffs={resolvedDiffs} onResolveDiff={onResolveDiff} />
           </div>
         )}
@@ -276,7 +294,13 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, onOpenFullscre
         disabled={!hasDetails}
         aria-expanded={hasDetails ? isActive : undefined}
       >
-        <span className="arc-proc-row-mark"><StatusDot type={step.type} interrupted={step.interrupted} pending={step.pending} /></span>
+        <span className="arc-proc-row-mark">
+          {step.toolName === "subagent.spawn" && step.modelId ? (
+            <ModelIcon modelId={step.modelId} size={13} className="arc-proc-dot-icon is-muted" title={step.modelLabel} />
+          ) : (
+            <StatusDot type={step.type} interrupted={step.interrupted} pending={step.pending} />
+          )}
+        </span>
         <span className="arc-proc-title">{step.title}{step.pending ? <span className="arc-working-dots" /> : null}{step.interrupted ? <span className="arc-proc-interrupted">(stopped)</span> : null}</span>
         {hasDetails && (
           <RotateArrow open={isActive} />
@@ -284,6 +308,9 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, onOpenFullscre
       </button>
       <Expand open={isActive && hasDetails}>
         <div className="arc-proc-detail">
+              {step.modelLabel && (
+                <div className="arc-proc-model-line">{step.modelLabel}</div>
+              )}
               {step.content && step.type !== "clarification" && (
                 <div className={`arc-proc-text ${step.type === "result" ? "is-result" : ""}`}>
                   {step.content}

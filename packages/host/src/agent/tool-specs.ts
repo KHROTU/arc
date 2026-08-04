@@ -469,6 +469,32 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
     description: "Get a combined snapshot of the browser's current state including console messages and network requests.",
     parameters: obj({ tabId: str("Optional tab id to target (defaults to the active tab).") }),
   },
+  "browser.drag": {
+    description: "Drag an element onto another element.",
+    parameters: obj({
+      from: str("CSS selector of the element to drag."),
+      to: str("CSS selector of the drop target."),
+      tabId: str("Optional tab id to target (defaults to the active tab)."),
+    }, ["from", "to"]),
+  },
+  "browser.dialog": {
+    description: "Set how the next browser dialog (alert/confirm/prompt) is handled.",
+    parameters: obj({
+      accept: bool("True to accept the dialog (default), false to dismiss it."),
+      promptText: str("Text to enter when the dialog is a prompt."),
+    }),
+  },
+  "browser.runCode": {
+    description: "Run a Playwright code snippet against the page. The code receives the `page` object.",
+    parameters: obj({
+      code: str("JavaScript/Playwright snippet to run."),
+      tabId: str("Optional tab id to target (defaults to the active tab)."),
+    }, ["code"]),
+  },
+  "browser.readPage": {
+    description: "Read the plain text content of the current page.",
+    parameters: obj({ tabId: str("Optional tab id to target (defaults to the active tab).") }),
+  },
   "notebook.read": {
     description: "Read a Jupyter notebook (.ipynb). Without cellIndex, lists every cell (index, type, source preview, whether it has output). With cellIndex, returns that cell's full source and (for code cells) its text/image output.",
     parameters: obj({

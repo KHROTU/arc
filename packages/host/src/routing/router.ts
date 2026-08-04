@@ -115,6 +115,7 @@ async function tryEach<T>(
         return out;
       } catch (e) {
         lastErr = e;
+        if ((e as Error)?.name === "AbortError") throw e;
         const msg = (e as Error)?.message ?? String(e);
         if (isRateLimitError(msg)) anyRateLimited = true;
         perf.recordFailure(ref.id, model.id);

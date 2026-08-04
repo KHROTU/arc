@@ -3,6 +3,7 @@ import { ArrowUp, Paperclip, Square, X, ChevronDown } from "./icons";
 import ModelPicker from "./ModelPicker";
 import ModePicker from "./ModePicker";
 import EffortPicker, { type Effort } from "./EffortPicker";
+import { TodoList, type TodoItemUI } from "./TodoList";
 import type { ModelDescriptor } from "@arc/host/protocol";
 type Attachment = { uri: string; preview?: string };
 type Props = {
@@ -18,6 +19,19 @@ type Props = {
   queuedText?: string | null;
   onCancelQueue?: () => void;
   prefillText?: string | null;
+  todos?: TodoItemUI[] | null;
+  todosOpen?: boolean;
+  onToggleTodos?: () => void;
+  polishing?: boolean;
+  polishPending?: { original: string; polished: string } | null;
+  onRejectPolished?: () => void;
+  polishLevel?: "off" | "basic" | "polish";
+  onPolish?: (text: string) => void;
+  autoMode?: boolean;
+  routing?: boolean;
+  routePending?: { modelLabel: string } | null;
+  onAcceptRouted?: () => void;
+  onRejectRouted?: () => void;
   variant: "sidebar" | "fullscreen";
   models: ModelDescriptor[];
   currentModelId: string;
@@ -30,6 +44,8 @@ type Props = {
 };
 export default function Composer({
   onSend, onStop, onGuidance, streaming, disabled, pendingAttachment, onAttach, placeholder, autoFocus = true, queuedText, onCancelQueue, prefillText,
+  todos, todosOpen, onToggleTodos, polishing, polishPending, onRejectPolished, polishLevel, onPolish,
+  autoMode, routing, routePending, onAcceptRouted, onRejectRouted,
   variant, models, currentModelId, onSelectModel, modes, currentMode, onSelectMode, effort, onSelectEffort,
 }: Props) {
   const [text, setText] = useState("");
@@ -46,6 +62,9 @@ export default function Composer({
       ref.current?.focus();
     }
   }, [prefillText]);
+  useLayoutEffect(() => {
+    if (polishPending) setText(polishPending.polished);
+  }, [polishPending]);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -73,11 +92,27 @@ export default function Composer({
   const submit = useCallback(() => {
     const t = text.trim();
     if (!t || disabled) return;
+    if (polishLevel && polishLevel !== "off" && !polishing && !polishPending && onPolish) {
+      onPolish(t);
+      return;
+    }
     onSend(t, attachments.length ? attachments : undefined, images.length ? images : undefined);
+    if (!autoMode) {
+      setText("");
+      setAttachments([]);
+      setImages([]);
+    }
+  }, [text, disabled, streaming, attachments, onSend, polishLevel, polishing, polishPending, onPolish, autoMode]);
+  const acceptRoute = () => {
+    onAcceptRouted?.();
     setText("");
     setAttachments([]);
     setImages([]);
-  }, [text, disabled, streaming, attachments, onSend]);
+  };
+  const rejectRoute = () => {
+    onRejectRouted?.();
+  };
+  const routeActive = !!routing || !!routePending;
   const attach = () => {
     if (onAttach) return onAttach();
     (window as unknown as { __ARC_ATTACH?: () => void }).__ARC_ATTACH?.();
@@ -116,6 +151,53 @@ export default function Composer({
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, []);
+  const todoCount = todos
+    ? (() => {
+        let done = 0, all = 0;
+        const walk = (list: TodoItemUI[]) => {
+          for (const t of list) {
+            all++;
+            if (t.state === "done" || t.state === "skipped") done++;
+            if (t.children?.length) walk(t.children);
+          }
+        };
+        walk(todos);
+        return { done, all };
+      })()
+    : null;
+  const currentTodo = todos
+    ? (() => {
+        const walk = (list: TodoItemUI[]): TodoItemUI | null => {
+          for (const t of list) {
+            if (t.state === "in_progress") return t;
+            if (t.children?.length) {
+              const c = walk(t.children);
+              if (c) return c;
+            }
+          }
+          return null;
+        };
+        const hit = walk(todos);
+        if (hit) return hit;
+        const next = (list: TodoItemUI[]): TodoItemUI | null => {
+          for (const t of list) {
+            if (t.state !== "done" && t.state !== "skipped") return t;
+            if (t.children?.length) {
+              const c = next(t.children);
+              if (c) return c;
+            }
+          }
+          return null;
+        };
+        return next(todos);
+      })()
+    : null;
+  const planBodyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!todosOpen || !planBodyRef.current) return;
+    const el = planBodyRef.current.querySelector<HTMLElement>(".arc-todo-sidebar-item-in_progress");
+    el?.scrollIntoView({ block: "center" });
+  }, [todosOpen, todos]);
   if (queuedText) {
     return (
       <div className="arc-composer is-queued">
@@ -130,7 +212,43 @@ export default function Composer({
     );
   }
   return (
-    <div className={`arc-composer ${disabled ? "is-disabled" : ""} ${streaming ? "is-busy" : ""}`}>
+    <div className={`arc-composer ${disabled ? "is-disabled" : ""} ${streaming ? "is-busy" : ""} ${polishing ? "is-polishing" : ""} ${routing ? "is-routing" : ""}`}>
+      {polishPending && (
+        <div className="arc-composer-polish">
+          <div className="arc-composer-polish-actions">
+            <button className="arc-btn-ghost" onClick={() => { onRejectPolished?.(); setText(polishPending.original); }}>Revert</button>
+            <button className="arc-btn" onClick={submit}>Send</button>
+          </div>
+        </div>
+      )}
+      {routePending && (
+        <div className="arc-composer-route">
+          <div className="arc-composer-route-bar">
+            <span className="arc-composer-route-label">
+              Routed to <strong>{routePending.modelLabel}</strong>
+            </span>
+            <button className="arc-btn" onClick={acceptRoute}>Accept</button>
+            <button className="arc-btn-ghost" onClick={rejectRoute}>Reject</button>
+          </div>
+        </div>
+      )}
+      {todos && todos.length > 0 && (
+        <div className={`arc-composer-plan ${todosOpen ? "is-open" : ""}`}>
+          <button className="arc-composer-plan-head" onClick={onToggleTodos}>
+            <span className="arc-composer-plan-title">Plan</span>
+            {!todosOpen && currentTodo && (
+              <span className={`arc-composer-plan-current ${currentTodo.state === "in_progress" ? "is-active" : ""}`}>{currentTodo.text}</span>
+            )}
+            {todoCount && <span className="arc-composer-plan-count">{todoCount.done}/{todoCount.all}</span>}
+            <ChevronDown size={11} className={`arc-composer-plan-chevron ${todosOpen ? "is-open" : ""}`} />
+          </button>
+          {todosOpen && (
+            <div className="arc-composer-plan-body" ref={planBodyRef}>
+              <TodoList items={todos} level={0} />
+            </div>
+          )}
+        </div>
+      )}
       {attachments.length > 0 && (
         <div className="arc-composer-attachments">
           {attachments.map((a) => (
@@ -185,7 +303,7 @@ export default function Composer({
           }
         }}
         rows={1}
-        disabled={disabled}
+        disabled={disabled || !!polishing || routeActive}
         placeholder={placeholder ?? "Ask Arc anything…"}
       />
       <div className="arc-composer-bar">
@@ -239,8 +357,12 @@ export default function Composer({
         </div>
         {streaming ? (
           <div className="arc-send-group" ref={actionsRef}>
+            <button className="arc-composer-send is-stop" onClick={onStop} title="Stop">
+              <Square size={12} strokeWidth={2.5} />
+            </button>
             {text.trim() ? (
               <>
+                <span className="arc-send-sep" />
                 <button className="arc-composer-send" onClick={submit} title="Send (queues after current turn)">
                   <ArrowUp size={15} strokeWidth={2.5} />
                 </button>
@@ -259,14 +381,10 @@ export default function Composer({
                   </div>
                 )}
               </>
-            ) : (
-              <button className="arc-composer-send is-stop" onClick={onStop} title="Stop">
-                <Square size={12} strokeWidth={2.5} />
-              </button>
-            )}
+            ) : null}
           </div>
         ) : (
-          <button className="arc-composer-send" onClick={submit} disabled={disabled || !text.trim()} title="Send (Enter)">
+          <button className="arc-composer-send" onClick={submit} disabled={disabled || polishing || routeActive || !text.trim()} title="Send (Enter)">
             <ArrowUp size={15} strokeWidth={2.5} />
           </button>
         )}

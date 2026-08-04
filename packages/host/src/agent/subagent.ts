@@ -24,6 +24,7 @@ export interface SubagentResult {
   output: string;
   steps: ProcessStep[];
   todo: TodoItem[];
+  model?: { id: string; label: string };
 }
 export class SubagentRunner {
   constructor(
@@ -105,7 +106,7 @@ export class SubagentRunner {
     });
     await agent.send(spec.instructions);
     const finalText = agent.getMessages().filter((m) => m.role === "assistant").slice(-1)[0]?.content ?? "";
-    return { ok: true, output: finalText, steps: collected, todo: todos };
+    return { ok: true, output: finalText, steps: collected, todo: todos, model: { id: model.id, label: model.label } };
   }
   async runBatch(
     specs: SubagentSpec[],
