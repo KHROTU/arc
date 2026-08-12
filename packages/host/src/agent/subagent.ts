@@ -35,7 +35,7 @@ export class SubagentRunner {
   async run(
     spec: SubagentSpec,
     parent: ModelDescriptor,
-    ctx: AgentOptions["toolContext"] & { root: string; shell?: { policy: "always" | "allowlist" | "off"; allowlist: string[] }; requestApproval?: (description: string, meta?: import("../approvals/index.js").ApproveShellMeta) => Promise<boolean> },
+    ctx: AgentOptions["toolContext"] & { root: string; shell?: { policy: "always" | "allowlist" | "off"; allowlist: string[] }; requestApproval?: (description: string, meta?: import("../approvals/index.js").ApproveShellMeta) => Promise<boolean> } & { approvalsConfig?: import("../approvals/index.js").ApprovalsConfig; sessionApprovals?: import("../approvals/index.js").SessionApprovals },
     askParent?: (question: string, options: string[]) => Promise<string>,
     onStep?: (steps: ProcessStep[]) => void,
     onApprovalRequest?: (description: string) => void,
@@ -96,7 +96,8 @@ export class SubagentRunner {
       workspaceRoot: ctx.root,
       mode: "code",
       modeRegistry: modeReg,
-      approvalsConfig: DEFAULT_APPROVALS,
+      approvalsConfig: ctx.approvalsConfig ?? DEFAULT_APPROVALS,
+      initialSessionApprovals: ctx.sessionApprovals,
       isMain: false,
       ownerTier: tier,
       toolContext,
@@ -111,7 +112,7 @@ export class SubagentRunner {
   async runBatch(
     specs: SubagentSpec[],
     parent: ModelDescriptor,
-    ctx: AgentOptions["toolContext"] & { root: string; shell?: { policy: "always" | "allowlist" | "off"; allowlist: string[] }; requestApproval?: (description: string, meta?: import("../approvals/index.js").ApproveShellMeta) => Promise<boolean> },
+    ctx: AgentOptions["toolContext"] & { root: string; shell?: { policy: "always" | "allowlist" | "off"; allowlist: string[] }; requestApproval?: (description: string, meta?: import("../approvals/index.js").ApproveShellMeta) => Promise<boolean> } & { approvalsConfig?: import("../approvals/index.js").ApprovalsConfig; sessionApprovals?: import("../approvals/index.js").SessionApprovals },
     askParent?: (question: string, options: string[]) => Promise<string>,
     onStep?: (steps: ProcessStep[]) => void,
     onApprovalRequest?: (description: string) => void,

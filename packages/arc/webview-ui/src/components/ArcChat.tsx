@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
-import { Settings, Plus, Trash2, Pencil, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search, ArrowLeft, Undo2, X } from "./icons";
+import type { ReactNode, MouseEvent as ReactMouseEvent } from "react";
+import { Settings, Plus, Trash2, Pencil, FoldVertical, HelpCircle, PanelLeftClose, PanelLeft, ShieldCheck, ShieldOff, Search, ArrowLeft, Undo2, X, ChevronDown } from "./icons";
 import { TodoList, type TodoItemUI } from "./TodoList";
 import { FadeSlideIn } from "./anim";
 import ArcProcessUI, { type ProcessStep } from "./AgentProcess";
@@ -24,6 +24,7 @@ type Props = {
   variant: "sidebar" | "fullscreen";
   version: string;
   providerCatalog: { kind: ProviderKind; label: string; tags: string[]; defaultBaseUrl?: string }[];
+  toolCatalog: { name: string; category: string; description: string }[];
 };
 const WAVE_BAR = { transform: "scaleY(0.28)" };
 function WaveSpinner() {
@@ -52,7 +53,7 @@ function RippleSpinner() {
     </svg>
   );
 }
-export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, prideActive, toolTreeMode, variant, version, providerCatalog }: Props) {
+export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, prideActive, toolTreeMode, variant, version, providerCatalog, toolCatalog }: Props) {
   const logoUri = useArcLogo(monoLogo, prideLogo, prideActive);
   const [chats, setChats] = useState<ChatMeta[]>([]);
   const [activeId, setActiveId] = useState<string>("");
@@ -99,6 +100,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [showSearch, setShowSearch] = useState(false);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [approvalQueue, setApprovalQueue] = useState<{ id: string; description: string; kind: string; command?: string }[]>([]);
+  const [approvalMenuOpen, setApprovalMenuOpen] = useState(false);
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
   const [prefillText, setPrefillText] = useState<string | null>(null);
   const [polishLevel, setPolishLevel] = useState<"off" | "basic" | "polish">("off");
@@ -114,7 +116,6 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const pendingTextRef = useRef<{ id: string; text: string } | null>(null);
   const rafRef = useRef<number | null>(null);
   const sessionIdRef = useRef<string>("");
-  const openedStreamingDiffRef = useRef<string>("");
   const stopSeqRef = useRef(0);
   const cancelStreamFlush = () => {
     if (rafRef.current != null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
@@ -232,7 +233,6 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           break;
         case "session/turnStart":
           stopSeqRef.current++;
-          openedStreamingDiffRef.current = "";
           if (e.sessionId && sessionIdRef.current !== e.sessionId) sessionIdRef.current = e.sessionId;
           setStreaming({ id: "pending", text: "" }); setShowOnboarding(false); setLastTurnError(null); break;
         case "session/turnEnd": stopSeqRef.current++; if (attentionRef.current.completion) beep(880); cancelStreamFlush(); setStreaming(null); break;
@@ -282,6 +282,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           break;
         case "config/changed":
           if (e.key === "arc.promptPolish") setPolishLevel(e.value === "basic" || e.value === "polish" ? e.value : "off");
+          if (e.key === "arc.diffView.autoOpen") setAutoOpenDiff(e.value !== false);
           break;
         case "error":
           if (attentionRef.current.error) beep(220, 0.25);
@@ -390,7 +391,19 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     setShowSettings(false);
     void client.request<string>("arc.promptPolish").then((v) => setPolishLevel(v === "basic" || v === "polish" ? v : "off"));
   };
-  const openFile = (path: string) => { client.send({ type: "ui/openFile", path }); };
+  const openFile = (path: string, line?: number, endLine?: number) => {
+    client.send({ type: "ui/openFile", path, ...(line ? { line } : {}), ...(line && endLine && endLine > line ? { endLine } : {}) });
+  };
+  const onTranscriptClick = (e: ReactMouseEvent) => {
+    const target = e.target as HTMLElement;
+    const ref = target.closest?.(".arc-ref, .arc-ref-code") as HTMLElement | null;
+    if (!ref) return;
+    const path = ref.getAttribute("data-path");
+    if (!path) return;
+    const line = Number(ref.getAttribute("data-line") || 0) || undefined;
+    const endLine = Number(ref.getAttribute("data-end-line") || 0) || undefined;
+    openFile(path, line, endLine);
+  };
   const selectModel = (id: string) => {
     setCurrentModel(id);
     setRoutePending(null);
@@ -428,7 +441,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   useEffect(() => {
     if (!approval) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { respondApproval(false); e.preventDefault(); }
+      if (e.key === "Escape") { setApprovalMenuOpen(false); respondApproval(false); e.preventDefault(); }
       if (e.key === "Enter" && !e.ctrlKey && !e.metaKey) { respondApproval(true); e.preventDefault(); }
     };
     window.addEventListener("keydown", onKey, true);
@@ -472,12 +485,18 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   type TimelineItem =
     | { kind: "msg"; ts: number; seq: number; msg: ChatMessage }
     | { kind: "step"; ts: number; seq: number; step: ProcessStep }
-    | { kind: "stream"; ts: number; seq: number };
+    | { kind: "stream"; ts: number; seq: number }
+    | { kind: "compaction"; ts: number; seq: number; msg: ChatMessage };
   const timeline = useMemo<TimelineItem[]>(() => {
     const items: TimelineItem[] = [];
     let seq = 0;
     for (const m of messages) {
-      if (m.role === "system") continue;
+      if (m.role === "system") {
+        if (m.content && m.content.startsWith("## Compaction summary of")) {
+          items.push({ kind: "compaction", ts: m.ts ?? 0, seq: seq++, msg: m });
+        }
+        continue;
+      }
       items.push({ kind: "msg", ts: m.ts ?? 0, seq: seq++, msg: m });
     }
     for (const s of steps) {
@@ -532,6 +551,24 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         );
         continue;
       }
+      if (item.kind === "compaction") {
+        flush();
+        out.push(
+          <ArcProcessUI
+            key={`compaction-${item.msg.id}`}
+            steps={[compactionStepFor(item.msg)]}
+            onOpenFile={openFile}
+            onOpenFullscreenDiff={(payload) => {
+              if (!payload.filePath) return;
+              client.send({ type: "ui/openFileDiff", path: payload.filePath, hunks: payload.hunks });
+            }}
+            toolTreeMode={toolTreeMode}
+            resolvedDiffs={resolvedDiffs}
+            onResolveDiff={handleResolveDiff}
+          />,
+        );
+        continue;
+      }
       const m = item.msg;
       if (m.role === "assistant" && m.toolCalls?.length && !m.content) continue;
       if (m.role === "tool") continue;
@@ -565,6 +602,10 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
       items.every((t) => (t.state === "done" || t.state === "skipped") && (!t.children?.length || allDone(t.children)));
     if (allDone(latestTodos as TodoItemUI[])) setTodosVisible(false);
   }, [variant, streaming, latestTodos]);
+  const [autoOpenDiff, setAutoOpenDiff] = useState(true);
+  useEffect(() => {
+    void client.request<boolean>("arc.diffView.autoOpen").then((v) => setAutoOpenDiff(v !== false));
+  }, [client]);
   const latestStreamingDiff = useMemo(() => {
     for (let i = steps.length - 1; i >= 0; i--) {
       const step = steps[i];
@@ -577,13 +618,12 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   }, [steps]);
   useEffect(() => {
     if (variant !== "sidebar") return;
+    if (!autoOpenDiff) return;
     if (!streaming) return;
     if (!latestStreamingDiff) return;
     if (!latestStreamingDiff.filePath) return;
-    if (openedStreamingDiffRef.current === latestStreamingDiff.signature) return;
-    openedStreamingDiffRef.current = latestStreamingDiff.signature;
-    client.send({ type: "ui/openFileDiff", path: latestStreamingDiff.filePath, hunks: latestStreamingDiff.hunks });
-  }, [variant, streaming, latestStreamingDiff, client]);
+    client.send({ type: "ui/openFileDiff", path: latestStreamingDiff.filePath, hunks: latestStreamingDiff.hunks, streamId: latestStreamingDiff.signature });
+  }, [variant, streaming, latestStreamingDiff, autoOpenDiff, client]);
   const activeTitle = chats.find((c) => c.id === activeId)?.title ?? "Chat";
   const currentModelLabel = models.find((m) => m.id === currentModel)?.label;
   return (
@@ -595,6 +635,13 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
               <ArrowLeft size={15} />
             </button>
             <span className="arc-sidebar-nav-label">Chats</span>
+            <span className="arc-topbar-spacer" />
+            <button className="arc-iconbtn" title="Search conversations" onClick={() => client.send({ type: "ui/openFullscreen", show: "search" } as any)}>
+              <Search size={14} />
+            </button>
+            <button className="arc-iconbtn" title="New chat" onClick={newChat}>
+              <Plus size={15} />
+            </button>
           </div>
           <div className="arc-sidebar-list-wrap">
             <ChatList
@@ -608,6 +655,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
               renaming={renaming}
               setRenaming={setRenaming}
               onCommitRename={(id, value) => { renameChat(id, value); setRenaming(null); }}
+              hideHeader
             />
           </div>
         </div>
@@ -665,7 +713,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
               <span className="arc-handoff-sep-label">{handoff.to}</span>
             </FadeSlideIn>
           )}
-          <div className="arc-transcript" ref={transcriptRef} onScroll={onTranscriptScroll}>
+          <div className="arc-transcript" ref={transcriptRef} onScroll={onTranscriptScroll} onClick={onTranscriptClick}>
             {showOnboarding && isEmpty && (
               <Onboarding logoUri={logoUri} monoLogo={monoLogo} hasModels={models.length > 0} onOpenSettings={openSettings} />
             )}
@@ -689,6 +737,10 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
               <div className="arc-approval-row">
                 <HelpCircle size={14} className="arc-clar-icon" />
                 <span className="arc-approval-label">Clarification needed</span>
+                <span className="arc-topbar-spacer" />
+                <button className="arc-iconbtn" title="Dismiss" onClick={() => { client.send({ type: "chat/answerClarification", id: clarification.id, answer: "" }); setClarification(null); }}>
+                  <X size={13} />
+                </button>
               </div>
               <div className="arc-approval-q">{clarification.question}</div>
               <div className="arc-clar-options">
@@ -737,16 +789,31 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
                 <div className="arc-approval-body">{approval.description.split("\n\n").slice(1).join("\n\n")}</div>
               )}
               <div className="arc-approval-actions">
-                <button className="arc-approval-allow" onClick={() => respondApproval(true, getApprovalCommand(approval.description))} autoFocus>
-                  Allow session
-                </button>
-                <button className="arc-approval-allow" onClick={() => respondApproval(true, undefined, getApprovalPrefix(approval.description))}>
-                  Allow prefix
-                </button>
-                <button className="arc-approval-allow" onClick={() => respondApproval(true)}>
-                  Allow once
-                </button>
-                <button className="arc-approval-deny" onClick={() => respondApproval(false)}>
+                <div className="arc-approval-allow-group">
+                  <button className="arc-approval-allow" onClick={() => respondApproval(true)} autoFocus>
+                    Allow once
+                  </button>
+                  <button
+                    className="arc-approval-allow-caret"
+                    onClick={() => setApprovalMenuOpen((o) => !o)}
+                    aria-expanded={approvalMenuOpen}
+                    aria-haspopup="menu"
+                    title="More approval options"
+                  >
+                    <ChevronDown size={13} />
+                  </button>
+                  {approvalMenuOpen && (
+                    <div className="arc-approval-menu" role="menu">
+                      <button role="menuitem" onClick={() => { respondApproval(true, getApprovalCommand(approval.description)); setApprovalMenuOpen(false); }}>
+                        Allow session
+                      </button>
+                      <button role="menuitem" onClick={() => { respondApproval(true, undefined, getApprovalPrefix(approval.description)); setApprovalMenuOpen(false); }}>
+                        Allow prefix
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <button className="arc-approval-deny" onClick={() => { setApprovalMenuOpen(false); respondApproval(false); }}>
                   Deny <kbd>Esc</kbd>
                 </button>
               </div>
@@ -829,11 +896,26 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
             monoLogoText={monoLogoText}
             version={version}
             providerCatalog={providerCatalog}
+            toolCatalog={toolCatalog}
           />
         </Suspense>
       )}
     </div>
   );
+}
+function compactionStepFor(message: ChatMessage): ProcessStep {
+  const content = message.content || "";
+  const m = /^## Compaction summary of (\d+) earlier messages/.exec(content);
+  const count = m ? Number(m[1]) : null;
+  return {
+    id: `compaction-${message.id}`,
+    type: "tool",
+    toolName: "context.compact",
+    title: count != null ? `Compacted ${count} messages` : "Context compacted",
+    ts: message.ts,
+    pending: false,
+    noMark: true,
+  };
 }
 function MessageBubble({ message, client }: { message: ChatMessage; client?: RpcClient }) {
   const isUser = message.role === "user";
@@ -926,7 +1008,7 @@ function Onboarding({ logoUri, monoLogo, hasModels, onOpenSettings }: { logoUri:
   );
 }
 function ChatList({
-  chats, activeId, onSelect, onNew, onSearch, onRename, onDelete, renaming, setRenaming, onCommitRename, todos,
+  chats, activeId, onSelect, onNew, onSearch, onRename, onDelete, renaming, setRenaming, onCommitRename, todos, hideHeader,
 }: {
   chats: ChatMeta[];
   activeId: string | null;
@@ -939,18 +1021,21 @@ function ChatList({
   setRenaming: (r: { id: string; value: string } | null) => void;
   onCommitRename: (id: string, value: string) => void;
   todos?: { id: string; text: string; state: "pending" | "in_progress" | "done" | "skipped" }[] | null;
+  hideHeader?: boolean;
 }) {
   return (
     <aside className="arc-chatlist">
-      <div className="arc-chatlist-head">
-        <span>Chats</span>
-        <span style={{ display: "flex", alignItems: "center", gap: 2 }}>
-          <button className="arc-iconbtn" title="Search conversations" onClick={onSearch}>
-            <Search size={14} />
-          </button>
-          <button className="arc-iconbtn" onClick={onNew} title="New chat"><Plus size={15} /></button>
-        </span>
-      </div>
+      {!hideHeader && (
+        <div className="arc-chatlist-head">
+          <span>Chats</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 2 }}>
+            <button className="arc-iconbtn" title="Search conversations" onClick={onSearch}>
+              <Search size={14} />
+            </button>
+            <button className="arc-iconbtn" onClick={onNew} title="New chat"><Plus size={15} /></button>
+          </span>
+        </div>
+      )}
       <ul className="arc-chatlist-list">
         {chats.length === 0 && <li className="arc-chatlist-empty">No chats yet.</li>}
         {chats.map((c) => (
@@ -986,4 +1071,4 @@ function ChatList({
       )}
     </aside>
   );
-}
+}

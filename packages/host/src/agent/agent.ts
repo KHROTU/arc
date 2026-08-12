@@ -16,13 +16,14 @@ import { SubagentRunner } from "./subagent.js";
 import { runHooks } from "../hooks/hooks.js";
 import { loadVerifyConfig, runVerification, type VerifyConfig } from "../verify/verify.js";
 import { appendAuditEntry } from "../audit/audit.js";
-import { FileEditor } from "../edit/editor.js";
+import { diffLines } from "../edit/line-diff.js";
+import { tryExtractDiffBlock } from "../edit/apply.js";
 import { classifyWorkspacePath } from "../security/path-policy.js";
 import type { ModeRegistry } from "../modes/index.js";
 import { type ApprovalsConfig, type SessionApprovals, type ApproveShellMeta, DEFAULT_APPROVALS, initSession, resolveApproval } from "../approvals/index.js";
 import type { ChatMessage, ModelDescriptor, ToolCall, TurnUsage, ExecutionEvent } from "../protocol/protocol.js";
 import type { ProcessStep, TodoItem } from "../protocol/process.js";
-const PSEUDO_TOOLS = new Set(["handoff", "subagent.spawn", "subagent.askParent", "clarification.askUser", "checkpoint.revert", "checkpoint.list", "checkpoint.compare", "mode.switch", "skill.use", "memory.add", "session.exportTrace"]);
+const PSEUDO_TOOLS = new Set(["handoff", "subagent.spawn", "subagent.askParent", "clarification.askUser", "checkpoint.revert", "checkpoint.list", "checkpoint.compare", "mode.switch", "skill.use", "memory.add", "memory.note", "session.exportTrace"]);
 const TOOL_OUTPUT_MAX_CHARS = 8000;
 export interface AgentEventSink {
   message(m: ChatMessage): void;
@@ -57,6 +58,8 @@ export interface AgentOptions {
   ownerTier?: import("../protocol/protocol.js").ModelTier;
   parent?: Agent;
   initialMessages?: ChatMessage[];
+  initialSteps?: ProcessStep[];
+  initialSessionApprovals?: SessionApprovals;
   modelOverride?: ModelDescriptor;
   proxyUrl?: string;
   proxyProvider?: string;
@@ -69,6 +72,7 @@ export interface AgentOptions {
   getBrowserTabs?: () => Promise<{ id: string; url: string; active: boolean }[]>;
   getBackgroundProcesses?: () => { id: string; command: string }[];
   restoreBrowserTabs?: (tabs: { url: string }[]) => Promise<void>;
+  autoSessionNotes?: boolean;
 }
 export class Agent {
   private messages: ChatMessage[] = [];
@@ -146,7 +150,14 @@ export class Agent {
     this.subagentRunner = new SubagentRunner(registry, store, opts.modeRegistry);
     this.currentMode = opts.modeRegistry.resolveDefault(opts.mode);
     this.userRequestedMode = opts.userRequestedMode;
-    this.sessionApprovals = initSession();
+    this.sessionApprovals = opts.initialSessionApprovals
+      ? {
+          autoApproveAll: opts.initialSessionApprovals.autoApproveAll,
+          sessionCommandAllowlist: [...(opts.initialSessionApprovals.sessionCommandAllowlist ?? [])],
+          commandPrefixMemory: [...(opts.initialSessionApprovals.commandPrefixMemory ?? [])],
+          ...(opts.initialSessionApprovals.taskOverride ? { taskOverride: opts.initialSessionApprovals.taskOverride } : {}),
+        }
+      : initSession();
     const modeDef = opts.modeRegistry.get(this.currentMode);
     this.applyModeModelOverride(modeDef);
     const modeRole = modeDef?.roleDefinition ?? "";
@@ -156,6 +167,9 @@ export class Agent {
     }
     if (opts.initialMessages?.length) {
       this.messages.push(...opts.initialMessages);
+    }
+    if (opts.initialSteps?.length) {
+      this.steps = [...opts.initialSteps];
     }
   }
   private getCurrentModel(): ModelDescriptor | undefined {
@@ -471,6 +485,10 @@ export class Agent {
           if (!hookDecisions.some((d) => d.decision === "block")) {
             const before = this.messages.length;
             this.messages = await compactAsync(this.messages, (msgs) => this.summarizeForCompaction(msgs, current));
+            const summaryMsg = this.messages.find(
+              (m) => m.role === "system" && typeof m.content === "string" && m.content.startsWith("## Compaction summary of"),
+            );
+            if (summaryMsg) this.sink.message(summaryMsg);
             this.sink.compaction(before, this.messages.length, dec.reason);
             this.pushTimeline({ type: "compaction", turnId, before, after: this.messages.length, reason: dec.reason, ts: Date.now() });
           }
@@ -548,18 +566,22 @@ export class Agent {
             const command = (acc.name === "shell.run" || acc.name === "shell.backgroundRun") ? String(partialArgs.command ?? "") : undefined;
             const title = prettyToolTitle(acc.name, partialArgs, "processing");
             this.upsertToolStep(ev.id, acc.name, title, command);
-            if ((acc.name === "file.write" || acc.name === "file.edit") && partialArgs.path && typeof partialArgs.content === "string" && partialArgs.content.length > 0) {
+            if ((acc.name === "file.write" || acc.name === "file.edit") && typeof partialArgs.path === "string" && partialArgs.path.length > 0) {
               const stepIndex = this.steps.findIndex((s) => s.id === ev.id);
               if (stepIndex >= 0 && this.steps[stepIndex].pending !== false) {
                 const isWrite = acc.name === "file.write";
-                const prevContent = this.toolAccPrevContent.get(ev.id);
-                if (prevContent !== partialArgs.content) {
-                  this.toolAccPrevContent.set(ev.id, partialArgs.content);
-                  const ed = new FileEditor(this.opts.workspaceRoot);
-                  const prev = isWrite ? "" : prevContent ?? "";
-                  const cur = partialArgs.content;
-                  const r = ed.applyInline(prev, cur);
-                  const hunks = r.diff.map((c) => ({ added: c.added ?? false, removed: c.removed ?? false, value: c.value }));
+                const curText = isWrite
+                  ? (typeof partialArgs.content === "string" ? partialArgs.content : "")
+                  : (typeof partialArgs.search === "string" ? partialArgs.search : "") + "\u0000" + (typeof partialArgs.replace === "string" ? partialArgs.replace : "");
+                const prevText = this.toolAccPrevContent.get(ev.id);
+                if (curText && curText !== prevText) {
+                  this.toolAccPrevContent.set(ev.id, curText);
+                  const hunks = isWrite
+                    ? streamDiffContent("", typeof partialArgs.content === "string" ? partialArgs.content : "")
+                    : streamEditDiffHunks(
+                        typeof partialArgs.search === "string" ? partialArgs.search : "",
+                        typeof partialArgs.replace === "string" ? partialArgs.replace : "",
+                      );
                   if (hunks.length > 0) {
                     const step = this.steps[stepIndex];
                     this.steps[stepIndex] = { ...step, diffHunks: hunks, filePath: partialArgs.path as string, pending: true };
@@ -577,7 +599,7 @@ export class Agent {
             if (typeof ev.usage.prompt === "number" && ev.usage.prompt > 0) {
               this.lastPromptTokens = Math.max(this.lastPromptTokens, ev.usage.prompt);
             }
-            this.sink.usage(this.usageByModel[model.id], this.usageByModel);
+            this.sink.usage({ ...ev.usage, cost: turnCost }, this.usageByModel);
             recordSuccess(model.id, usedProvider!.id);
             break;
           }
@@ -653,6 +675,7 @@ export class Agent {
           }
         }
         this.sink.turnEnd(turnId, true);
+        this.recordSessionNote();
         this.sink.done();
       }
     } catch (e) {
@@ -822,6 +845,8 @@ export class Agent {
           root: this.opts.workspaceRoot,
           shell: { policy: "allowlist" as const, allowlist: [] },
           requestApproval: this.opts.approveShell,
+          approvalsConfig: this.opts.approvalsConfig,
+          sessionApprovals: this.getSessionApprovals(),
         }, (question: string, options: string[]) => this.askFromSubagent(question, options, parent));
         const outputs = results.map((r, i) =>
           r.ok ? `[${specs[i].name}] ${r.output}` : `[${specs[i].name}] FAILED: ${r.output}`,
@@ -881,6 +906,8 @@ export class Agent {
         root: this.opts.workspaceRoot,
         shell: { policy: "allowlist" as const, allowlist: [] },
         requestApproval: this.opts.approveShell,
+        approvalsConfig: this.opts.approvalsConfig,
+        sessionApprovals: this.getSessionApprovals(),
       }, (question: string, options: string[]) => this.askFromSubagent(question, options, parent), (steps) => {
         this.appendStepChildren(tc.id, steps);
       });
@@ -1164,6 +1191,22 @@ export class Agent {
       this.messages.push({ id: randomUUID(), role: "tool", content: output, toolCallId: tc.id, ts: Date.now() });
       return;
     }
+    if (tc.name === "memory.note") {
+      const content = String(tc.args.content ?? "");
+      if (!content) {
+        this.appendToolOutput(tc.id, "memory.note requires a `content` argument.", false);
+        return;
+      }
+      const { appendNote } = await import("../memory/notes.js");
+      const r = await appendNote(this.opts.workspaceRoot, content.slice(0, 500));
+      if (r.index < 0) {
+        this.appendToolOutput(tc.id, "memory.note requires a `content` argument.", false);
+        return;
+      }
+      this.appendToolOutput(tc.id, `Note saved (entry ${r.index} of ${r.total}).`, true);
+      this.messages.push({ id: randomUUID(), role: "tool", content: `Note saved to workspace notes. It will be shown to future sessions in this workspace.`, toolCallId: tc.id, ts: Date.now() });
+      return;
+    }
     if (!def) return;
     const modeDef = this.opts.modeRegistry.get(this.currentMode);
     if (modeDef && !modeDef.allowedTools.includes(tc.name)) {
@@ -1262,6 +1305,7 @@ export class Agent {
       allowExternalPath,
       requestApproval: this.opts.approveShell ?? this.opts.toolContext.requestApproval,
       addSessionCommand: (cmd: string) => { this.sessionApprovals.sessionCommandAllowlist.push(cmd); },
+      signal: this.abortController?.signal,
       onChunk: this.makeChunkHandler(tc),
       onDiff: (diffHunks, filePath) => {
         for (let i = this.steps.length - 1; i >= 0; i--) {
@@ -1524,7 +1568,7 @@ export class Agent {
     const name = meta?.name ?? "";
     if (name === "web.fetch" || name === "web.search") return;
     const sig = `${name}|${JSON.stringify(meta?.args ?? {})}`;
-    this.consecutiveMistakes = sig === this.lastToolSig ? Math.max(2, this.consecutiveMistakes + 1) : this.consecutiveMistakes + 1;
+    this.consecutiveMistakes = sig === this.lastToolSig ? this.consecutiveMistakes + 1 : 1;
     this.lastToolSig = sig;
     if (this.consecutiveMistakes >= 3) {
       this.consecutiveMistakes = 0;
@@ -1546,6 +1590,14 @@ export class Agent {
   }
   private async truncateToolOutput(output: string, toolName: string): Promise<string> {
     if (output.length <= TOOL_OUTPUT_MAX_CHARS) return output;
+    const { compressForContext } = await import("../compress/compress.js");
+    try {
+      const comp = await compressForContext(output, toolName, this.opts.workspaceRoot);
+      if (comp.kind !== "none" && comp.output.length < output.length * 0.7) {
+        this.pushTimeline({ type: "context_compressed", turnId: "", toolName, kind: comp.kind, saved: comp.saved, ts: Date.now() });
+        return comp.output;
+      }
+    } catch {}
     const dir = path.join(getWorkspaceArcDir(this.opts.workspaceRoot), "tool_outputs");
     await fs.mkdir(dir, { recursive: true });
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
@@ -1577,6 +1629,20 @@ export class Agent {
       this.sink.steps(this.steps);
     }
   }
+  private recordSessionNote(): void {
+    if (!this.opts.isMain || this.opts.autoSessionNotes === false) return;
+    let lastUser: ChatMessage | undefined;
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const m = this.messages[i];
+      if (m.role === "user" && !(m as unknown as { images?: unknown }).images) { lastUser = m; break; }
+    }
+    if (!lastUser) return;
+    const task = lastUser.content.replace(/\s+/g, " ").trim().slice(0, 160);
+    if (!task || task.startsWith("The user has added this context")) return;
+    const doneCount = this.todoItems.filter((t) => t.state === "done").length;
+    const suffix = this.todoItems.length ? ` (${doneCount}/${this.todoItems.length} plan items done)` : "";
+    void import("../memory/notes.js").then(({ appendNote }) => appendNote(this.opts.workspaceRoot, `Task: ${task}${suffix}`)).catch(() => {});
+  }
 }
 function redactAuditData<T>(value: T): T {
   const sensitive = /^(?:args|content|replace|search|code|command|env|input|instructions|systemPrompt|apiKey|headers|authorization|token|password|secret)$/i;
@@ -1595,6 +1661,16 @@ function addUsage(a: TurnUsage | undefined, b: TurnUsage): TurnUsage {
     thinking: (a?.thinking ?? 0) + b.thinking,
     cost: (a?.cost ?? 0) + b.cost,
   };
+}
+function streamDiffContent(before: string, after: string): import("../protocol/process.js").DiffHunk[] {
+  return diffLines(before, after).map((c) => ({ added: c.added ?? false, removed: c.removed ?? false, value: c.value }));
+}
+function streamEditDiffHunks(search: string, replace: string): import("../protocol/process.js").DiffHunk[] {
+  const block = tryExtractDiffBlock(search);
+  const s = block?.search ?? search;
+  const r = block?.replace ?? replace;
+  if (!s && !r) return [];
+  return streamDiffContent(s, r);
 }
 function parsePartialArgs(json: string): Record<string, unknown> {
   try { return JSON.parse(json) as Record<string, unknown>; } catch {}
@@ -1711,6 +1787,12 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, state: "pr
       case "notebook.addCell": return `Adding a cell to ${cleanFilePath(path)}`;
       case "notebook.deleteCell": return `Deleting cell ${args.cellIndex ?? ""} from ${cleanFilePath(path)}`;
       case "notebook.execute": return `Executing cell ${args.cellIndex ?? ""} in ${cleanFilePath(path)}`;
+      case "wait.for": return `Waiting ${String(args.seconds ?? "")}s`;
+      case "wait.until": return `Waiting until ${clip(String(args.time ?? ""), 40)}`;
+      case "wait.forProcess": return `Waiting for process ${args.id ?? ""}`;
+      case "wait.forCommand": return `Waiting for: ${clip(String(args.command ?? ""))}`;
+      case "context.retrieve": return `Retrieving context ${String(args.id ?? "").slice(0, 12)}`;
+      case "memory.note": return `Saving note`;
       default: return name;
     }
   }
@@ -1794,6 +1876,12 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, state: "pr
       case "notebook.addCell": return `Failed to add cell to ${path}`;
       case "notebook.deleteCell": return `Failed to delete cell ${args.cellIndex ?? ""} from ${path}`;
       case "notebook.execute": return `Failed to execute cell ${args.cellIndex ?? ""} in ${path}`;
+      case "wait.for": return `Wait interrupted (${String(args.seconds ?? "")}s)`;
+      case "wait.until": return `Wait until ${clip(String(args.time ?? ""), 40)} interrupted`;
+      case "wait.forProcess": return `Wait for process ${args.id ?? ""} interrupted`;
+      case "wait.forCommand": return `Wait failed: ${clip(String(args.command ?? ""))}`;
+      case "context.retrieve": return `Failed to retrieve context ${String(args.id ?? "").slice(0, 12)}`;
+      case "memory.note": return `Failed to save note`;
       default: return `Failed: ${name}`;
     }
   }
@@ -1876,6 +1964,12 @@ function prettyToolTitle(name: string, args: Record<string, unknown>, state: "pr
     case "notebook.addCell": return `Added a cell to ${cleanFilePath(path)}`;
     case "notebook.deleteCell": return `Deleted cell ${args.cellIndex ?? ""} from ${cleanFilePath(path)}`;
     case "notebook.execute": return `Executed cell ${args.cellIndex ?? ""} in ${cleanFilePath(path)}`;
+    case "wait.for": return `Waited ${String(args.seconds ?? "")}s`;
+    case "wait.until": return `Waited until ${clip(String(args.time ?? ""), 40)}`;
+    case "wait.forProcess": return `Waited for process ${args.id ?? ""}`;
+    case "wait.forCommand": return `Waited for: ${clip(String(args.command ?? ""))}`;
+    case "context.retrieve": return `Retrieved context ${String(args.id ?? "").slice(0, 12)}`;
+    case "memory.note": return `Note saved`;
     default: return name;
   }
 }
@@ -1957,6 +2051,44 @@ function prettyToolSummary(name: string, args: Record<string, unknown>): string 
     case "notebook.addCell": return "Add notebook cell";
     case "notebook.deleteCell": return `Delete notebook cell ${args.cellIndex ?? ""}`;
     case "notebook.execute": return `Execute notebook cell ${args.cellIndex ?? ""} in ${String(args.path ?? "")}`;
+    case "shell.customRun": return `Define custom run '${String(args.name ?? "")}'`;
+    case "shell.editCustomRun": return `Edit custom run ${args.id ?? ""}`;
+    case "shell.runCustomRun": return `Run custom run ${args.id ?? ""}`;
+    case "lsp.problems": return "Check workspace problems";
+    case "lsp.problemsFor": return `Check problems in ${clip(String(args.path ?? ""))}`;
+    case "todo.write": return `Update plan (${Array.isArray(args.items) ? `${args.items.length} items` : "items"})`;
+    case "file.semanticSearch": return `Semantic search for ${clip(String(args.query ?? ""), 40)}`;
+    case "mcp.resources/list": return `List MCP resources on ${args.server ?? ""}`;
+    case "mcp.resources/read": return `Read MCP resource ${args.uri ?? ""}`;
+    case "mcp.prompts/list": return `List MCP prompts on ${args.server ?? ""}`;
+    case "mcp.prompts/get": return `Get MCP prompt ${args.name ?? ""} from ${args.server ?? ""}`;
+    case "session.exportTrace": return "Export session trace";
+    case "checkpoint.revert": return args.turnId ? `Revert to checkpoint ${args.turnId}` : `Revert ${args.index !== undefined ? `checkpoint #${args.index}` : "checkpoint"}`;
+    case "checkpoint.list": return "List checkpoints";
+    case "checkpoint.compare": return `Compare checkpoints ${args.indexA !== undefined ? `#${args.indexA}` : ""}${args.indexB !== undefined ? ` and #${args.indexB}` : ""}`;
+    case "subagent.spawn": return Array.isArray(args.batch) ? `Spawn ${args.batch.length} subagents in parallel` : `Spawn subagent ${String(args.name ?? "")}`;
+    case "subagent.askParent": return `Ask parent: ${clip(String(args.question ?? ""), 40)}`;
+    case "handoff": return `Hand off (${args.direction ?? "escalate"})`;
+    case "clarification.askUser": return `Ask: ${clip(String(args.question ?? ""), 40)}`;
+    case "mode.switch": return `Switch to mode '${String(args.slug ?? "")}'`;
+    case "skill.read": return `Read skill ${String(args.name ?? "")}`;
+    case "skill.use": return `Load skill ${String(args.name ?? "")}`;
+    case "memory.list": return "List memories";
+    case "memory.edit": return `Edit memory #${args.index ?? ""}`;
+    case "memory.delete": return `Delete memory #${args.index ?? ""}`;
+    case "memory.add": return `Add memory (${args.category ?? "general"})`;
+    case "memory.note": return "Append workspace note";
+    case "rule.list": return "List rules";
+    case "rule.read": return `Read rule ${String(args.name ?? "")}`;
+    case "rule.create": return `Create rule ${String(args.name ?? "")}`;
+    case "browser.hover": return `Hover ${clip(String(args.selector ?? ""))}`;
+    case "browser.scroll": return args.pixels !== undefined ? `Scroll ${args.pixels}px` : `Scroll to ${clip(String(args.selector ?? ""))}`;
+    case "browser.waitFor": return `Wait for ${clip(String(args.selector ?? args.url ?? ""))}`;
+    case "wait.for": return `Wait ${args.seconds ?? ""}s`;
+    case "wait.until": return `Wait until ${String(args.time ?? "")}`;
+    case "wait.forProcess": return `Wait for process ${args.id ?? ""}`;
+    case "wait.forCommand": return `Wait until: ${clip(String(args.command ?? ""), 40)}`;
+    case "context.retrieve": return `Restore compressed output ${args.id ?? ""}`;
     default: return name;
   }
 }
@@ -1985,4 +2117,4 @@ function renderForSummary(msgs: ChatMessage[]): string {
     }
   }
   return out.join("\n");
-}
+}

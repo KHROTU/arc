@@ -1,33 +1,35 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus, Trash2, Plug, Braces, Cpu, KeyRound, X, Check, Info, ListChecks, Play, RefreshCw, CircleDot, AlertTriangle, Layers, Pencil } from "./icons";
+import { Plus, Trash2, Plug, X, Check, Info, Play, RefreshCw, CircleDot, AlertTriangle, Pencil, ChevronDown, ChevronRight } from "./icons";
 import type { RpcClient, HostEvent } from "../rpc";
 import type { ModelDescriptor, ModelTier, ProviderKind, ProviderSummary } from "@arc/host/protocol";
 type ProviderSpec = { kind: ProviderKind; label: string; tags: string[]; defaultBaseUrl?: string };
-type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderSummary[]; monoLogoText: string; version: string; providerCatalog: ProviderSpec[] };
+type ToolSpec = { name: string; category: string; description: string };
+type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderSummary[]; monoLogoText: string; version: string; providerCatalog: ProviderSpec[]; toolCatalog: ToolSpec[] };
 const TIERS: ModelTier[] = ["heavy", "default", "light", "free"];
 const TIER_ORDER: Record<ModelTier, number> = { heavy: 0, default: 1, light: 2, free: 3 };
-type Tab = "models" | "providers" | "mcp" | "general" | "search" | "customize" | "modes";
-const TABS: { value: Tab; label: string; icon: React.ReactNode }[] = [
-  { value: "models", label: "Models", icon: <Cpu size={15} /> },
-  { value: "providers", label: "Providers", icon: <KeyRound size={15} /> },
-  { value: "mcp", label: "MCP", icon: <Plug size={15} /> },
-  { value: "general", label: "General", icon: <Braces size={15} /> },
-  { value: "search", label: "Search", icon: <Play size={15} /> },
-  { value: "modes", label: "Modes", icon: <Layers size={15} /> },
-  { value: "customize", label: "Customize", icon: <ListChecks size={15} /> },
+type Tab = "models" | "providers" | "mcp" | "agent" | "tools" | "general" | "search" | "modes" | "workspace";
+const TABS: { value: Tab; label: string }[] = [
+  { value: "models", label: "Models" },
+  { value: "providers", label: "Providers" },
+  { value: "mcp", label: "MCP" },
+  { value: "agent", label: "Agent" },
+  { value: "tools", label: "Tools" },
+  { value: "general", label: "General" },
+  { value: "search", label: "Search" },
+  { value: "modes", label: "Modes" },
+  { value: "workspace", label: "Workspace" },
 ];
-export default function SettingsModal({ client, onClose, models, providers, monoLogoText, version, providerCatalog }: Props) {
+export default function SettingsModal({ client, onClose, models, providers, monoLogoText, version, providerCatalog, toolCatalog }: Props) {
   const [tab, setTab] = useState<Tab>("models");
   const logoTextUri = monoLogoText;
   return (
     <div className="arc-modal-overlay" onClick={onClose}>
       <div className="arc-modal" onClick={(e) => e.stopPropagation()}>
         <header className="arc-modal-head">
-          <h2>Settings</h2>
           <nav className="arc-settings-tabs">
             {TABS.map((t) => (
               <button key={t.value} className={`arc-tab ${tab === t.value ? "is-active" : ""}`} onClick={() => setTab(t.value)}>
-                {t.icon}<span>{t.label}</span>
+                <span>{t.label}</span>
               </button>
             ))}
           </nav>
@@ -38,10 +40,12 @@ export default function SettingsModal({ client, onClose, models, providers, mono
             {tab === "models" && <ModelsTab client={client} providers={providers} models={models} onSwitchTab={setTab} />}
             {tab === "providers" && <ProvidersTab client={client} providers={providers} models={models} providerCatalog={providerCatalog} />}
             {tab === "mcp" && <McpTab client={client} />}
+            {tab === "agent" && <AgentTab client={client} />}
+            {tab === "tools" && <ToolsTab client={client} toolCatalog={toolCatalog} />}
             {tab === "general" && <GeneralTab client={client} />}
             {tab === "search" && <SearchTab client={client} />}
             {tab === "modes" && <ModesTab client={client} models={models} />}
-            {tab === "customize" && <CustomTab client={client} />}
+            {tab === "workspace" && <WorkspaceTab client={client} />}
             <AboutSection logoTextUri={logoTextUri} version={version} />
           </div>
         </main>
@@ -638,15 +642,10 @@ function McpMarketplace({ client, existingServers }: { client: RpcClient; existi
     </Section>
   );
 }
-function GeneralTab({ client }: { client: RpcClient }) {
+function AgentTab({ client }: { client: RpcClient }) {
   const [compactionStrategy, setCompactionStrategy] = useState<"model-aware" | "fixed">("model-aware");
   const [safetyMargin, setSafetyMargin] = useState(0.15);
   const [titleGenMethod, setTitleGenMethod] = useState<"first-words" | "ollama">("first-words");
-  const [spoofRpc, setSpoofRpc] = useState(false);
-  const [proxyUrl, setProxyUrl] = useState("");
-  const [proxyProviderUrl, setProxyProviderUrl] = useState("");
-  const [proxyWebUrl, setProxyWebUrl] = useState("");
-  const [proxyShellUrl, setProxyShellUrl] = useState("");
   const [verifyMode, setVerifyMode] = useState<"none" | "default" | "custom">("default");
   const [verifyMaxRetries, setVerifyMaxRetries] = useState(3);
   const [attentionEnabled, setAttentionEnabled] = useState(false);
@@ -656,15 +655,11 @@ function GeneralTab({ client }: { client: RpcClient }) {
   const [attentionError, setAttentionError] = useState(true);
   const [polishLevel, setPolishLevel] = useState<"off" | "basic" | "polish">("off");
   const [qualityBias, setQualityBias] = useState<"off" | "prefer-cheap" | "prefer-powerful">("off");
+  const [reasoningEffort, setReasoningEffort] = useState<"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">("high");
   useEffect(() => {
     void client.request("arc.compaction.strategy").then((v) => setCompactionStrategy((v as typeof compactionStrategy) ?? "model-aware"));
     void client.request("arc.compaction.safetyMargin").then((v) => setSafetyMargin(typeof v === "number" ? v : 0.15));
     void client.request("arc.titleGeneration.method").then((v) => setTitleGenMethod(v === "ollama" ? "ollama" : "first-words"));
-    void client.request("arc.discord.spoofRpc").then((v) => setSpoofRpc(v === true));
-    void client.request("arc.proxy.url").then((v) => setProxyUrl(typeof v === "string" ? v : ""));
-    void client.request("arc.proxy.providerUrl").then((v) => setProxyProviderUrl(typeof v === "string" ? v : ""));
-    void client.request("arc.proxy.webUrl").then((v) => setProxyWebUrl(typeof v === "string" ? v : ""));
-    void client.request("arc.proxy.shellUrl").then((v) => setProxyShellUrl(typeof v === "string" ? v : ""));
     void client.request("arc.verify.mode").then((v) => setVerifyMode(v === "none" || v === "custom" ? v : "default"));
     void client.request("arc.verify.customMaxRetries").then((v) => setVerifyMaxRetries(typeof v === "number" ? v : 3));
     void client.request("arc.attention.enabled").then((v) => setAttentionEnabled(v === true));
@@ -674,6 +669,10 @@ function GeneralTab({ client }: { client: RpcClient }) {
     void client.request("arc.attention.error").then((v) => setAttentionError(v !== false));
     void client.request("arc.promptPolish").then((v) => setPolishLevel(v === "basic" || v === "polish" ? v : "off"));
     void client.request("arc.router.qualityBias").then((v) => setQualityBias(v === "prefer-cheap" || v === "prefer-powerful" ? v : "off"));
+    void client.request("arc.reasoning.effort").then((v) => {
+      const known = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+      setReasoningEffort(known.includes(String(v)) ? v as typeof reasoningEffort : "high");
+    });
   }, [client]);
   return (
     <>
@@ -716,58 +715,23 @@ function GeneralTab({ client }: { client: RpcClient }) {
           </div></li>
         </ul>
       </Section>
-      <Section title="Proxy" description="Optional HTTP/HTTPS proxy URLs. Category settings override the fallback.">
+      <Section title="Reasoning" description="How much the model reasons before responding on new chats.">
         <ul className="arc-rows">
           <li className="arc-row"><div className="arc-row-main">
-            <span className="arc-row-label">URL</span>
-            <span className="arc-row-meta">fallback for all categories</span>
+            <span className="arc-row-label">Default effort</span>
+            <span className="arc-row-meta">reasoning budget for new conversations</span>
             <span className="arc-spacer" />
-            <input className="arc-input arc-input-sm" type="text" placeholder="http://proxy:8080" value={proxyUrl} onChange={(e) => setProxyUrl(e.target.value)} onBlur={() => client.send({ type: "config/set", key: "arc.proxy.url", value: proxyUrl.trim() })} style={{ width: 280 }} />
-          </div></li>
-          <li className="arc-row"><div className="arc-row-main">
-            <span className="arc-row-label">Provider</span>
-            <span className="arc-row-meta">model provider API calls (OpenAI, Anthropic, Ollama, etc.)</span>
-            <span className="arc-spacer" />
-            <input className="arc-input arc-input-sm" type="text" placeholder="http://proxy:8080" value={proxyProviderUrl} onChange={(e) => setProxyProviderUrl(e.target.value)} onBlur={() => client.send({ type: "config/set", key: "arc.proxy.providerUrl", value: proxyProviderUrl.trim() })} style={{ width: 280 }} />
-          </div></li>
-          <li className="arc-row"><div className="arc-row-main">
-            <span className="arc-row-label">Web</span>
-            <span className="arc-row-meta">web.fetch and web.search tools</span>
-            <span className="arc-spacer" />
-            <input className="arc-input arc-input-sm" type="text" placeholder="http://proxy:8080" value={proxyWebUrl} onChange={(e) => setProxyWebUrl(e.target.value)} onBlur={() => client.send({ type: "config/set", key: "arc.proxy.webUrl", value: proxyWebUrl.trim() })} style={{ width: 280 }} />
-          </div></li>
-          <li className="arc-row"><div className="arc-row-main">
-            <span className="arc-row-label">Shell</span>
-            <span className="arc-row-meta">sets HTTP_PROXY / HTTPS_PROXY env vars on shell commands</span>
-            <span className="arc-spacer" />
-            <input className="arc-input arc-input-sm" type="text" placeholder="http://proxy:8080" value={proxyShellUrl} onChange={(e) => setProxyShellUrl(e.target.value)} onBlur={() => client.send({ type: "config/set", key: "arc.proxy.shellUrl", value: proxyShellUrl.trim() })} style={{ width: 280 }} />
-          </div></li>
-        </ul>
-      </Section>
-      <Section title="Titles" description="How new chat titles are generated.">
-        <ul className="arc-rows">
-          <li className="arc-row"><div className="arc-row-main">
-            <span className="arc-row-label">Method</span>
-            <span className="arc-spacer" />
-            <select className="arc-input arc-input-sm" value={titleGenMethod} onChange={(e) => { const v = e.target.value as typeof titleGenMethod; setTitleGenMethod(v); client.send({ type: "config/set", key: "arc.titleGeneration.method", value: v }); }}>
-              <option value="first-words">first 40 chars</option>
-              <option value="ollama">gemma3:1b</option>
+            <select className="arc-input arc-input-sm" value={reasoningEffort} onChange={(e) => { const v = e.target.value as typeof reasoningEffort; setReasoningEffort(v); client.send({ type: "config/set", key: "arc.reasoning.effort", value: v }); }}>
+              <option value="none">none</option>
+              <option value="minimal">minimal</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh</option>
+              <option value="max">max</option>
             </select>
           </div></li>
         </ul>
-      </Section>
-      <Section title="Discord" description="Show the file the agent is editing as your Discord rich presence.">
-        <ul className="arc-rows">
-          <li className="arc-row"><div className="arc-row-main">
-            <span className="arc-row-label">Spoof RPC</span>
-            <span className="arc-row-meta">report agent file edits to Discord extensions</span>
-            <span className="arc-spacer" />
-            <Toggle checked={spoofRpc} onChange={(v) => { setSpoofRpc(v); client.send({ type: "config/set", key: "arc.discord.spoofRpc", value: v }); }} />
-          </div></li>
-        </ul>
-      </Section>
-      <Section title="Images" description="How attached images are handled when the active model is not multimodal.">
-        <ImageProcessingSection client={client} />
       </Section>
       <Section title="Composer" description="Prompt handling before sending.">
         <ul className="arc-rows">
@@ -792,6 +756,21 @@ function GeneralTab({ client }: { client: RpcClient }) {
             </select>
           </div></li>
         </ul>
+      </Section>
+      <Section title="Titles" description="How new chat titles are generated.">
+        <ul className="arc-rows">
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Method</span>
+            <span className="arc-spacer" />
+            <select className="arc-input arc-input-sm" value={titleGenMethod} onChange={(e) => { const v = e.target.value as typeof titleGenMethod; setTitleGenMethod(v); client.send({ type: "config/set", key: "arc.titleGeneration.method", value: v }); }}>
+              <option value="first-words">first 40 chars</option>
+              <option value="ollama">gemma3:1b</option>
+            </select>
+          </div></li>
+        </ul>
+      </Section>
+      <Section title="Images" description="How attached images are handled when the active model is not multimodal.">
+        <ImageProcessingSection client={client} />
       </Section>
       <Section title="Sounds" description="Optional attention sounds for agent activity (pure WebAudio, no assets).">
         <ul className="arc-rows">
@@ -824,6 +803,192 @@ function GeneralTab({ client }: { client: RpcClient }) {
             <span className="arc-row-meta">when a turn fails</span>
             <span className="arc-spacer" />
             <Toggle checked={attentionError} onChange={(v) => { setAttentionError(v); client.send({ type: "config/set", key: "arc.attention.error", value: v }); }} />
+          </div></li>
+        </ul>
+      </Section>
+    </>
+  );
+}
+function GeneralTab({ client }: { client: RpcClient }) {
+  const [spoofRpc, setSpoofRpc] = useState(false);
+  const [proxyUrl, setProxyUrl] = useState("");
+  const [proxyProviderUrl, setProxyProviderUrl] = useState("");
+  const [proxyWebUrl, setProxyWebUrl] = useState("");
+  const [proxyShellUrl, setProxyShellUrl] = useState("");
+  useEffect(() => {
+    void client.request("arc.discord.spoofRpc").then((v) => setSpoofRpc(v === true));
+    void client.request("arc.proxy.url").then((v) => setProxyUrl(typeof v === "string" ? v : ""));
+    void client.request("arc.proxy.providerUrl").then((v) => setProxyProviderUrl(typeof v === "string" ? v : ""));
+    void client.request("arc.proxy.webUrl").then((v) => setProxyWebUrl(typeof v === "string" ? v : ""));
+    void client.request("arc.proxy.shellUrl").then((v) => setProxyShellUrl(typeof v === "string" ? v : ""));
+  }, [client]);
+  return (
+    <>
+      <Section title="Proxy" description="Optional HTTP/HTTPS proxy URLs. Category settings override the fallback.">
+        <ul className="arc-rows">
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">URL</span>
+            <span className="arc-row-meta">fallback for all categories</span>
+            <span className="arc-spacer" />
+            <input className="arc-input arc-input-sm" type="text" placeholder="http://proxy:8080" value={proxyUrl} onChange={(e) => setProxyUrl(e.target.value)} onBlur={() => client.send({ type: "config/set", key: "arc.proxy.url", value: proxyUrl.trim() })} style={{ width: 280 }} />
+          </div></li>
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Provider</span>
+            <span className="arc-row-meta">model provider API calls (OpenAI, Anthropic, Ollama, etc.)</span>
+            <span className="arc-spacer" />
+            <input className="arc-input arc-input-sm" type="text" placeholder="http://proxy:8080" value={proxyProviderUrl} onChange={(e) => setProxyProviderUrl(e.target.value)} onBlur={() => client.send({ type: "config/set", key: "arc.proxy.providerUrl", value: proxyProviderUrl.trim() })} style={{ width: 280 }} />
+          </div></li>
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Web</span>
+            <span className="arc-row-meta">web.fetch and web.search tools</span>
+            <span className="arc-spacer" />
+            <input className="arc-input arc-input-sm" type="text" placeholder="http://proxy:8080" value={proxyWebUrl} onChange={(e) => setProxyWebUrl(e.target.value)} onBlur={() => client.send({ type: "config/set", key: "arc.proxy.webUrl", value: proxyWebUrl.trim() })} style={{ width: 280 }} />
+          </div></li>
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Shell</span>
+            <span className="arc-row-meta">sets HTTP_PROXY / HTTPS_PROXY env vars on shell commands</span>
+            <span className="arc-spacer" />
+            <input className="arc-input arc-input-sm" type="text" placeholder="http://proxy:8080" value={proxyShellUrl} onChange={(e) => setProxyShellUrl(e.target.value)} onBlur={() => client.send({ type: "config/set", key: "arc.proxy.shellUrl", value: proxyShellUrl.trim() })} style={{ width: 280 }} />
+          </div></li>
+        </ul>
+      </Section>
+      <Section title="Discord" description="Show the file the agent is editing as your Discord rich presence.">
+        <ul className="arc-rows">
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Spoof RPC</span>
+            <span className="arc-row-meta">report agent file edits to Discord extensions</span>
+            <span className="arc-spacer" />
+            <Toggle checked={spoofRpc} onChange={(v) => { setSpoofRpc(v); client.send({ type: "config/set", key: "arc.discord.spoofRpc", value: v }); }} />
+          </div></li>
+        </ul>
+      </Section>
+    </>
+  );
+}
+function ToolsTab({ client, toolCatalog }: { client: RpcClient; toolCatalog: ToolSpec[] }) {
+  const [disabled, setDisabled] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [loaded, setLoaded] = useState(false);
+  const [shellApproval, setShellApproval] = useState<"always" | "allowlist" | "off">("allowlist");
+  const [sandboxProfile, setSandboxProfile] = useState<"off" | "read-only" | "workspace">("off");
+  useEffect(() => {
+    void client.request("arc.tools.disabled").then((v) => {
+      const arr = Array.isArray(v) ? v as string[] : [];
+      setDisabled(new Set(arr));
+      setLoaded(true);
+    });
+    void client.request("arc.shell.approval").then((v) => setShellApproval(v === "always" || v === "off" ? v : "allowlist"));
+    void client.request("arc.sandbox.profile").then((v) => setSandboxProfile(v === "read-only" || v === "workspace" ? v : "off"));
+  }, [client]);
+  const saveDisabled = (next: Set<string>) => {
+    setDisabled(next);
+    client.send({ type: "config/set", key: "arc.tools.disabled", value: [...next] });
+  };
+  const categories: { category: string; tools: ToolSpec[] }[] = [];
+  const byCat = new Map<string, ToolSpec[]>();
+  for (const t of toolCatalog) {
+    const list = byCat.get(t.category) ?? [];
+    list.push(t);
+    byCat.set(t.category, list);
+  }
+  const CAT_ORDER = ["File", "Shell", "Browser", "Web", "MCP", "Git", "Memory", "Rules", "Skills", "Notebook", "Checkpoints", "Subagents", "Wait", "Code intelligence", "Testing", "Planning", "Session", "Context", "Modes", "Communication", "Other"];
+  for (const cat of CAT_ORDER) {
+    const tools = byCat.get(cat);
+    if (tools?.length) categories.push({ category: cat, tools });
+  }
+  for (const [cat, tools] of byCat) {
+    if (!CAT_ORDER.includes(cat)) categories.push({ category: cat, tools });
+  }
+  const toggleCat = (tools: ToolSpec[]) => {
+    const allOff = tools.every((t) => disabled.has(t.name));
+    const next = new Set(disabled);
+    if (allOff) for (const t of tools) next.delete(t.name);
+    else for (const t of tools) next.add(t.name);
+    saveDisabled(next);
+  };
+  const toggleTool = (name: string) => {
+    const next = new Set(disabled);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    saveDisabled(next);
+  };
+  const catCount = (tools: ToolSpec[]) => tools.filter((t) => !disabled.has(t.name)).length;
+  const enabledCount = toolCatalog.filter((t) => !disabled.has(t.name)).length;
+  return (
+    <>
+      <Section
+        title="Tool calls"
+        description="Unselect tools the agent doesn't need."
+        action={loaded ? <span className="arc-row-meta">{enabledCount}/{toolCatalog.length} enabled</span> : undefined}
+      >
+        {!loaded ? <p className="arc-empty">Loading…</p> : toolCatalog.length === 0 ? <p className="arc-empty">No tools available.</p> : (
+          <ul className="arc-rows">
+            {categories.map(({ category, tools }) => {
+              const on = catCount(tools);
+              const allOn = on === tools.length;
+              const someOn = on > 0 && !allOn;
+              return (
+                <li key={category} className="arc-row">
+                  <div className="arc-row-main arc-tool-cat">
+                    <button className="arc-iconbtn" onClick={() => { const next = new Set(expanded); if (next.has(category)) next.delete(category); else next.add(category); setExpanded(next); }} title={expanded.has(category) ? "Collapse" : "Expand"}>
+                      {expanded.has(category) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </button>
+                    <span className="arc-row-label">{category}</span>
+                    <span className="arc-row-meta">{on}/{tools.length} enabled</span>
+                    <span className="arc-spacer" />
+                    <input
+                      type="checkbox"
+                      checked={allOn}
+                      ref={(el) => { if (el) el.indeterminate = someOn; }}
+                      onChange={() => toggleCat(tools)}
+                      title={allOn ? "Disable all in category" : "Enable all in category"}
+                    />
+                  </div>
+                  {expanded.has(category) && (
+                    <ul className="arc-rows arc-tool-sublist">
+                      {tools.map((t) => (
+                        <li key={t.name} className="arc-row">
+                          <div className="arc-row-main">
+                            <span className="arc-row-label arc-monospace">{t.name}</span>
+                            <span className="arc-row-meta">{t.description}</span>
+                            <span className="arc-spacer" />
+                            <input
+                              type="checkbox"
+                              checked={!disabled.has(t.name)}
+                              onChange={() => toggleTool(t.name)}
+                              title={disabled.has(t.name) ? `Enable ${t.name}` : `Disable ${t.name}`}
+                            />
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Section>
+      <Section title="Shell" description="How shell commands are approved and sandboxed.">
+        <ul className="arc-rows">
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Approval policy</span>
+            <span className="arc-row-meta">which commands need your permission before running</span>
+            <span className="arc-spacer" />
+            <select className="arc-input arc-input-sm" value={shellApproval} onChange={(e) => { const v = e.target.value as typeof shellApproval; setShellApproval(v); client.send({ type: "config/set", key: "arc.shell.approval", value: v }); }}>
+              <option value="always">always ask</option>
+              <option value="allowlist">allowlist</option>
+              <option value="off">off (auto-approve)</option>
+            </select>
+          </div></li>
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Sandbox</span>
+            <span className="arc-row-meta">native OS sandboxing for shell commands (fails closed when unavailable)</span>
+            <span className="arc-spacer" />
+            <select className="arc-input arc-input-sm" value={sandboxProfile} onChange={(e) => { const v = e.target.value as typeof sandboxProfile; setSandboxProfile(v); client.send({ type: "config/set", key: "arc.sandbox.profile", value: v }); }}>
+              <option value="off">off</option>
+              <option value="read-only">read-only</option>
+              <option value="workspace">workspace</option>
+            </select>
           </div></li>
         </ul>
       </Section>
@@ -995,7 +1160,7 @@ function ModesTab({ client, models }: { client: RpcClient; models: ModelDescript
     </Section>
   );
 }
-function CustomTab({ client }: { client: RpcClient }) {
+function WorkspaceTab({ client }: { client: RpcClient }) {
   const PROMPTS = [
     { name: "Global default", meta: "built into the extension", action: null as React.ReactNode },
     { name: "~/.arc/workspaces/*/prompt.md", meta: "workspace prompt", action: <button className="arc-btn-ghost" onClick={() => client.send({ type: "ui/openPrompt" })}>Open</button> },
@@ -1007,6 +1172,7 @@ function CustomTab({ client }: { client: RpcClient }) {
   const [hooks, setHooks] = useState<{ event: string; matcher: string; command: string; enabled: boolean; tools?: string[] }[]>([]);
   const [prideLogo, setPrideLogo] = useState<"always" | "june" | "never">("june");
   const [toolTree, setToolTree] = useState<"auto" | "collapsed">("auto");
+  const [autoOpenDiff, setAutoOpenDiff] = useState(true);
   useEffect(() => {
     const offMem = client.on((e: any) => {
       if (e.type === "memory/list") { setMemories(e.memories); setMemLoading(false); }
@@ -1018,6 +1184,7 @@ function CustomTab({ client }: { client: RpcClient }) {
     client.send({ type: "hooks/list" });
     void client.request("arc.appearance.prideLogo").then((v) => setPrideLogo(v === "always" || v === "never" ? v as typeof prideLogo : "june"));
     void client.request("arc.appearance.toolTree").then((v) => setToolTree(v === "auto" ? "auto" : "collapsed"));
+    void client.request("arc.diffView.autoOpen").then((v) => setAutoOpenDiff(v !== false));
     return () => { offMem(); offHooks(); };
   }, [client]);
   return (
@@ -1056,6 +1223,12 @@ function CustomTab({ client }: { client: RpcClient }) {
               <option value="auto">auto</option>
               <option value="collapsed">collapsed</option>
             </select>
+          </div></li>
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Auto-open diff</span>
+            <span className="arc-row-meta">stream file-edit diffs into the main-window diff editor as they're generated</span>
+            <span className="arc-spacer" />
+            <Toggle checked={autoOpenDiff} onChange={(v) => { setAutoOpenDiff(v); client.send({ type: "config/set", key: "arc.diffView.autoOpen", value: v }); }} />
           </div></li>
         </ul>
       </Section>

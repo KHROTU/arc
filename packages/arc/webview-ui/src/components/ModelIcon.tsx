@@ -10,7 +10,7 @@ export default function ModelIcon({ modelId, size = 14, className, title }: Prop
   const name = modelId ? iconForModel(modelId) : DEFAULT_ICON;
   const svg = ICON_SVGS[name] ?? ICON_SVGS[DEFAULT_ICON];
   const paths = svg.paths.map((p, i) =>
-    createElement("path", { key: i, d: p.d, ...(p.fillRule ? { fillRule: p.fillRule } : {}) }),
+    createElement("path", { key: i, d: p.d, ...(p.fillRule ? { fillRule: p.fillRule } : {}), ...(p.opacity ? { opacity: p.opacity } : {}) }),
   );
   const content = svg.transform
     ? createElement("g", { key: "fit", transform: svg.transform }, paths)

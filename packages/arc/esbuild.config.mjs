@@ -15,6 +15,7 @@ const host = {
   target: "node18.18",
   outfile: resolve(__dirname, "dist/extension.js"),
   external: ["vscode", "playwright", "playwright-core", "playwright-firefox", "undici", "@img/*", "canvas"],
+  charset: "utf8",
   sourcemap: !isProd,
   minify: isProd,
   minifyIdentifiers: isProd,
@@ -41,6 +42,7 @@ const webview = {
   target: "es2020",
   outfile: resolve(__dirname, "dist/webview.js"),
   jsx: "automatic",
+  charset: "utf8",
   loader: { ".svg": "text", ".png": "dataurl" },
   alias: {
     "react": "preact/compat",

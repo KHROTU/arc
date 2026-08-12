@@ -43,6 +43,7 @@ export interface ProcessStep {
   options?: string[];
   children?: ProcessStep[];
   interrupted?: boolean;
+  noMark?: boolean;
 }
 const AnimatedNumber = memo(({ value }: { value: number }) => (
   <span className="arc-proc-count">
@@ -289,18 +290,20 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, onOpenFullscre
   return (
     <FadeSlideIn className={`arc-proc-node arc-proc-node-${step.type}`}>
       <button
-        className={`arc-proc-row${step.pending ? " is-pending" : ""}`}
+        className={`arc-proc-row${step.noMark ? " is-flush" : ""}${step.pending ? " is-pending" : ""}`}
         onClick={() => hasDetails && onToggle()}
         disabled={!hasDetails}
         aria-expanded={hasDetails ? isActive : undefined}
       >
-        <span className="arc-proc-row-mark">
-          {step.toolName === "subagent.spawn" && step.modelId ? (
-            <ModelIcon modelId={step.modelId} size={13} className="arc-proc-dot-icon is-muted" title={step.modelLabel} />
-          ) : (
-            <StatusDot type={step.type} interrupted={step.interrupted} pending={step.pending} />
-          )}
-        </span>
+        {!step.noMark && (
+          <span className="arc-proc-row-mark">
+            {step.toolName === "subagent.spawn" && step.modelId ? (
+              <ModelIcon modelId={step.modelId} size={13} className="arc-proc-dot-icon is-muted" title={step.modelLabel} />
+            ) : (
+              <StatusDot type={step.type} interrupted={step.interrupted} pending={step.pending} />
+            )}
+          </span>
+        )}
         <span className="arc-proc-title">{step.title}{step.pending ? <span className="arc-working-dots" /> : null}{step.interrupted ? <span className="arc-proc-interrupted">(stopped)</span> : null}</span>
         {hasDetails && (
           <RotateArrow open={isActive} />

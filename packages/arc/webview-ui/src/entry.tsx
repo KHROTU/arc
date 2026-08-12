@@ -26,7 +26,9 @@ if (!root) {
     const toolTree = (root.getAttribute("data-tool-tree") as "auto" | "collapsed") || "auto";
     let providerCatalog: { kind: string; label: string; tags: string[]; defaultBaseUrl?: string }[] = [];
     try { providerCatalog = JSON.parse(root.getAttribute("data-catalog") || "[]"); } catch { }
-    createRoot(root).render(<App mode={mode} monoLogo={mono} prideLogo={pride} monoLogoText={monoText} prideActive={isPride} toolTreeMode={toolTree} version={version} providerCatalog={providerCatalog} />);
+    let toolCatalog: { name: string; category: string; description: string }[] = [];
+    try { toolCatalog = JSON.parse(root.getAttribute("data-tools") || "[]"); } catch { }
+    createRoot(root).render(<App mode={mode} monoLogo={mono} prideLogo={pride} monoLogoText={monoText} prideActive={isPride} toolTreeMode={toolTree} version={version} providerCatalog={providerCatalog} toolCatalog={toolCatalog} />);
   } catch (err) {
     root.innerHTML = `<pre style="color:#f88;padding:20px;white-space:pre-wrap;font:12px monospace">${(err as Error)?.stack ?? String(err)}</pre>`;
   }

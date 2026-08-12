@@ -1,10 +1,17 @@
 const ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const escape = (s: string): string => s.replace(/[&<>"']/g, (c) => ESC[c] ?? c);
+const FILE_REF_RE = /(?<![\w./\\-])([A-Za-z0-9_@][\w./\\-]*\.[A-Za-z0-9]{1,8}):(\d+)(?:-(\d+))?(?![\d-])/g;
+const FILE_REF_FULL = /(?<![\w./\\-])([A-Za-z0-9_@][\w./\\-]*\.[A-Za-z0-9]{1,8}):(\d+)(?:-(\d+))?(?![\d-])/;
 function renderInline(s: string): string {
   const codes: string[] = [];
   s = s.replace(/`([^`\n]+)`/g, (_, c) => {
     codes.push(c);
     return `\u0001C${codes.length - 1}\u0001`;
+  });
+  const refs: { path: string; line: string; endLine?: string }[] = [];
+  s = s.replace(FILE_REF_RE, (_m, path: string, line: string, endLine?: string) => {
+    refs.push({ path, line, ...(endLine ? { endLine } : {}) });
+    return `\u0001R${refs.length - 1}\u0001`;
   });
   const images: string[] = [];
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g, (_, alt, src) => {
@@ -33,8 +40,20 @@ function renderInline(s: string): string {
     const { text, href } = JSON.parse(links[Number(idx)]) as { text: string; href: string };
     return `<a href="${escape(href)}" rel="noopener noreferrer" target="_blank">${escape(text)}</a>`;
   });
+  s = s.replace(/\u0001R(\d+)\u0001/g, (_, idx) => {
+    const { path, line, endLine } = refs[Number(idx)];
+    return `<a class="arc-ref" role="link" tabindex="0" data-path="${escape(path)}" data-line="${escape(line)}"${endLine ? ` data-end-line="${escape(endLine)}"` : ""}>${escape(path)}:${escape(line)}${endLine ? `-${escape(endLine)}` : ""}</a>`;
+  });
   s = s.replace(/\u0001C(\d+)\u0001/g, (_, idx) => {
-    return `<code>${escape(codes[Number(idx)])}</code>`;
+    const raw = codes[Number(idx)];
+    const m = FILE_REF_FULL.exec(raw);
+    if (m && m[0] === raw) {
+      const path = m[1];
+      const line = m[2];
+      const endLine = m[3];
+      return `<code class="arc-ref-code" role="link" tabindex="0" data-path="${escape(path)}" data-line="${escape(line)}"${endLine ? ` data-end-line="${escape(endLine)}"` : ""}><span class="arc-ref-path">${escape(path)}</span><span class="arc-ref-lines">:${escape(line)}${endLine ? `-${escape(endLine)}` : ""}</span></code>`;
+    }
+    return `<code>${escape(raw)}</code>`;
   });
   return s;
 }

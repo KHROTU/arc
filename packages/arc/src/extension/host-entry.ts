@@ -12,18 +12,19 @@ import {
   ModeRegistry, DEFAULT_APPROVALS, loadApprovalsMemory, saveApprovalPrefix,
   SkillRegistry,
   generateDependencyGraph, formatDepGraph,
-  RuleRegistry, loadMemory, deleteMemory,
+  RuleRegistry, loadMemory, deleteMemory, loadNotes,
   type ChatSnapshot, type ChatMessage, type BrowserAdapter,
   type HostMsg, type WebviewMsg, type ModelDescriptor, type ProviderConfig, type ProcessStep, type ApprovalsConfig,
   Indexer, HashEmbeddingBackend, OllamaEmbeddingBackend, DEFAULT_EMBEDDING_MODELS,
   type IndexProgress, type EmbeddingBackend,
   IndexWatcher,
   FileContextTracker,
+  estimateTokens,
   completeSamplingRequest,
   type SamplingCreateMessageParams,
   listBackgroundProcesses,
   auditLogPath, verifyAuditLogFile, configureAuditSecurity,
-  minimalEnvironment, runProcess, shellCommand, spawnBounded, terminateProcessTree,
+  minimalEnvironment, runGit, runProcess, shellCommand, spawnBounded, terminateProcessTree, setGitPath,
   resolveAuthorizedPath,
   readBodyLimited,
   configureVectorIndexSecurity,
@@ -83,6 +84,14 @@ const pendingApprovals = new Map<string, { resolve: (allowed: boolean) => void; 
 let approvalId = 0;
 const DIFF_PREVIEW_SCHEME = "arc-diff-preview";
 const diffPreviewContents = new Map<string, string>();
+const diffPreviewEmitter = new vscode.EventEmitter<vscode.Uri>();
+interface StreamingDiffState {
+  beforeUri: vscode.Uri;
+  afterUri: vscode.Uri;
+  opened: boolean;
+}
+const streamingDiffState = new Map<string, StreamingDiffState>();
+let lastStreamingDiffTab: vscode.Tab | undefined;
 let browser: BrowserAdapter | undefined;
 let browserPromise: Promise<BrowserAdapter> | undefined;
 let browserIdleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -257,7 +266,28 @@ function webviewResourceRoots(context: vscode.ExtensionContext): vscode.Uri[] {
   return [
     vscode.Uri.joinPath(context.extensionUri, "dist"),
     vscode.Uri.joinPath(context.extensionUri, "assets"),
+    vscode.Uri.joinPath(context.extensionUri, "resources"),
   ];
+}
+function resolveVscodeGitPath(): string | undefined {
+  try {
+    const configured = vscode.workspace.getConfiguration("git").get<string>("path");
+    if (configured) return configured;
+  } catch {}
+  try {
+    const ext = vscode.extensions.getExtension("vscode.git");
+    const api = ext?.exports?.getAPI?.(1) as { git?: { path?: string } } | undefined;
+    const p = api?.git?.path;
+    if (typeof p === "string" && p) return p;
+    if (ext) {
+      void ext.activate().then(() => {
+        const late = ext.exports?.getAPI?.(1) as { git?: { path?: string } } | undefined;
+        const latePath = late?.git?.path;
+        if (typeof latePath === "string" && latePath) setGitPath(latePath);
+      }, () => {});
+    }
+  } catch {}
+  return undefined;
 }
 export function activate(context: vscode.ExtensionContext) {
   ctxRef = context;
@@ -267,6 +297,7 @@ export function activate(context: vscode.ExtensionContext) {
   setupHeapSnapshotOnHighUsage();
   registerNotebookCellActions(context);
   registerDiffSecretScan(context);
+  setGitPath(resolveVscodeGitPath());
   modeRegistry = new ModeRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
   skillRegistry = new SkillRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(), vscode.workspace.isTrusted);
   ruleRegistry = new RuleRegistry(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(), vscode.workspace.isTrusted);
@@ -555,12 +586,14 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
   void vscode.commands.executeCommand("setContext", "arc.showProblems", false);
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(DIFF_PREVIEW_SCHEME, {
+      onDidChange: diffPreviewEmitter.event,
       provideTextDocumentContent(uri: vscode.Uri): string {
         const id = new URLSearchParams(uri.query).get("id");
         if (!id) return "";
         return diffPreviewContents.get(id) ?? "";
       },
     }),
+    diffPreviewEmitter,
   );
 }
 async function initializeAsync(context: vscode.ExtensionContext) {
@@ -648,6 +681,8 @@ async function initializeAsync(context: vscode.ExtensionContext) {
       log.appendLine(`[arc] failed to persist chats: ${(e as Error).message}`);
     }
   };
+  renormalizeChatCosts();
+  void persistAsync();
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration("arc.promptPolish")) {
       broadcastAll({ type: "config/changed", key: "arc.promptPolish", value: vscode.workspace.getConfiguration().get("arc.promptPolish", "off") });
@@ -723,7 +758,6 @@ async function initializeAsync(context: vscode.ExtensionContext) {
   sidebarSession.id = currentChat.id;
   chatSessions.set(currentChat.id, sidebarSession);
   persist();
-  setTimeout(() => { void tryLoadIndex(); }, 2000);
   scheduleAutoReindex();
   await registryLoads.catch(() => {});
   initResolve?.();
@@ -831,6 +865,27 @@ function buildBeforeContentFromHunks(hunks: { added: boolean; removed: boolean; 
   }
   return before;
 }
+function buildAfterContentFromHunks(hunks: { added: boolean; removed: boolean; value: string }[]): string {
+  let after = "";
+  for (const h of hunks) {
+    if (h.removed && !h.added) continue;
+    after += h.value ?? "";
+  }
+  return after;
+}
+function findDiffTab(beforeUri: vscode.Uri, afterUri: vscode.Uri): vscode.Tab | undefined {
+  for (const group of vscode.window.tabGroups.all) {
+    for (const tab of group.tabs) {
+      const input = tab.input;
+      if (input instanceof vscode.TabInputTextDiff
+        && input.original.toString() === beforeUri.toString()
+        && input.modified.toString() === afterUri.toString()) {
+        return tab;
+      }
+    }
+  }
+  return undefined;
+}
 function createDiffPreviewUri(filePath: string, content: string): vscode.Uri {
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   diffPreviewContents.set(id, content);
@@ -911,6 +966,37 @@ async function loadDifficultyModelAsset(): Promise<DifficultyModel | null> {
 }
 const MAIN_AGENT_EXCLUDED_TOOLS = new Set(["subagent.askParent"]);
 const ENABLED_TOOLS: readonly string[] = Object.keys(TOOL_PARAM_SPECS).filter((t) => !MAIN_AGENT_EXCLUDED_TOOLS.has(t));
+function toolCategory(name: string): string {
+  const prefix = name.split(".")[0];
+  if (name === "test.run") return "Testing";
+  if (name === "todo.write") return "Planning";
+  if (name === "session.exportTrace") return "Session";
+  if (name === "context.retrieve") return "Context";
+  if (name === "mode.switch") return "Modes";
+  if (name === "handoff" || name === "clarification.askUser") return "Communication";
+  switch (prefix) {
+    case "file": return "File";
+    case "shell": return "Shell";
+    case "browser": return "Browser";
+    case "web": return "Web";
+    case "mcp": return "MCP";
+    case "git": return "Git";
+    case "memory": return "Memory";
+    case "rule": return "Rules";
+    case "skill": return "Skills";
+    case "notebook": return "Notebook";
+    case "checkpoint": return "Checkpoints";
+    case "subagent": return "Subagents";
+    case "wait": return "Wait";
+    case "lsp": return "Code intelligence";
+    default: return "Other";
+  }
+}
+const TOOL_CATALOG: { name: string; category: string; description: string }[] = ENABLED_TOOLS.map((name) => ({
+  name,
+  category: toolCategory(name),
+  description: TOOL_PARAM_SPECS[name].description,
+}));
 const buildSystemPrompt = async (mcpAggregator?: McpAggregator): Promise<string> => {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
   const globalParts = await loadGlobalPrompts();
@@ -960,14 +1046,15 @@ Safety policy > user intent > active mode > user prompt files > repo instruction
 
 ## Shell
 - shell.run for short-lived commands, shell.backgroundRun for long-running processes (builds, servers, watchers).
-- Poll with shell.check; send stdin with shell.write.
+- Poll with shell.check; send stdin with shell.write. Instead of polling loops, wait: wait.for (fixed delay), wait.until (wall-clock time), wait.forProcess (background process exit), wait.forCommand (a command that succeeds when a condition is met).
 - Chain commands (&& on Unix, ; on PowerShell) instead of separate shell.run calls. Suppress pagers (git --no-pager, append | cat).
 - Commit or push only when explicitly asked. If on the default branch, branch first.
 
 ## Memory & Rules
 - Use memory.add to persist key facts, decisions, and patterns the user establishes. Retrieve with memory.list before starting work.
-- Use rule.read and rule.list to recall workspace conventions and constraints before making changes.
+- Use memory.note to leave handoff notes for future sessions in this workspace (shown in the system prompt). Use rule.read and rule.list to recall workspace conventions and constraints before making changes.
 - Rules are source code, not prose — write them as actionable constraints the agent must follow.
+- Large tool outputs may arrive compressed with a retrieval id; use context.retrieve to restore the original when the omitted details matter.
 
 ## Workflow
 1. Understand the task. Use file.grep and file.glob to locate relevant code. Read files with file.read (use offset/limit for large files).
@@ -1026,7 +1113,14 @@ Safety policy > user intent > active mode > user prompt files > repo instruction
       if (d.contextMessage) hookContext += `\n\n${d.contextMessage}`;
     }
 } catch {  }
-  return staticPrompt + envBlock + volatileRules + styleSuffix + hookContext;
+  let notesBlock = "";
+  try {
+    const notes = await loadNotes(root);
+    if (notes) {
+      notesBlock = `\n\n## Workspace notes (recorded by previous sessions)\n${notes}\n\nThese notes persist in ~/.arc for this workspace. Read them before starting; append with memory.note when you finish significant work so the next session can pick up faster.`;
+    }
+} catch {  }
+  return staticPrompt + envBlock + volatileRules + styleSuffix + hookContext + notesBlock;
 };
 async function createAgent(session: Session): Promise<Agent | undefined> {
   if (!registry || !store || !lsp || !mcp || !ctxRef) return;
@@ -1036,6 +1130,8 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
   }
   const systemPrompt = await buildSystemPrompt(mcp);
   const shellApproval = vscode.workspace.getConfiguration().get<string>("arc.shell.approval", "allowlist");
+  const disabledTools = new Set<string>(vscode.workspace.getConfiguration().get<string[]>("arc.tools.disabled", []) ?? []);
+  const enabledTools = ENABLED_TOOLS.filter((t) => !disabledTools.has(t));
   const selectedPreset = approvalsConfig.preset;
   approvalsConfig = {
     ...DEFAULT_APPROVALS,
@@ -1094,6 +1190,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       return uris.map((u) => vscode.workspace.asRelativePath(u));
     },
     semanticSearch: async (query: string, k?: number) => {
+      await ensureSearchIndex();
       const idx = searchIndexer;
       if (!idx) return [];
       const hits = await idx.search(query, k ?? 10);
@@ -1169,14 +1266,14 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     usage: (usage, perModel) => {
       const totals = chatTotals.get(session.id) ?? { cost: 0, promptTokens: 0, completionTokens: 0, window: 0 };
       totals.promptTokens = Math.max(totals.promptTokens, usage.prompt);
-      totals.completionTokens = usage.completion;
+      totals.completionTokens += usage.completion;
       totals.cost += usage.cost;
       const model = registry?.getCurrent();
       if (model) totals.window = model.contextWindow;
       chatTotals.set(session.id, totals);
       if (chatHistory) {
         chatHistory.bump(session.id, usage.cost);
-        chatHistory.setMessages(session.id, session.agent.getMessages());
+        chatHistory.setMessages(session.id, session.messages);
         chatHistory.setSteps(session.id, session.steps);
       }
       broadcast(session, { type: "session/usage", usage, perModel });
@@ -1194,7 +1291,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     clarification: (id, question, options) => broadcast(session, { type: "session/clarification", id, question, options }),
     done: () => {
       notify("done", "Task complete");
-      if (chatHistory) chatHistory.setMessages(session.id, session.agent.getMessages());
+      if (chatHistory) chatHistory.setMessages(session.id, session.messages);
       clearTimeout(persistTimer);
       void persistAsync?.();
       broadcast(session, { type: "session/done" });
@@ -1210,7 +1307,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
   };
   session.agent = new Agent(registry, store, sink, {
     systemPrompt,
-    enabledTools: new Set(ENABLED_TOOLS),
+    enabledTools: new Set(enabledTools),
     workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(),
     mode: "code",
     modeRegistry,
@@ -1237,6 +1334,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
         await b.newTab(t.url);
       }
     },
+    autoSessionNotes: vscode.workspace.getConfiguration().get<boolean>("arc.memory.autoNotes", true),
     approveShell: async (description, meta) => {
       if (!session.view && !session.panel) {
         const choice = await vscode.window.showWarningMessage(description, { modal: true }, "Allow");
@@ -1272,7 +1370,8 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       }
       return pick;
     },
-    initialMessages: chatHistory?.getMessages(session.id) as ChatMessage[] ?? [],
+    initialMessages: agentContextFromTranscript((chatHistory?.getMessages(session.id) ?? []) as ChatMessage[]),
+    initialSteps: (session.steps as ProcessStep[]).length ? (session.steps as ProcessStep[]).slice() : ((chatHistory?.getSteps(session.id) ?? []) as ProcessStep[]),
   });
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
   const prefixes = await loadApprovalsMemory(root);
@@ -1331,12 +1430,12 @@ function broadcastChatListAll() {
 }
 function switchToChat(chatId: string, webview: vscode.Webview) {
   if (sidebarSession.agent) {
-    chatHistory?.setMessages(sidebarSession.id, sidebarSession.agent.getMessages());
+    chatHistory?.setMessages(sidebarSession.id, sidebarSession.messages);
     void persistAsync?.();
   }
   for (const [, s] of fullscreenSessions) {
     if (s.agent) {
-      chatHistory?.setMessages(s.id, s.agent.getMessages());
+      chatHistory?.setMessages(s.id, s.messages);
     }
     s.id = chatId;
     s.steps = [];
@@ -1362,7 +1461,13 @@ function switchToChat(chatId: string, webview: vscode.Webview) {
   for (const m of persisted) {
     webview.postMessage({ type: "session/message", message: m, sessionId: chatId });
   }
-  chatTotals.set(chatId, { cost: 0, promptTokens: 0, completionTokens: 0, window: 0 });
+  const chatMeta = chatHistory?.list().find((c) => c.id === chatId);
+  chatTotals.set(chatId, {
+    cost: chatMeta?.cost ?? 0,
+    promptTokens: estimateTokens(persisted as ChatMessage[]),
+    completionTokens: 0,
+    window: 0,
+  });
   pushContextStats(webview, chatId);
   for (const [, s] of fullscreenSessions) {
     s.agent = undefined as unknown as Agent;
@@ -1376,6 +1481,38 @@ function pushContextStats(webview: vscode.Webview, chatId: string) {
   const tokens = totals.promptTokens;
   const usedPct = window > 0 ? Math.min(100, (tokens / window) * 100) : 0;
   webview.postMessage({ type: "context/stats", usedPct, tokens, window, cost: totals.cost });
+}
+function renormalizeChatCosts(): void {
+  if (!chatHistory) return;
+  const models = registry?.list() ?? [];
+  const knownMax = models.reduce((m, x) => Math.max(m, x.costPer1mIn, x.costPer1mOut), 0);
+  const maxPrice = knownMax > 0 ? knownMax : 5; 
+  const HEADROOM = 2; 
+  const THRESHOLD = 20; 
+  for (const chat of chatHistory.list()) {
+    if (!(chat.cost > 1)) continue;
+    const msgs = chatHistory.getMessages(chat.id) as ChatMessage[];
+    const tokens = estimateTokens(msgs);
+    const upper = Math.max(1, (tokens / 1_000_000) * maxPrice * HEADROOM);
+    if (chat.cost > upper * THRESHOLD) {
+      log.appendLine(`[arc] renormalized chat cost ${chat.id}: $${chat.cost.toFixed(2)} -> $${upper.toFixed(2)} (historical inflation bug)`);
+      chat.cost = upper;
+    }
+  }
+}
+function agentContextFromTranscript(msgs: ChatMessage[]): ChatMessage[] {
+  let start = 0;
+  while (start < msgs.length && msgs[start].role === "system") start++;
+  let lastSummary = -1;
+  for (let i = start; i < msgs.length; i++) {
+    const m = msgs[i];
+    if (m.role === "system" && typeof m.content === "string" && m.content.startsWith("## Compaction summary of")) {
+      lastSummary = i;
+    }
+  }
+  if (lastSummary < 0) return msgs.slice(start);
+  const preserved = msgs.slice(start, lastSummary).filter((m) => m.noCompact);
+  return [...preserved, ...msgs.slice(lastSummary)];
 }
 async function reindexWorkspace(webview?: vscode.Webview) {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -1556,14 +1693,26 @@ async function tryLoadIndex(): Promise<void> {
     searchIndexer = undefined;
   }
 }
+let searchIndexLoadPromise: Promise<void> | undefined;
+async function ensureSearchIndex(): Promise<void> {
+  if (searchIndexer) return;
+  if (!searchIndexLoadPromise) {
+    searchIndexLoadPromise = tryLoadIndex().finally(() => { searchIndexLoadPromise = undefined; });
+  }
+  return searchIndexLoadPromise;
+}
 const WEBVIEW_CONFIG_KEYS = new Set([
   "arc.image.describeModel", "arc.model.multimodalIds", "arc.compaction.strategy", "arc.compaction.safetyMargin",
   "arc.titleGeneration.method", "arc.discord.spoofRpc", "arc.proxy.url", "arc.proxy.providerUrl", "arc.proxy.webUrl",
   "arc.proxy.shellUrl", "arc.verify.mode", "arc.verify.customMaxRetries", "arc.search.enabled", "arc.search.backend",
   "arc.search.modelTier", "arc.search.chunkCount", "arc.search.autoReindex", "arc.appearance.prideLogo", "arc.appearance.toolTree",
+  "arc.diffView.autoOpen",
   "arc.reasoning.effort",
   "arc.promptPolish",
   "arc.router.qualityBias",
+  "arc.tools.disabled",
+  "arc.shell.approval",
+  "arc.sandbox.profile",
   "arc.attention.enabled", "arc.attention.volume", "arc.attention.completion", "arc.attention.approval", "arc.attention.error",
 ]);
 const SENSITIVE_CONFIG_KEYS = new Set(["arc.proxy.url", "arc.proxy.providerUrl", "arc.proxy.webUrl", "arc.proxy.shellUrl"]);
@@ -1579,8 +1728,8 @@ const WEBVIEW_MESSAGE_KEYS: Record<string, readonly string[]> = {
   "ui/attachSelection": ["type"], "ui/attachFile": ["type"], "ui/attachProblems": ["type"], "ui/attachAllProblems": ["type"],
   "ui/attachFileProblems": ["type"], "ui/attachCurrentFile": ["type"], "ui/attachGitDiff": ["type"],
   "ui/attachGitStaged": ["type"], "ui/attachChangedFiles": ["type"], "ui/attachPullRequest": ["type"],
-  "ui/showProblems": ["type"], "ui/openFullscreen": ["type", "show"], "ui/openSettings": ["type"], "ui/openFile": ["type", "path"],
-  "ui/openFileDiff": ["type", "path", "hunks"], "ui/openPrompt": ["type"], "ui/newTask": ["type"], "ready": ["type"],
+  "ui/showProblems": ["type"], "ui/openFullscreen": ["type", "show"], "ui/openSettings": ["type"], "ui/openFile": ["type", "path", "line", "endLine"],
+  "ui/openFileDiff": ["type", "path", "hunks", "streamId"], "ui/openPrompt": ["type"], "ui/newTask": ["type"], "ready": ["type"],
   "chat/switch": ["type", "chatId"], "chat/rename": ["type", "chatId", "title"], "chat/delete": ["type", "chatId"],
   "chat/new": ["type"], "chat/compact": ["type"], "ui/openSidebar": ["type"], "ui/openTab": ["type", "tab"],
   "ui/showSettings": ["type"], "ui/openExternal": ["type", "url"], "search/reindex": ["type"], "model/bindUpdate": ["type", "modelId", "providerId", "remoteModel"],
@@ -1862,6 +2011,8 @@ function wireWebview(webview: vscode.Webview, session: Session) {
               if (result.reverted) {
                 const msgs = agent.getMessages();
                 const steps = agent.getSteps();
+                session.messages = msgs;
+                session.steps = steps;
                 const composerText = msg.loadToComposer ? msg.content : undefined;
                 webview.postMessage({ type: "session/replaceState", messages: msgs, steps, loadComposer: composerText });
               } else {
@@ -1885,6 +2036,8 @@ function wireWebview(webview: vscode.Webview, session: Session) {
                 messages.length = idx + 1;
                 const keptSteps = agent.getSteps().filter((s) => (s.ts ?? 0) <= (editTs ?? 0));
                 await agent.restore({ messages, steps: keptSteps, mode: agent.getCurrentMode(), todoItems: agent.getTodo() });
+                session.messages = agent.getMessages();
+                session.steps = agent.getSteps();
                 webview.postMessage({ type: "session/replaceState", messages: agent.getMessages(), steps: agent.getSteps() });
                 void agent.continue();
               }
@@ -2032,18 +2185,18 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             if (!repoExists) {
                report("Downloading…", 10);
                await fs.mkdir(apiDir, { recursive: true, mode: 0o700 });
-               const clone = await runProcess("git", ["clone", "--filter=blob:none", "--no-checkout", repoUrl, apiDir], { cwd: path.dirname(apiDir), timeoutMs: 120_000 });
+               const clone = await runGit(["clone", "--filter=blob:none", "--no-checkout", repoUrl, apiDir], { cwd: path.dirname(apiDir), timeoutMs: 120_000 });
                if (!clone.ok) throw new Error(clone.stderr || "git clone failed");
              }
-            const fetchPinned = await runProcess("git", ["fetch", "--depth", "1", "origin", repoCommit], { cwd: repoDir, timeoutMs: 120_000 });
+            const fetchPinned = await runGit(["fetch", "--depth", "1", "origin", repoCommit], { cwd: repoDir, timeoutMs: 120_000 });
             if (!fetchPinned.ok) throw new Error(fetchPinned.stderr || "failed to fetch pinned provider commit");
-            const checkoutPinned = await runProcess("git", ["checkout", "--detach", repoCommit], { cwd: repoDir, timeoutMs: 60_000 });
+            const checkoutPinned = await runGit(["checkout", "--detach", repoCommit], { cwd: repoDir, timeoutMs: 60_000 });
             if (!checkoutPinned.ok) throw new Error(checkoutPinned.stderr || "failed to checkout pinned provider commit");
-            const verified = await runProcess("git", ["rev-parse", "HEAD"], { cwd: repoDir, timeoutMs: 10_000 });
+            const verified = await runGit(["rev-parse", "HEAD"], { cwd: repoDir, timeoutMs: 10_000 });
             if (!verified.ok || verified.stdout.trim() !== repoCommit) throw new Error("provider commit verification failed");
-            const trackedChanges = await runProcess("git", ["diff", "--quiet", "HEAD", "--"], { cwd: repoDir, timeoutMs: 10_000 });
+            const trackedChanges = await runGit(["diff", "--quiet", "HEAD", "--"], { cwd: repoDir, timeoutMs: 10_000 });
             if (!trackedChanges.ok) throw new Error("provider checkout contains modified tracked files; remove the managed provider directory and reinstall");
-            const untracked = await runProcess("git", ["ls-files", "--others", "--exclude-standard"], { cwd: repoDir, timeoutMs: 10_000 });
+            const untracked = await runGit(["ls-files", "--others", "--exclude-standard"], { cwd: repoDir, timeoutMs: 10_000 });
             const unsafeUntracked = untracked.stdout.split(/\r?\n/).filter(Boolean).filter((file) => !file.startsWith(".venv/"));
             if (!untracked.ok || unsafeUntracked.length) throw new Error(`provider checkout contains unexpected files: ${unsafeUntracked.slice(0, 5).join(", ")}`);
             report("Installing…", 30);
@@ -2155,11 +2308,15 @@ function wireWebview(webview: vscode.Webview, session: Session) {
         }
         case "config/get": {
           if (msg.key === "arc.search.fileCount") {
-            webview.postMessage({ type: "config/get", value: searchProgress.filesIndexed, inReplyTo: msg.id });
+            void ensureSearchIndex().then(() => {
+              webview.postMessage({ type: "config/get", value: searchProgress.filesIndexed, inReplyTo: msg.id });
+            });
             break;
           }
           if (msg.key === "arc.search.chunkCount") {
-            webview.postMessage({ type: "config/get", value: searchProgress.chunksEmbedded, inReplyTo: msg.id });
+            void ensureSearchIndex().then(() => {
+              webview.postMessage({ type: "config/get", value: searchProgress.chunksEmbedded, inReplyTo: msg.id });
+            });
             break;
           }
           if (!WEBVIEW_CONFIG_KEYS.has(msg.key)) throw new Error(`Configuration key is not available to the webview: ${msg.key}`);
@@ -2248,7 +2405,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
         case "ui/attachGitDiff": {
           try {
             const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-            const result = await runProcess("git", ["diff"], { cwd: root, maxOutputBytes: 512 * 1024 });
+            const result = await runGit(["diff"], { cwd: root, maxOutputBytes: 512 * 1024 });
             if (!result.ok) throw new Error(result.stderr);
             const { stdout } = result;
             if (!stdout.trim()) break;
@@ -2259,7 +2416,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
         case "ui/attachGitStaged": {
           try {
             const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-            const result = await runProcess("git", ["diff", "--staged"], { cwd: root, maxOutputBytes: 512 * 1024 });
+            const result = await runGit(["diff", "--staged"], { cwd: root, maxOutputBytes: 512 * 1024 });
             if (!result.ok) throw new Error(result.stderr);
             const { stdout } = result;
             if (!stdout.trim()) break;
@@ -2270,7 +2427,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
         case "ui/attachChangedFiles": {
           try {
             const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-            const result = await runProcess("git", ["diff", "--name-status"], { cwd: root, maxOutputBytes: 512 * 1024 });
+            const result = await runGit(["diff", "--name-status"], { cwd: root, maxOutputBytes: 512 * 1024 });
             if (!result.ok) throw new Error(result.stderr);
             const { stdout } = result;
             if (!stdout.trim()) break;
@@ -2319,7 +2476,19 @@ function wireWebview(webview: vscode.Webview, session: Session) {
         case "ui/openFile": {
           const fileUri = resolveWorkspaceFileUri(msg.path);
           if (fileUri) {
-            try { await vscode.window.showTextDocument(fileUri); } catch {  }
+            try {
+              const doc = await vscode.workspace.openTextDocument(fileUri);
+              const editor = await vscode.window.showTextDocument(doc);
+              if (typeof msg.line === "number" && msg.line > 0) {
+                const startLine = Math.max(1, msg.line);
+                const endLine = Math.max(startLine, typeof msg.endLine === "number" && msg.endLine > 0 ? msg.endLine : startLine);
+                const start = new vscode.Position(startLine - 1, 0);
+                const end = new vscode.Position(endLine - 1, Number.MAX_SAFE_INTEGER);
+                const range = new vscode.Range(start, end);
+                editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+                editor.selection = new vscode.Selection(start, range.end);
+              }
+            } catch {  }
           }
           break;
         }
@@ -2327,6 +2496,44 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           const fileUri = resolveWorkspaceFileUri(msg.path);
           if (!fileUri) break;
           try {
+            if (typeof msg.streamId === "string") {
+              let state = streamingDiffState.get(msg.streamId);
+              if (!state) {
+                if (lastStreamingDiffTab) {
+                  try { await vscode.window.tabGroups.close(lastStreamingDiffTab); } catch {  }
+                  lastStreamingDiffTab = undefined;
+                }
+                const beforeId = `stream-${msg.streamId}-before`;
+                const afterId = `stream-${msg.streamId}-after`;
+                const beforeUri = vscode.Uri.from({
+                  scheme: DIFF_PREVIEW_SCHEME,
+                  path: `/${path.basename(msg.path)}`,
+                  query: `id=${encodeURIComponent(beforeId)}`,
+                });
+                const afterUri = vscode.Uri.from({
+                  scheme: DIFF_PREVIEW_SCHEME,
+                  path: `/${path.basename(msg.path)}`,
+                  query: `id=${encodeURIComponent(afterId)}`,
+                });
+                streamingDiffState.clear();
+                state = { beforeUri, afterUri, opened: false };
+                streamingDiffState.set(msg.streamId, state);
+              }
+              const beforeId = `stream-${msg.streamId}-before`;
+              const afterId = `stream-${msg.streamId}-after`;
+              diffPreviewContents.delete(beforeId);
+              diffPreviewContents.set(beforeId, buildBeforeContentFromHunks(msg.hunks));
+              diffPreviewContents.delete(afterId);
+              diffPreviewContents.set(afterId, buildAfterContentFromHunks(msg.hunks));
+              diffPreviewEmitter.fire(state.beforeUri);
+              diffPreviewEmitter.fire(state.afterUri);
+              if (!state.opened) {
+                state.opened = true;
+                await vscode.commands.executeCommand("vscode.diff", state.beforeUri, state.afterUri, path.basename(msg.path));
+                lastStreamingDiffTab = findDiffTab(state.beforeUri, state.afterUri) ?? lastStreamingDiffTab;
+              }
+              break;
+            }
             const beforeContent = buildBeforeContentFromHunks(msg.hunks);
             const beforeUri = createDiffPreviewUri(msg.path, beforeContent);
             await vscode.commands.executeCommand("vscode.diff", beforeUri, fileUri, path.basename(msg.path));
@@ -2650,6 +2857,7 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
   const prideLogo = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "assets", "arc-logo-pride.svg"));
   const monoLogoText = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "assets", "arc-logo-mono-text.svg"));
   const providerCatalog = JSON.stringify(PROVIDERS);
+  const toolCatalog = JSON.stringify(TOOL_CATALOG);
   const extVersion = ctxRef?.extension?.packageJSON?.version ?? "0.0.0";
   const prideMode: PrideMode = vscode.workspace.getConfiguration().get<PrideMode>("arc.appearance.prideLogo", "june") ?? "june";
   let isPride: boolean;
@@ -2663,12 +2871,12 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
 <html lang="en" data-mode="${mode}">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} data:; font-src ${webview.cspSource};" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} data:; font-src ${webview.cspSource} https://raw.githubusercontent.com;" />
   <link rel="icon" type="image/svg+xml" href="${favicon}" />
   <link rel="stylesheet" href="${styleUri}" />
 </head>
 <body>
-  <div id="root" data-mode="${mode}" data-mono="${monoLogo}" data-pride="${prideLogo}" data-mono-text="${monoLogoText}" data-pride-active="${isPride}" data-tool-tree="${toolTree}" data-version="${extVersion}" data-catalog="${providerCatalog.replace(/"/g, '&quot;')}"></div>
+  <div id="root" data-mode="${mode}" data-mono="${monoLogo}" data-pride="${prideLogo}" data-mono-text="${monoLogoText}" data-pride-active="${isPride}" data-tool-tree="${toolTree}" data-version="${extVersion}" data-catalog="${providerCatalog.replace(/"/g, '&quot;')}" data-tools="${toolCatalog.replace(/"/g, '&quot;')}"></div>
   <script type="module" nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
@@ -2760,7 +2968,7 @@ function registerDiffSecretScan(context: vscode.ExtensionContext): void {
       const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
       if (!root) return;
       try {
-        const out = await runProcess("git", ["diff", "--", "."], { cwd: root, timeoutMs: 15_000, maxOutputBytes: 5 * 1024 * 1024 });
+        const out = await runGit(["diff", "--", "."], { cwd: root, timeoutMs: 15_000, maxOutputBytes: 5 * 1024 * 1024 });
         const diffText = `${out.stdout ?? ""}\n${out.stderr ?? ""}`;
         const hits = SECRET_PATTERNS.filter(({ pattern }) => pattern.test(diffText));
         if (!hits.length) {

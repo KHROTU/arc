@@ -67,7 +67,7 @@ const DIFF_OPEN = /^<<<<<<< SEARCH\s*$/;
 const DIFF_DIVIDER = /^=======\s*$/;
 const DIFF_CLOSE = /^>>>>>>> REPLACE\s*$/;
 const HAS_DIFF_MARKER = /<<<<<<< SEARCH\s*(?:\r\n|\r|\n)/;
-function tryExtractDiffBlock(text: string): { search: string; replace: string } | null {
+export function tryExtractDiffBlock(text: string): { search: string; replace: string } | null {
   if (!text) return null;
   if (!HAS_DIFF_MARKER.test(text) && !DIFF_OPEN.test(text)) return null;
   const lines = text.split(/\r\n?|\n/);

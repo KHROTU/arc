@@ -127,3 +127,40 @@ export function runShellCommand(command: string, opts: ProcessOptions): Promise<
   const invocation = shellCommand(command);
   return runProcess(invocation.executable, invocation.args, opts);
 }
+let gitOverride: string | undefined;
+let gitCache: string | undefined;
+export function setGitPath(p: string | undefined): void {
+  gitOverride = p ? String(p) : undefined;
+  gitCache = undefined;
+}
+export async function resolveGit(): Promise<string> {
+  if (gitOverride) return gitOverride;
+  if (gitCache !== undefined) return gitCache;
+  gitCache = await findGit();
+  return gitCache ?? "git";
+}
+async function findGit(): Promise<string | undefined> {
+  if (await gitProbe("git")) return "git";
+  if (process.platform !== "win32") return undefined;
+  const candidates = [
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Programs", "Git", "cmd", "git.exe") : undefined,
+    process.env.ProgramFiles ? path.join(process.env.ProgramFiles, "Git", "cmd", "git.exe") : undefined,
+    process.env["ProgramFiles(x86)"] ? path.join(process.env["ProgramFiles(x86)"], "Git", "cmd", "git.exe") : undefined,
+    process.env.USERPROFILE ? path.join(process.env.USERPROFILE, "scoop", "apps", "git", "current", "cmd", "git.exe") : undefined,
+  ];
+  for (const candidate of candidates) {
+    if (candidate && (await gitProbe(candidate))) return candidate;
+  }
+  return undefined;
+}
+async function gitProbe(executable: string): Promise<boolean> {
+  try {
+    const r = await runProcess(executable, ["--version"], { cwd: process.cwd(), timeoutMs: 8000, maxOutputBytes: 4096 });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+export async function runGit(args: string[], opts: ProcessOptions): Promise<ProcessResult> {
+  return runProcess(await resolveGit(), args, opts);
+}

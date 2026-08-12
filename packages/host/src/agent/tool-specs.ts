@@ -10,6 +10,8 @@ const str = (description: string): JsonSchema => ({ type: "string", description 
 const num = (description: string): JsonSchema => ({ type: "number", description });
 const bool = (description: string): JsonSchema => ({ type: "boolean", description });
 const enumStr = (values: string[], description: string): JsonSchema => ({ type: "string", enum: values, description });
+const TAB_ID = "Optional tab id to target (defaults to the active tab).";
+const NB_PATH = "Workspace-relative path to the .ipynb file.";
 export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters: JsonSchema }> = {
   "file.read": {
     description: "Read a file from the workspace.",
@@ -141,27 +143,27 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
   },
   "browser.navigate": {
     description: "Navigate the browser to a URL.",
-    parameters: obj({ url: str("Absolute URL."), tabId: str("Optional tab id to target (defaults to the active tab).") }, ["url"]),
+    parameters: obj({ url: str("Absolute URL."), tabId: str(TAB_ID) }, ["url"]),
   },
   "browser.click": {
     description: "Click an element by selector.",
-    parameters: obj({ selector: str("CSS selector."), tabId: str("Optional tab id to target (defaults to the active tab).") }, ["selector"]),
+    parameters: obj({ selector: str("CSS selector."), tabId: str(TAB_ID) }, ["selector"]),
   },
   "browser.type": {
     description: "Type text into an element.",
-    parameters: obj({ selector: str("CSS selector."), text: str("Text to type."), tabId: str("Optional tab id to target (defaults to the active tab).") }, ["selector", "text"]),
+    parameters: obj({ selector: str("CSS selector."), text: str("Text to type."), tabId: str(TAB_ID) }, ["selector", "text"]),
   },
   "browser.screenshot": {
     description: "Capture a screenshot of the current page.",
-    parameters: obj({ path: str("Optional output path."), tabId: str("Optional tab id to target (defaults to the active tab).") }),
+    parameters: obj({ path: str("Optional output path."), tabId: str(TAB_ID) }),
   },
   "browser.evaluate": {
     description: "Evaluate JavaScript in the page.",
-    parameters: obj({ script: str("JavaScript source to run."), tabId: str("Optional tab id to target (defaults to the active tab).") }, ["script"]),
+    parameters: obj({ script: str("JavaScript source to run."), tabId: str(TAB_ID) }, ["script"]),
   },
   "browser.readDom": {
     description: "Read the page's accessibility tree.",
-    parameters: obj({ tabId: str("Optional tab id to target (defaults to the active tab).") }),
+    parameters: obj({ tabId: str(TAB_ID) }),
   },
   "browser.close": {
     description: "Close the browser.",
@@ -445,7 +447,7 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
     parameters: obj({
       pixels: num("Pixel offset to scroll (positive = down, negative = up). Defaults to 300."),
       selector: str("Optional CSS selector to scroll into view."),
-      tabId: str("Optional tab id to target (defaults to the active tab)."),
+      tabId: str(TAB_ID),
     }),
   },
   "browser.waitFor": {
@@ -454,27 +456,27 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
       selector: str("CSS selector to wait for."),
       url: str("URL pattern to wait for."),
       state: str("Load state: networkidle, load, or domcontentloaded. Defaults to networkidle."),
-      tabId: str("Optional tab id to target (defaults to the active tab)."),
+      tabId: str(TAB_ID),
     }),
   },
   "browser.console": {
     description: "Read the browser's console log (last 50 entries, log/warn/error).",
-    parameters: obj({ tabId: str("Optional tab id to target (defaults to the active tab).") }),
+    parameters: obj({ tabId: str(TAB_ID) }),
   },
   "browser.network": {
     description: "Read the browser's network request log (last 50 entries with method, status, URL, timing).",
-    parameters: obj({ tabId: str("Optional tab id to target (defaults to the active tab).") }),
+    parameters: obj({ tabId: str(TAB_ID) }),
   },
   "browser.domSnapshot": {
     description: "Get a combined snapshot of the browser's current state including console messages and network requests.",
-    parameters: obj({ tabId: str("Optional tab id to target (defaults to the active tab).") }),
+    parameters: obj({ tabId: str(TAB_ID) }),
   },
   "browser.drag": {
     description: "Drag an element onto another element.",
     parameters: obj({
       from: str("CSS selector of the element to drag."),
       to: str("CSS selector of the drop target."),
-      tabId: str("Optional tab id to target (defaults to the active tab)."),
+      tabId: str(TAB_ID),
     }, ["from", "to"]),
   },
   "browser.dialog": {
@@ -488,24 +490,24 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
     description: "Run a Playwright code snippet against the page. The code receives the `page` object.",
     parameters: obj({
       code: str("JavaScript/Playwright snippet to run."),
-      tabId: str("Optional tab id to target (defaults to the active tab)."),
+      tabId: str(TAB_ID),
     }, ["code"]),
   },
   "browser.readPage": {
     description: "Read the plain text content of the current page.",
-    parameters: obj({ tabId: str("Optional tab id to target (defaults to the active tab).") }),
+    parameters: obj({ tabId: str(TAB_ID) }),
   },
   "notebook.read": {
     description: "Read a Jupyter notebook (.ipynb). Without cellIndex, lists every cell (index, type, source preview, whether it has output). With cellIndex, returns that cell's full source and (for code cells) its text/image output.",
     parameters: obj({
-      path: str("Workspace-relative path to the .ipynb file."),
+      path: str(NB_PATH),
       cellIndex: num("Optional 0-based cell index to read in full."),
     }, ["path"]),
   },
   "notebook.editCell": {
     description: "Replace the source of a cell in a Jupyter notebook by index.",
     parameters: obj({
-      path: str("Workspace-relative path to the .ipynb file."),
+      path: str(NB_PATH),
       cellIndex: num("0-based index of the cell to edit."),
       source: str("New source text for the cell."),
     }, ["path", "cellIndex", "source"]),
@@ -513,7 +515,7 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
   "notebook.addCell": {
     description: "Insert a new cell into a Jupyter notebook at the given index. Existing cells shift down.",
     parameters: obj({
-      path: str("Workspace-relative path to the .ipynb file."),
+      path: str(NB_PATH),
       index: num("0-based index to insert the new cell at."),
       cellType: enumStr(["code", "markdown", "raw"], "Type of the new cell."),
       source: str("Source text for the new cell."),
@@ -522,16 +524,56 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
   "notebook.deleteCell": {
     description: "Delete a cell from a Jupyter notebook by index.",
     parameters: obj({
-      path: str("Workspace-relative path to the .ipynb file."),
+      path: str(NB_PATH),
       cellIndex: num("0-based index of the cell to delete."),
     }, ["path", "cellIndex"]),
   },
   "notebook.execute": {
     description: "Execute a code cell using the workspace's active Jupyter kernel and return its text/image output.",
     parameters: obj({
-      path: str("Workspace-relative path to the .ipynb file."),
+      path: str(NB_PATH),
       cellIndex: num("0-based index of the code cell to execute."),
     }, ["path", "cellIndex"]),
+  },
+  "wait.for": {
+    description: "Sleep for a fixed number of seconds without polling. Use when you know how long a delay is needed.",
+    parameters: obj({
+      seconds: num("Seconds to sleep (0.1 to 21600)."),
+    }, ["seconds"]),
+  },
+  "wait.until": {
+    description: "Sleep until a wall-clock time. Accepts an ISO timestamp, 'HH:MM' / 'HH:MM:SS' (next occurrence today or tomorrow), or epoch milliseconds.",
+    parameters: obj({
+      time: str("ISO timestamp, HH:MM, HH:MM:SS, or epoch milliseconds."),
+    }, ["time"]),
+  },
+  "wait.forProcess": {
+    description: "Wait for a background process to exit and return its final output. Replaces manual shell.check polling loops.",
+    parameters: obj({
+      id: str("The background process id returned by shell.backgroundRun."),
+      timeout: num("Optional timeout in seconds (default 3600, max 21600)."),
+    }, ["id"]),
+  },
+  "wait.forCommand": {
+    description: "Run a shell command repeatedly until it exits 0 or the timeout elapses. Use to wait for a condition such as a build artifact, server readiness, or a lock file release.",
+    parameters: obj({
+      command: str("The command line to run until it succeeds."),
+      interval: num("Optional poll interval in seconds (default 1, min 0.25)."),
+      timeout: num("Optional overall timeout in seconds (default 600, max 21600)."),
+      cwd: str("Optional working directory (defaults to the workspace root)."),
+    }, ["command"]),
+  },
+  "context.retrieve": {
+    description: "Restore the full original content of a compressed tool output. Use the id shown in the compressed output marker when you need details that were omitted.",
+    parameters: obj({
+      id: str("The retrieval id shown in a compressed tool output marker."),
+    }, ["id"]),
+  },
+  "memory.note": {
+    description: "Append a short note to the workspace's agent-facing notes (stored in ~/.arc, shown to future sessions in the system prompt). Use for handoff context: what was done, what is next, gotchas.",
+    parameters: obj({
+      content: str("One or two lines of note text (max ~500 chars)."),
+    }, ["content"]),
   },
 };
 export function buildToolSpecs(
@@ -582,4 +624,4 @@ export function parseMcpToolSpec(name: string): { server: string; tool: string }
   const idx = rest.indexOf("__");
   if (idx <= 0) return undefined;
   return { server: rest.slice(0, idx), tool: rest.slice(idx + 2) };
-}
+}

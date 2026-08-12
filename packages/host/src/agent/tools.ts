@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { FileEditor } from "../edit/editor.js";
 import { getSkillsDir } from "../arc-dir.js";
 import { runPreWriteHooks, runPostEditHooks } from "../hooks/hooks.js";
-import { minimalEnvironment, PROCESS_OUTPUT_LIMIT, proxyEnvironment, runProcess, runShellCommand, shellCommand, spawnBounded, terminateProcessTree } from "../util/process.js";
+import { minimalEnvironment, PROCESS_OUTPUT_LIMIT, proxyEnvironment, runGit, runProcess, runShellCommand, shellCommand, spawnBounded, terminateProcessTree } from "../util/process.js";
 import { readBodyLimited, safeFetch } from "../security/network.js";
 import { makeProxyDispatcher } from "../util/proxy.js";
 import { parseNotebook, serializeNotebook, listCells, readCell, editCellSource, addCell, deleteCell } from "../notebook/notebook.js";
@@ -130,6 +130,7 @@ export interface ToolContext {
   executeNotebookCell?: (path: string, cellIndex: number) => Promise<{ ok: boolean; output: string; images?: string[] }>;
   allowExternalPath?: boolean;
   teamMemoryStores?: string[];
+  signal?: AbortSignal;
 }
 export interface ToolResult {
   ok: boolean;
@@ -768,7 +769,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     fn: async (args, ctx) => {
       try {
         const gitArgs = ["diff", "--cached", ...(args.path ? ["--", String(args.path)] : [])];
-        const result = await runProcess("git", gitArgs, { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
+        const result = await runGit(gitArgs, { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
         const output = stripAnsi(result.stdout) + (result.stderr ? `\n[stderr]\n${stripAnsi(result.stderr)}` : "");
         return { ok: result.ok, output: output || "(no staged changes)" };
       } catch (e: unknown) {
@@ -781,7 +782,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     fn: async (args, ctx) => {
       try {
         const gitArgs = ["diff", ...(args.path ? ["--", String(args.path)] : [])];
-        const result = await runProcess("git", gitArgs, { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
+        const result = await runGit(gitArgs, { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
         const output = stripAnsi(result.stdout) + (result.stderr ? `\n[stderr]\n${stripAnsi(result.stderr)}` : "");
         return { ok: result.ok, output: output || "(no unstaged changes)" };
       } catch (e: unknown) {
@@ -793,7 +794,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     description: "List all changed files (staged and unstaged) with status. Args: {}",
     fn: async (_args, ctx) => {
       try {
-        const result = await runProcess("git", ["status", "--porcelain"], { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
+        const result = await runGit(["status", "--porcelain"], { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
         if (!result.ok) return { ok: false, output: result.stderr || "git status failed" };
         const out = stripAnsi(result.stdout);
         if (!out.trim()) return { ok: true, output: "(no changed files)" };
@@ -817,10 +818,10 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       try {
         const base = String(args.base ?? "main");
         if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(base) || base.includes("..") || base.includes("@{")) return { ok: false, output: "Invalid Git base ref." };
-        const mb = await runProcess("git", ["merge-base", "HEAD", base], { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
+        const mb = await runGit(["merge-base", "HEAD", base], { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
         const mergeBase = mb.ok ? stripAnsi(mb.stdout).trim() : "";
         const target = mergeBase || base;
-        const result = await runProcess("git", ["diff", `${target}...HEAD`], { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
+        const result = await runGit(["diff", `${target}...HEAD`], { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
         const output = stripAnsi(result.stdout) + (result.stderr ? `\n[stderr]\n${stripAnsi(result.stderr)}` : "");
         return { ok: result.ok, output: output || "(no differences from base)" };
       } catch (e: unknown) {
@@ -834,7 +835,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const diff = args.diff ? String(args.diff) : "";
       if (!diff) {
         try {
-          const result = await runProcess("git", ["diff", "--cached"], { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
+          const result = await runGit(["diff", "--cached"], { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
           if (!result.ok) return { ok: false, output: result.stderr || "Failed to read staged diff." };
           const diffOut = stripAnsi(result.stdout);
           if (!diffOut.trim()) return { ok: true, output: "(no staged changes to generate a commit message from)" };
@@ -1068,7 +1069,124 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       return { ok: r.ok, output: r.output, touchedFiles: r.ok ? [filePath] : [], filePath };
     },
   },
+  "wait.for": {
+    description: "Sleep for a fixed number of seconds. Prefer this over polling loops. Args: { seconds }",
+    fn: async (args, ctx) => {
+      const seconds = Number(args.seconds);
+      if (!Number.isFinite(seconds) || seconds <= 0) return { ok: false, output: "wait.for requires a positive `seconds` number." };
+      const ms = Math.min(Math.round(seconds * 1000), MAX_WAIT_MS);
+      const status = await sleepAbortable(ms, ctx.signal);
+      if (status === "abort") return { ok: false, output: "wait.for interrupted." };
+      return { ok: true, output: `Waited ${(ms / 1000).toFixed(1)}s.` };
+    },
+  },
+  "wait.until": {
+    description: "Sleep until a wall-clock time. Accepts an ISO timestamp, 'HH:MM' / 'HH:MM:SS' (next occurrence today or tomorrow), or epoch milliseconds. Args: { time }",
+    fn: async (args, ctx) => {
+      const target = parseTimeSpec(String(args.time ?? ""));
+      if (target === undefined) return { ok: false, output: "wait.until requires a valid `time` (ISO timestamp, HH:MM, HH:MM:SS, or epoch ms)." };
+      const ms = Math.min(Math.max(0, target - Date.now()), MAX_WAIT_MS);
+      if (ms === 0) return { ok: true, output: "Target time has already passed." };
+      const status = await sleepAbortable(ms, ctx.signal);
+      if (status === "abort") return { ok: false, output: "wait.until interrupted." };
+      return { ok: true, output: `Waited until ${new Date(target).toISOString()} (${(ms / 1000).toFixed(1)}s).` };
+    },
+  },
+  "wait.forProcess": {
+    description: "Wait for a background process to exit instead of polling shell.check. Args: { id, timeout? }",
+    fn: async (args, ctx) => {
+      const id = String(args.id ?? "");
+      const bg = bgProcesses.get(id);
+      if (!bg) return { ok: false, output: `No background process with id '${id}'.` };
+      const timeoutMs = args.timeout !== undefined ? Math.min(Math.max(Number(args.timeout) * 1000, 0), MAX_WAIT_MS) : MAX_WAIT_MS;
+      const deadline = Date.now() + timeoutMs;
+      while (!bg.exited) {
+        if (ctx.signal?.aborted) return { ok: false, output: "wait.forProcess interrupted." };
+        if (Date.now() >= deadline) {
+          const out = bg.stdout + (bg.stderr ? `\n[stderr]\n${bg.stderr}` : "");
+          return { ok: false, output: `Process ${id} still running after ${timeoutMs / 1000}s.\n${out}` };
+        }
+        await sleepAbortable(500, ctx.signal);
+      }
+      const status = `exited (code ${bg.exitCode ?? "unknown"})`;
+      const out = bg.stdout + (bg.stderr ? `\n[stderr]\n${bg.stderr}` : "");
+      return { ok: true, output: `[${status}]\n${out}` };
+    },
+  },
+  "wait.forCommand": {
+    description: "Run a shell command repeatedly until it exits 0 (success) or the timeout elapses. Use to wait for a condition (e.g. a build artifact, a server, a lock file). Args: { command, interval?, timeout?, cwd? }",
+    fn: async (args, ctx) => {
+      const cmd = String(args.command ?? "");
+      if (!cmd) return { ok: false, output: "wait.forCommand requires a `command`." };
+      const approved = await ctx.requestApproval?.(`Run condition-wait command (repeats until success or timeout)?\n\n${cmd}`, { command: cmd });
+      if (approved === false) return { ok: false, output: "wait.forCommand denied by user." };
+      const intervalMs = Math.max(250, Math.round(Number(args.interval ?? 1) * 1000) || 1000);
+      const timeoutMs = args.timeout !== undefined ? Math.min(Math.max(Number(args.timeout) * 1000, intervalMs), MAX_WAIT_MS) : 600_000;
+      const cwd = (args.cwd ? String(args.cwd) : ctx.root) || ctx.root;
+      const proxyEnv = proxyEnvironment(ctx.proxyShell || ctx.proxyUrl);
+      const deadline = Date.now() + timeoutMs;
+      let attempts = 0;
+      let lastOutput = "";
+      while (true) {
+        if (ctx.signal?.aborted) return { ok: false, output: `wait.forCommand interrupted after ${attempts} attempt(s).` };
+        attempts++;
+        const result = await runShellCommand(cmd, {
+          cwd,
+          env: minimalEnvironment(proxyEnv),
+          timeoutMs: Math.max(intervalMs * 2, 3000),
+          maxOutputBytes: 64 * 1024,
+          sandboxProfile: ctx.sandboxProfile,
+          workspaceRoot: ctx.workspacePath,
+        });
+        lastOutput = (stripAnsi(result.stdout) + (result.stderr ? `\n[stderr]\n${stripAnsi(result.stderr)}` : "")).trim().slice(-2000);
+        if (result.ok) {
+          return { ok: true, output: `Command succeeded on attempt ${attempts}.\n${lastOutput || "(no output)"}` };
+        }
+        if (Date.now() >= deadline) {
+          return { ok: false, output: `Command did not succeed within ${timeoutMs / 1000}s (${attempts} attempt(s)). Last output:\n${lastOutput || "(no output)"}` };
+        }
+        await sleepAbortable(intervalMs, ctx.signal);
+      }
+    },
+  },
+  "context.retrieve": {
+    description: "Restore the full original content of a compressed tool output. Args: { id } — the id shown in the compressed output marker.",
+    fn: async (args, ctx) => {
+      const { loadBlob } = await import("../compress/store.js");
+      const id = String(args.id ?? "").trim();
+      if (!id) return { ok: false, output: "context.retrieve requires an `id`." };
+      const content = await loadBlob(ctx.root, id);
+      if (content === undefined) return { ok: false, output: `No stored context found for id '${id}'.` };
+      return { ok: true, output: content.slice(0, 512 * 1024) };
+    },
+  },
 };
+const MAX_WAIT_MS = 6 * 60 * 60 * 1000;
+function sleepAbortable(ms: number, signal?: AbortSignal): Promise<"timeout" | "abort"> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) { resolve("abort"); return; }
+    const onAbort = () => { clearTimeout(timer); resolve("abort"); };
+    const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve("timeout"); }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+function parseTimeSpec(spec: string): number | undefined {
+  const s = spec.trim();
+  if (!s) return undefined;
+  const iso = Date.parse(s);
+  if (Number.isFinite(iso)) return iso;
+  if (/^\d+$/.test(s)) return Number(s);
+  const hms = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!hms) return undefined;
+  const hour = Number(hms[1]);
+  const minute = Number(hms[2]);
+  const second = hms[3] !== undefined ? Number(hms[3]) : 0;
+  if (hour > 23 || minute > 59 || second > 59) return undefined;
+  const now = new Date();
+  let target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, second).getTime();
+  if (target <= now.getTime()) target += 24 * 60 * 60 * 1000;
+  return target;
+}
 interface SearchResult { title: string; snippet: string; url: string; }
 const STEALTH_HEADERS: Record<string, string> = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
