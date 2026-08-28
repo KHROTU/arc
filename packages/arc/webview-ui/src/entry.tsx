@@ -1,5 +1,6 @@
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { applyFonts } from "./fonts";
 const root = document.getElementById("root");
 if (!root) {
   document.body.innerHTML = "<pre style='color:#f88;padding:20px'>Arc: #root element missing</pre>";
@@ -24,6 +25,11 @@ if (!root) {
     const version = root.getAttribute("data-version") || "0.0.0";
     const isPride = root.getAttribute("data-pride-active") === "true";
     const toolTree = (root.getAttribute("data-tool-tree") as "auto" | "collapsed") || "auto";
+    const fontUi = root.getAttribute("data-font-ui") || "";
+    const fontMono = root.getAttribute("data-font-mono") || "";
+    const customFontUi = root.getAttribute("data-custom-font-ui") || "";
+    const customFontMono = root.getAttribute("data-custom-font-mono") || "";
+    applyFonts(fontUi, customFontUi, fontMono, customFontMono);
     let providerCatalog: { kind: string; label: string; tags: string[]; defaultBaseUrl?: string }[] = [];
     try { providerCatalog = JSON.parse(root.getAttribute("data-catalog") || "[]"); } catch { }
     let toolCatalog: { name: string; category: string; description: string }[] = [];

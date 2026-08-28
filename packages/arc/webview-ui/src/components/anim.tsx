@@ -9,19 +9,19 @@ export function Expand({ open, children, style }: { open: boolean; children: Rea
   return (
     <div
       style={{
-        overflow: "hidden",
-        maxHeight: open ? "3000px" : "0px",
+        display: "grid",
+        gridTemplateRows: open ? "1fr" : "0fr",
         opacity: open ? 1 : 0,
-        transition: `max-height 320ms ${cssEase}, opacity 250ms ${cssEase}`,
+        transition: `grid-template-rows 320ms ${cssEase}, opacity 250ms ${cssEase}`,
         ...style,
       }}
       onTransitionEnd={(e) => {
-        if (e.propertyName === "max-height" && !open) {
+        if (e.propertyName === "grid-template-rows" && !open) {
           setVisible(false);
         }
       }}
     >
-      {children}
+      <div style={{ overflow: "hidden", minHeight: 0 }}>{children}</div>
     </div>
   );
 }

@@ -1,10 +1,12 @@
 import { AsyncEventQueue, readableToAsyncIterable } from "../util/stream.js";
 import { makeProxyDispatcher } from "../util/proxy.js";
-import { fromApiToolName, toApiToolName, sanitizeToolChains, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
+import { fromApiToolName, toApiToolName, sanitizeToolChains, chargeStreamContent, StreamContentLimitError, type StreamEvent, type StreamHandle, type StreamRequest, type StreamContentBudget, type Transport } from "./transport.js";
 import { caps } from "./capability-tracker.js";
 import { withRetry, policyFor } from "./retry.js";
+import { attributionHeaders } from "./attribution.js";
 import { readBodyLimited } from "../security/network.js";
 import { redactSecrets } from "../security/redact.js";
+import { safeParseJson } from "../util/json.js";
 const UNSUPPORTED_PARAM_RE = /does not support|unsupported.*param(?:eter)?|unknown.*param(?:eter)?|invalid.*param(?:eter)?/i;
 export const openAICompatibleTransport: Transport & { withBase: (base: string) => Transport } = {
   kind: "openai",
@@ -58,12 +60,7 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
   };
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (req.provider.apiKey) headers.authorization = `Bearer ${req.provider.apiKey}`;
-  if (req.provider.kind === "openrouter") {
-    headers["http-referer"] = "https://github.com/KHROTU/arc";
-    headers["x-openrouter-title"] = "Arc";
-  } else {
-    headers["x-title"] = "Arc";
-  }
+  Object.assign(headers, attributionHeaders(req.provider.kind));
   const MAX_ATTEMPTS = 2;
   const policy = policyFor(req.provider.kind);
   let res!: Response;
@@ -114,22 +111,20 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
         type: "tool_call",
         id: entry.id,
         name: fromApiToolName(entry.name),
-        args: safeParseArgs(entry.args) ?? {},
+        args: safeParseJson<Record<string, unknown>>(entry.args) ?? {},
       });
     }
     toolAcc.clear();
   };
   void (async () => {
     let buffer = "";
-    let streamBytes = 0;
+    const contentBudget: StreamContentBudget = { bytes: 0 };
     let inThink = false;
     let thinkingBuf = "";
     const reasoningDetailTextById = new Map<string, string>();
     try {
       for await (const chunk of readableToAsyncIterable(res.body as ReadableStream<Uint8Array>)) {
         if (aborted) break;
-        streamBytes += Buffer.byteLength(chunk);
-        if (streamBytes > 4 * 1024 * 1024) throw new Error("Provider stream exceeded 4 MiB.");
         buffer += chunk;
         if (buffer.length > 1024 * 1024) throw new Error("Provider stream event exceeded 1 MiB.");
         let idx: number;
@@ -220,10 +215,14 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
                 } else {
                   const si = s.indexOf("<think>");
                   if (si >= 0) {
-                    if (si > 0) q.push({ type: "text", delta: s.slice(0, si) });
+                    if (si > 0) {
+                      chargeStreamContent(contentBudget, s.slice(0, si));
+                      q.push({ type: "text", delta: s.slice(0, si) });
+                    }
                     s = s.slice(si + 7).trimStart();
                     inThink = true;
                   } else {
+                    chargeStreamContent(contentBudget, s);
                     q.push({ type: "text", delta: s });
                     s = "";
                   }
@@ -253,7 +252,8 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
                 cost: 0,
               };
             }
-          } catch {
+          } catch (e) {
+            if (e instanceof StreamContentLimitError) throw e;
           }
         }
       }
@@ -274,14 +274,6 @@ async function streamWithBase(req: StreamRequest, baseOverride: string): Promise
       q.close();
     },
   };
-}
-function safeParseArgs(s: string | undefined): Record<string, unknown> | undefined {
-  if (!s) return undefined;
-  try {
-    return JSON.parse(s);
-  } catch {
-    return undefined;
-  }
 }
 function toOpenAIMessage(m: import("../protocol/protocol.js").ChatMessage, supportsThinking: boolean, providerKind?: import("../protocol/protocol.js").ProviderKind) {
   if (m.role === "tool") {

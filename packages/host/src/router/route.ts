@@ -1,58 +1,116 @@
-//
-//
 import type { DifficultyModel } from "./tfidf.js";
 import { estimateDifficulty } from "./tfidf.js";
+import type { CalibrationModel, CapabilityModel } from "./calibration.js";
+import { requiredScore as calibratedBar } from "./calibration.js";
+import type { DomainModel } from "./domain.js";
+import { classifyDomain } from "./domain.js";
 export type QualityBias = "off" | "prefer-cheap" | "prefer-powerful";
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-const LING_SCORE = 14; 
-const STRONG_SCORE = 51; 
-const BIAS_OFFSET: Record<QualityBias, number> = {
+export const BIAS_OFFSET: Record<QualityBias, number> = {
   "prefer-cheap": -4,
   off: 0,
   "prefer-powerful": 4,
 };
-const EFFORT_TO_TEMP: Record<ReasoningEffort, number> = {
-  none: 1.0, minimal: 0.9, low: 0.8, medium: 0.7, high: 0.5, xhigh: 0.3, max: 0.2,
+export const EFFORT_TO_QUALITY: Record<ReasoningEffort, number> = {
+  none: 0.6, minimal: 0.7, low: 0.75, medium: 0.8, high: 0.85, xhigh: 0.9, max: 0.95,
 };
-const TEMP_SENSITIVITY = 8.0; 
-export function temperatureForEffort(effort: ReasoningEffort): number {
-  return EFFORT_TO_TEMP[effort] ?? 0.7;
+export function qualityForEffort(effort: ReasoningEffort): number {
+  return EFFORT_TO_QUALITY[effort] ?? 0.8;
 }
-function temperatureOffset(temperature: number): number {
-  return (temperature - 0.7) * TEMP_SENSITIVITY;
+export type RouterQualityPreset = "balanced" | "economy" | "power";
+export const ROUTER_QUALITY_PRESETS: Record<RouterQualityPreset, { bias: QualityBias; qualityDelta: number }> = {
+  economy: { bias: "prefer-cheap", qualityDelta: -0.05 },
+  balanced: { bias: "off", qualityDelta: 0 },
+  power: { bias: "prefer-powerful", qualityDelta: 0.05 },
+};
+export function qualityForPreset(preset: RouterQualityPreset, effort: ReasoningEffort): number {
+  const p = ROUTER_QUALITY_PRESETS[preset] ?? ROUTER_QUALITY_PRESETS.balanced;
+  return Math.max(0.6, Math.min(0.95, qualityForEffort(effort) + p.qualityDelta));
 }
-function requiredScore(d: number): number {
-  return LING_SCORE + (STRONG_SCORE - LING_SCORE) * (1 - d);
-}
+const W_LATENCY = 0.35;
+const W_HEALTH = 0.5;
+const W_COST = 2.0;
 export interface FleetModel {
   modelId: string;
   score: number;
   cost: number;
+  latencyMs?: number;
+  health?: number; 
 }
 export interface RouteDecision {
   modelId: string;
   requiredScore: number;
   difficulty: number;
+  domain: string;
   confidence: number;
   scored: number;
+  tau: number;
+}
+export interface RouteContext {
+  calibration?: CalibrationModel;
+  capability?: CapabilityModel;
+  domainModel?: DomainModel;
+}
+export interface RouteOptions {
+  qualityBias?: QualityBias;
+  temperature?: number; 
+  quality?: number; 
+  tau?: number; 
+}
+function isRouteContext(x: unknown): x is RouteContext {
+  const o = x as RouteContext | undefined;
+  return !!o && (o.calibration !== undefined || o.capability !== undefined || o.domainModel !== undefined);
 }
 export function routePrompt(
   text: string,
   model: DifficultyModel,
   fleet: FleetModel[],
-  opts: { qualityBias?: QualityBias; temperature?: number },
+  ctxOrOpts: RouteContext | RouteOptions = {},
+  opts: RouteOptions = {},
 ): RouteDecision {
+  const ctx: RouteContext = isRouteContext(ctxOrOpts) ? ctxOrOpts : {};
+  const options: RouteOptions = isRouteContext(ctxOrOpts) ? opts : (ctxOrOpts as RouteOptions);
   const d = estimateDifficulty(text, model);
-  const bar = requiredScore(d) + BIAS_OFFSET[opts.qualityBias ?? "off"] + temperatureOffset(opts.temperature ?? 0.7);
-  const byCostThenScore = [...fleet].sort((a, b) => a.cost - b.cost || a.score - b.score);
-  let chosen: FleetModel | undefined;
-  for (const m of byCostThenScore) {
-    if (m.score >= bar) { chosen = m; break; }
+  const domain = ctx.domainModel ? classifyDomain(text, ctx.domainModel) : "general";
+  const tau = options.tau ?? 0;
+  const q = options.quality ?? 0.8;
+  const bias = options.qualityBias ?? "off";
+  let bar = calibratedBar(d, domain, ctx.calibration, ctx.capability, q) + BIAS_OFFSET[bias] + tau;
+  bar = Math.max(14, Math.min(63, bar));
+  const usable = fleet.filter((m) => m.score > 0);
+  if (!usable.length) {
+    const fallback = fleet.length ? fleet[0] : { modelId: "", score: 0, cost: 0 };
+    return { modelId: fallback.modelId, requiredScore: bar, difficulty: d, domain, confidence: 0, scored: fallback.score, tau };
   }
-  if (!chosen) {
-    chosen = [...fleet].sort((a, b) => b.score - a.score)[0];
+  let best: FleetModel | undefined;
+  let bestU = Infinity;
+  for (const m of usable) {
+    const margin = m.score - bar;
+    const latPen = W_LATENCY * ((m.latencyMs ?? 3000) / 1000);
+    const health = m.health ?? 100;
+    const healthPen = W_HEALTH * ((100 - health) / 10);
+    const costPen = W_COST * (m.cost / 1000); 
+    const u = margin >= 0
+      ? margin + latPen + healthPen + costPen
+      : 1000 + -margin + latPen + healthPen + costPen;
+    if (u < bestU) {
+      bestU = u;
+      best = m;
+    }
   }
-  return { modelId: chosen.modelId, requiredScore: bar, difficulty: d, confidence: Math.abs(d - 0.5) * 2, scored: chosen.score };
+  const chosen = best ?? usable.reduce((a, b) => (b.score > a.score ? b : a));
+  const marginConf = Math.min(1, (chosen.score - bar) / 15);
+  const clarity = Math.min(1, Math.abs(d - 0.5) * 2);
+  const conf = Math.max(0, Math.min(1, 0.35 + 0.35 * marginConf + 0.3 * clarity));
+  return {
+    modelId: chosen.modelId,
+    requiredScore: bar,
+    difficulty: d,
+    domain,
+    confidence: conf,
+    scored: chosen.score,
+    tau,
+  };
 }
 export function tierFallbackScore(tier: "free" | "light" | "default" | "heavy"): number {
   switch (tier) {

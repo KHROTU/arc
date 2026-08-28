@@ -259,5 +259,6 @@ export class McpAggregator {
   async dispose() {
     for (const s of this.servers.values()) await s.client?.stop();
     this.servers.clear();
+    this.listeners.clear();
   }
 }

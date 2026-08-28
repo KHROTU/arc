@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import type { ChildProcess } from "node:child_process";
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   ModelRegistry, Agent, CheckpointStore, LspBridge, McpAggregator,
   makeVSCodeNotifier, setNotifier, notify, loadWorkspacePrompts, loadGlobalPrompts, mergePrecedence, render, injectRelevantRules,
@@ -27,18 +27,28 @@ import {
   minimalEnvironment, runGit, runProcess, shellCommand, spawnBounded, terminateProcessTree, setGitPath,
   resolveAuthorizedPath,
   readBodyLimited,
+  walk, DEFAULT_INCLUDE, DEFAULT_EXCLUDE, killActiveProcesses, workspaceHash, errMsg, withTimeout, setHostLogger,
+  aesGcmEncrypt, aesGcmDecrypt,
   configureVectorIndexSecurity,
   runHooks,
   SECRET_PATTERNS,
   polishPrompt,
+  llmGroupSummary,
   TOOL_PARAM_SPECS,
   routePrompt,
   lookupIntelligence,
-  tierFallbackScore,
   loadDifficultyModel,
-  temperatureForEffort,
+  loadCalibrationModel,
+  loadCapabilityModel,
+  loadDomainModel,
+  qualityForPreset,
+  ROUTER_QUALITY_PRESETS,
+  perf,
   type DifficultyModel,
-  type QualityBias,
+  type CalibrationModel,
+  type CapabilityModel,
+  type DomainModel,
+  type RouterQualityPreset,
 } from "@arc/host";
 import { CHATS_FILE_NAME, LEGACY_CHATS_FILE_NAME, encryptChatSnapshot, decryptChatSnapshot } from "./chats-codec.js";
 import { PROVIDERS } from "@arc/host/catalog";
@@ -78,9 +88,9 @@ const initReady = new Promise<void>((r) => { initResolve = r; });
 type Session = { id: string; panel?: vscode.WebviewPanel; view?: vscode.WebviewView; agent: Agent; agentReady?: Promise<Agent | undefined>; steps: ProcessStep[]; messages: import("@arc/host").ChatMessage[]; };
 const sidebarSession: Session = { id: "sidebar", agent: undefined as unknown as Agent, steps: [], messages: [] };
 const fullscreenSessions = new Map<string, Session>();
-const chatSessions = new Map<string, Session>();
 const chatTotals = new Map<string, { cost: number; promptTokens: number; completionTokens: number; window: number }>();
-const pendingApprovals = new Map<string, { resolve: (allowed: boolean) => void; session: Session }>();
+const pendingApprovals = new Map<string, { resolve: (allowed: boolean) => void; session: Session; timer: ReturnType<typeof setTimeout> }>();
+let mcpChangeDispose: (() => void) | undefined;
 let approvalId = 0;
 const DIFF_PREVIEW_SCHEME = "arc-diff-preview";
 const diffPreviewContents = new Map<string, string>();
@@ -176,18 +186,22 @@ function checkVersionBump(): Promise<void> {
       await fs.mkdir(arcDir, { recursive: true });
       await fs.writeFile(verPath, current, "utf-8");
     } catch (e) {
-      log.appendLine(`[arc] version bump check failed: ${(e as Error)?.message ?? e}`);
+      log.appendLine(`[arc] version bump check failed: ${errMsg(e)}`);
     }
   })();
+}
+function stripHiddenMessages(msgs: ChatMessage[]): ChatMessage[] {
+  return msgs.filter((m) => !(m as { hidden?: boolean }).hidden);
 }
 async function storageKey(): Promise<Buffer> {
   return createHash("sha256").update(`arc.key:${ctxRef.globalStorageUri.fsPath}`).digest();
 }
 async function encryptState(value: unknown): Promise<string> {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", await storageKey(), iv);
-  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
-  return JSON.stringify({ v: 1, iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), data: ciphertext.toString("base64") });
+  const { iv, tag, data } = aesGcmEncrypt(await storageKey(), Buffer.from(JSON.stringify(value), "utf8"));
+  return JSON.stringify({ v: 1, iv: iv.toString("base64"), tag: tag.toString("base64"), data: data.toString("base64") });
+}
+function mcpSecretKey(root: string, name: string): string {
+  return `${MCP_HEADERS_PREFIX}${createHash("sha256").update(root + "\0" + name).digest("hex")}`;
 }
 async function decryptState<T>(encoded: string): Promise<T> {
   const envelope = JSON.parse(encoded) as { v: number; iv: string; tag: string; data: string };
@@ -197,15 +211,15 @@ async function decryptState<T>(encoded: string): Promise<T> {
   if (legacy) keys.push(Buffer.from(legacy, "base64"));
   for (const key of keys) {
     try {
-      const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(envelope.iv, "base64"));
-      decipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
-      return JSON.parse(Buffer.concat([decipher.update(Buffer.from(envelope.data, "base64")), decipher.final()]).toString("utf8")) as T;
+      const plaintext = aesGcmDecrypt(key, {
+        iv: Buffer.from(envelope.iv, "base64"),
+        tag: Buffer.from(envelope.tag, "base64"),
+        data: Buffer.from(envelope.data, "base64"),
+      });
+      return JSON.parse(plaintext.toString("utf8")) as T;
 } catch {  }
   }
   throw new Error("Unable to decrypt encrypted state.");
-}
-function withTimeout<T>(promise: Thenable<T>, ms: number): Promise<T | undefined> {
-  return Promise.race([Promise.resolve(promise), new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), ms))]);
 }
 function scoreMcpServer(item: unknown, ql: string): number {
   const s = (item as any)?.server ?? item;
@@ -293,6 +307,11 @@ export function activate(context: vscode.ExtensionContext) {
   ctxRef = context;
   log = vscode.window.createOutputChannel("Arc");
   context.subscriptions.push(log);
+  setHostLogger({
+    info: (m) => log.appendLine(m),
+    warn: (m) => log.appendLine(`[warn] ${m}`),
+    error: (m) => log.appendLine(`[error] ${m}`),
+  });
   versionCheck = checkVersionBump();
   setupHeapSnapshotOnHighUsage();
   registerNotebookCellActions(context);
@@ -329,13 +348,16 @@ export function activate(context: vscode.ExtensionContext) {
     registerViewsAndCommands(context);
   } catch (err) {
     log.appendLine(`[arc] fatal during phase 1: ${(err as Error)?.stack ?? err}`);
-    void vscode.window.showErrorMessage(`Arc failed to activate: ${(err as Error)?.message ?? err}`);
+    void vscode.window.showErrorMessage(`Arc failed to activate: ${errMsg(err)}`);
     return;
   }
   void initializeAsync(context).catch((err) => {
     log.appendLine(`[arc] async init failed: ${(err as Error)?.stack ?? err}`);
     initResolve?.();
   });
+}
+function registerCommand(context: vscode.ExtensionContext, command: string, cb: (...args: any[]) => unknown): void {
+  context.subscriptions.push(vscode.commands.registerCommand(command, cb));
 }
 function registerViewsAndCommands(context: vscode.ExtensionContext) {
   const prideMode: PrideMode = vscode.workspace.getConfiguration().get<PrideMode>("arc.appearance.prideLogo", "june") ?? "june";
@@ -359,81 +381,83 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
       }
     },
   };
-  vscode.window.registerWebviewViewProvider("arc-sidebar", sidebarProvider);
-  vscode.window.registerWebviewViewProvider("arc-sidebar-pride", sidebarProvider);
-  vscode.commands.registerCommand("arc.openSidebar", () => {
-    void vscode.commands.executeCommand("workbench.view.extension.arc-activitybar");
-  });
-  vscode.commands.registerCommand("arc.openFullscreen", () => {
-    openFullscreen();
-  });
-  vscode.commands.registerCommand("arc.openSettings", () => {
-    openSettings();
-  });
-  vscode.commands.registerCommand("arc.newTask", () => {
-    newTask();
-  });
-  vscode.commands.registerCommand("arc.stop", () => {
-    void awaitAgent(sidebarSession).then((a) => a?.stop());
-  });
-  vscode.commands.registerCommand("arc.continue", () => {
-    void awaitAgent(sidebarSession).then((a) => a?.continue());
-  });
-  vscode.commands.registerCommand("arc.toggleProblems", async () => {
-    const cur = vscode.workspace.getConfiguration().get<boolean>("arc.showProblems", false);
-    await vscode.workspace.getConfiguration().update("arc.showProblems", !cur, vscode.ConfigurationTarget.Workspace);
-  });
-  vscode.commands.registerCommand("arc.manageModels", async () => {
-    openSettings();
-  });
-  vscode.commands.registerCommand("arc.manageMcp", async () => {
-    openSettings();
-  });
-  vscode.commands.registerCommand("arc.managePrompts", async () => {
-    openPrompt();
-  });
-  vscode.commands.registerCommand("arc.auditLog.export", async () => {
-    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-    const src = auditLogPath(root);
-    try {
-      await fs.access(src);
-    } catch {
-      void vscode.window.showInformationMessage("No audit log has been recorded for this workspace yet.");
-      return;
-    }
-    const dest = await vscode.window.showSaveDialog({
-      defaultUri: vscode.Uri.file(`arc-audit-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`),
-      filters: { "Audit log": ["jsonl"] },
-    });
-    if (!dest) return;
-    await fs.copyFile(src, dest.fsPath);
-    void vscode.window.showInformationMessage(`Audit log exported to ${dest.fsPath}`);
-  });
-  vscode.commands.registerCommand("arc.auditLog.verify", async () => {
-    const picked = await vscode.window.showOpenDialog({
-      canSelectMany: false,
-      filters: { "Audit log": ["jsonl"] },
-      openLabel: "Verify",
-    });
-    if (!picked?.length) return;
-    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-    const result = await verifyAuditLogFile(picked[0].fsPath, root);
-    if (result.ok) {
-      void vscode.window.showInformationMessage(`Audit log verified: ${result.entries} entries, hash chain intact.`);
-    } else {
-      void vscode.window.showErrorMessage(`Audit log verification FAILED at sequence ${result.brokenAtSeq}: ${result.reason}`);
-    }
-  });
-  vscode.commands.registerCommand("arc.explainSelection", async () => {
-    if (!ctxRef) return;
-    const ed = vscode.window.activeTextEditor;
-    if (!ed || ed.selection.isEmpty) return;
-    const text = ed.document.getText(ed.selection);
-    const uri = vscode.workspace.asRelativePath(ed.document.uri);
-    const prompt = `Explain the following code from ${uri}:\n\n\`\`\`${ed.document.languageId}\n${text}\n\`\`\``;
-    await sendToArc(prompt);
-  });
-  vscode.commands.registerCommand("arc.fixSelection", async (uri?: vscode.Uri, range?: vscode.Range, diagnostics?: vscode.Diagnostic[]) => {
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider("arc-sidebar", sidebarProvider),
+    vscode.window.registerWebviewViewProvider("arc-sidebar-pride", sidebarProvider),
+    vscode.commands.registerCommand("arc.openSidebar", () => {
+      void vscode.commands.executeCommand("workbench.view.extension.arc-activitybar");
+    }),
+    vscode.commands.registerCommand("arc.openFullscreen", () => {
+      openFullscreen();
+    }),
+    vscode.commands.registerCommand("arc.openSettings", () => {
+      openSettings();
+    }),
+    vscode.commands.registerCommand("arc.newTask", () => {
+      newTask();
+    }),
+    vscode.commands.registerCommand("arc.stop", () => {
+      void awaitAgent(sidebarSession).then((a) => a?.stop());
+    }),
+    vscode.commands.registerCommand("arc.continue", () => {
+      void awaitAgent(sidebarSession).then((a) => a?.continue());
+    }),
+    vscode.commands.registerCommand("arc.toggleProblems", async () => {
+      const cur = vscode.workspace.getConfiguration().get<boolean>("arc.showProblems", false);
+      await vscode.workspace.getConfiguration().update("arc.showProblems", !cur, vscode.ConfigurationTarget.Workspace);
+    }),
+    vscode.commands.registerCommand("arc.manageModels", async () => {
+      openSettings();
+    }),
+    vscode.commands.registerCommand("arc.manageMcp", async () => {
+      openSettings();
+    }),
+    vscode.commands.registerCommand("arc.managePrompts", async () => {
+      openPrompt();
+    }),
+    vscode.commands.registerCommand("arc.auditLog.export", async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+      const src = auditLogPath(root);
+      try {
+        await fs.access(src);
+      } catch {
+        void vscode.window.showInformationMessage("No audit log has been recorded for this workspace yet.");
+        return;
+      }
+      const dest = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.file(`arc-audit-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`),
+        filters: { "Audit log": ["jsonl"] },
+      });
+      if (!dest) return;
+      await fs.copyFile(src, dest.fsPath);
+      void vscode.window.showInformationMessage(`Audit log exported to ${dest.fsPath}`);
+    }),
+    vscode.commands.registerCommand("arc.auditLog.verify", async () => {
+      const picked = await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        filters: { "Audit log": ["jsonl"] },
+        openLabel: "Verify",
+      });
+      if (!picked?.length) return;
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+      const result = await verifyAuditLogFile(picked[0].fsPath, root);
+      if (result.ok) {
+        void vscode.window.showInformationMessage(`Audit log verified: ${result.entries} entries, hash chain intact.`);
+      } else {
+        void vscode.window.showErrorMessage(`Audit log verification FAILED at sequence ${result.brokenAtSeq}: ${result.reason}`);
+      }
+    }),
+    vscode.commands.registerCommand("arc.explainSelection", async () => {
+      if (!ctxRef) return;
+      const ed = vscode.window.activeTextEditor;
+      if (!ed || ed.selection.isEmpty) return;
+      const text = ed.document.getText(ed.selection);
+      const uri = vscode.workspace.asRelativePath(ed.document.uri);
+      const prompt = `Explain the following code from ${uri}:\n\n\`\`\`${ed.document.languageId}\n${text}\n\`\`\``;
+      await sendToArc(prompt);
+    }),
+  );
+    registerCommand(context, "arc.fixSelection", async (uri?: vscode.Uri, range?: vscode.Range, diagnostics?: vscode.Diagnostic[]) => {
     if (!ctxRef) return;
     const doc = uri ? await vscode.workspace.openTextDocument(uri) : vscode.window.activeTextEditor?.document;
     if (!doc) return;
@@ -450,7 +474,7 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
     const prompt = `Fix the following code from ${relUri}:\n\n\`\`\`${doc.languageId}\n${text}\n\`\`\`${diagText}`;
     await sendToArc(prompt);
   });
-  vscode.commands.registerCommand("arc.inlineChat", async () => {
+    registerCommand(context, "arc.inlineChat", async () => {
     if (!ctxRef || !inlineCommentController) return;
     const ed = vscode.window.activeTextEditor;
     if (!ed) return;
@@ -473,7 +497,7 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
     inlineCommentThreadByComment.set(header, thread);
     thread.comments = [header];
   });
-  vscode.commands.registerCommand("arc.inlineChat.pickModel", async (comment: vscode.Comment) => {
+    registerCommand(context, "arc.inlineChat.pickModel", async (comment: vscode.Comment) => {
     const thread = inlineCommentThreadByComment.get(comment);
     if (!thread || !registry) return;
     const modelList = registry.list();
@@ -499,7 +523,7 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
     inlineCommentThreadByComment.set(header, thread);
     thread.comments = [header, ...thread.comments.slice(1)];
   });
-  vscode.commands.registerCommand("arc.inlineChat.submit", async (reply: vscode.CommentReply) => {
+    registerCommand(context, "arc.inlineChat.submit", async (reply: vscode.CommentReply) => {
     const thread = reply.thread;
     const instruction = reply.text.trim();
     if (!instruction) return;
@@ -553,7 +577,7 @@ function registerViewsAndCommands(context: vscode.ExtensionContext) {
       updateLastInlineComment(thread, `Error: ${(err as Error).message}`);
     }
   });
-  vscode.commands.registerCommand("arc.inlineChat.cancel", (thread: vscode.CommentThread) => {
+    registerCommand(context, "arc.inlineChat.cancel", (thread: vscode.CommentThread) => {
     const session = inlineChatSessions.get(thread);
     if (session) {
       chatHistory?.remove(session.id);
@@ -619,6 +643,7 @@ async function initializeAsync(context: vscode.ExtensionContext) {
     if (key) p.apiKey = key;
   }));
   registry.load(stored);
+  loadRouterTau();
   chatHistory = new ChatHistory();
   chatsFilePath = `${context.globalStorageUri.fsPath}/${CHATS_FILE_NAME}`;
   const legacyChatsPath = `${context.globalStorageUri.fsPath}/${LEGACY_CHATS_FILE_NAME}`;
@@ -678,7 +703,7 @@ async function initializeAsync(context: vscode.ExtensionContext) {
         log.appendLine("[arc] migrated chat history to encrypted .arcx format");
       }
     } catch (e) {
-      log.appendLine(`[arc] failed to persist chats: ${(e as Error).message}`);
+      log.appendLine(`[arc] failed to persist chats: ${errMsg(e)}`);
     }
   };
   renormalizeChatCosts();
@@ -687,8 +712,11 @@ async function initializeAsync(context: vscode.ExtensionContext) {
     if (e.affectsConfiguration("arc.promptPolish")) {
       broadcastAll({ type: "config/changed", key: "arc.promptPolish", value: vscode.workspace.getConfiguration().get("arc.promptPolish", "off") });
     }
-    if (e.affectsConfiguration("arc.router.qualityBias")) {
-      broadcastAll({ type: "config/changed", key: "arc.router.qualityBias", value: vscode.workspace.getConfiguration().get("arc.router.qualityBias", "off") });
+    if (e.affectsConfiguration("arc.router.quality")) {
+      broadcastAll({ type: "config/changed", key: "arc.router.quality", value: vscode.workspace.getConfiguration().get("arc.router.quality", "balanced") });
+    }
+    if (e.affectsConfiguration("arc.router.autoRoute")) {
+      broadcastAll({ type: "config/changed", key: "arc.router.autoRoute", value: vscode.workspace.getConfiguration().get("arc.router.autoRoute", false) });
     }
     if (e.affectsConfiguration("arc.appearance.prideLogo")) {
       const prideMode: PrideMode = vscode.workspace.getConfiguration().get<PrideMode>("arc.appearance.prideLogo", "june") ?? "june";
@@ -717,7 +745,7 @@ async function initializeAsync(context: vscode.ExtensionContext) {
   const sandboxProfile = (vscode.workspace.getConfiguration().get<string>("arc.sandbox.profile", "off") ?? "off") as import("@arc/host").SandboxProfile;
   mcp = new McpAggregator({ workspaceRoot, sandboxProfile });
   mcp.setRemoveHandler(async (name) => {
-    await context.secrets.delete(`${MCP_HEADERS_PREFIX}${createHash("sha256").update(workspaceRoot + "\0" + name).digest("hex")}`);
+    await context.secrets.delete(mcpSecretKey(workspaceRoot, name));
   });
   mcp.setPersistence(() => persistMcpConfig(mcp, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()));
   mcp.setRoots((vscode.workspace.workspaceFolders ?? []).map((f) => ({ uri: f.uri.toString(), name: f.name })));
@@ -740,13 +768,13 @@ async function initializeAsync(context: vscode.ExtensionContext) {
     mcpSamplingUsage.set(serverName, used + 1);
     return completeSamplingRequest(registry, sampling, { proxyUrl: resolveProxy("providerUrl") ?? resolveProxy("url") });
   });
-  mcp.onChange(() => {
+  mcpChangeDispose = mcp.onChange(() => {
     const list = mcp.listServers().map((s) => ({ name: s.name, enabled: s.enabled, transport: s.transport.type, toolCount: s.tools.length }));
     for (const webview of getAllWebviews()) {
       webview.postMessage({ type: "mcp/list", servers: list });
     }
   });
-  setNotifier(makeVSCodeNotifier());
+  setNotifier(makeVSCodeNotifier(context.asAbsolutePath("assets/arc-logo-mono.png")));
   initDiscordRpcSpoof(context);
   let savedState = context.globalState.get<string | { messages: unknown[]; steps: unknown[]; mode: string; todoItems: unknown[] }>("arc.agentState");
   try {
@@ -756,7 +784,6 @@ async function initializeAsync(context: vscode.ExtensionContext) {
   pendingAgentState = typeof savedState === "string" ? await decryptState<typeof pendingAgentState>(savedState).catch(() => undefined) : savedState;
   const currentChat = chatHistory.ensure(chatHistory.current());
   sidebarSession.id = currentChat.id;
-  chatSessions.set(currentChat.id, sidebarSession);
   persist();
   scheduleAutoReindex();
   await registryLoads.catch(() => {});
@@ -801,7 +828,7 @@ async function openFullscreen(): Promise<vscode.Webview | undefined> {
   wireWebview(panel.webview, session);
   panel.onDidDispose(() => {
     fullscreenSessions.delete(mapKey);
-    chatSessions.delete(chatId);
+    void session.agent?.stop();
   });
   return panel.webview;
 }
@@ -820,6 +847,7 @@ function newTask() {
   sidebarSession.messages = [];
   sidebarSession.steps = [];
   if (sidebarSession.agent) {
+    if (sidebarSession.agent.isActive) void sidebarSession.agent.stop();
     sidebarSession.agent = undefined as unknown as Agent;
     sidebarSession.agentReady = undefined;
   }
@@ -921,48 +949,140 @@ function secureSetting<T>(key: string, fallback: T): T {
   const inspected = vscode.workspace.getConfiguration().inspect<T>(key);
   return inspected?.globalValue ?? inspected?.defaultValue ?? fallback;
 }
-const ROUTER_MODEL_URL = "https://raw.githubusercontent.com/KHROTU/arc/main/packages/arc/resources/router/difficulty.json";
-const ROUTER_MODEL_VERSION = 2;
-let difficultyModelCache: DifficultyModel | null = null;
-async function ensureRouterModelFile(cachePath: string): Promise<boolean> {
+const ROUTER_ASSET_VERSION = 4;
+const ROUTER_ASSETS: Record<string, { file: string; url: string; version: number }> = {
+  difficulty: {
+    file: "difficulty.json",
+    url: "https://raw.githubusercontent.com/KHROTU/arc/main/packages/arc/resources/router/difficulty.json",
+    version: 3,
+  },
+  calibration: {
+    file: "calibration.json",
+    url: "https://raw.githubusercontent.com/KHROTU/arc/main/packages/arc/resources/router/calibration.json",
+    version: ROUTER_ASSET_VERSION,
+  },
+  capability: {
+    file: "capability.json",
+    url: "https://raw.githubusercontent.com/KHROTU/arc/main/packages/arc/resources/router/capability.json",
+    version: ROUTER_ASSET_VERSION,
+  },
+  domain: {
+    file: "domain.json",
+    url: "https://raw.githubusercontent.com/KHROTU/arc/main/packages/arc/resources/router/domain.json",
+    version: ROUTER_ASSET_VERSION,
+  },
+};
+interface RouterAssets {
+  difficulty: DifficultyModel | null;
+  calibration: CalibrationModel | null;
+  capability: CapabilityModel | null;
+  domain: DomainModel | null;
+}
+let routerAssetsCache: RouterAssets | null = null;
+async function ensureRouterAsset(name: string, cachePath: string): Promise<boolean> {
+  const spec = ROUTER_ASSETS[name];
+  if (!spec) return false;
   try {
     const parsed = JSON.parse(await fs.readFile(cachePath, "utf8")) as { v?: number };
-    if (parsed.v === ROUTER_MODEL_VERSION) return true;
+    if (parsed.v === spec.version) return true;
   } catch {
   }
-  const url = secureSetting<string>("arc.router.modelUrl", ROUTER_MODEL_URL);
+  const url = name === "difficulty" ? secureSetting<string>("arc.router.modelUrl", spec.url) : spec.url;
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
     if (!res.ok) throw new Error(`download failed (${res.status})`);
-    const text = await readBodyLimited(res, 16 * 1024 * 1024);
+    const text = await readBodyLimited(res, name === "difficulty" ? 16 * 1024 * 1024 : 4 * 1024 * 1024);
     const parsed = JSON.parse(text) as { v?: number };
-    if (parsed.v !== ROUTER_MODEL_VERSION) throw new Error(`unexpected model version ${String(parsed.v)}`);
+    if (parsed.v !== spec.version) throw new Error(`unexpected ${name} version ${String(parsed.v)}`);
     await fs.mkdir(path.dirname(cachePath), { recursive: true, mode: 0o700 });
     await fs.writeFile(cachePath, text, { mode: 0o600 });
-    log.appendLine(`[arc] router difficulty model v${ROUTER_MODEL_VERSION} cached to ${cachePath}`);
+    log.appendLine(`[arc] router ${name} v${spec.version} cached to ${cachePath}`);
     return true;
   } catch (e) {
-    log.appendLine(`[arc] router difficulty model download failed: ${(e as Error).message}`);
+    log.appendLine(`[arc] router ${name} download failed: ${errMsg(e)}`);
     return false;
   }
 }
-async function loadDifficultyModelAsset(): Promise<DifficultyModel | null> {
-  if (difficultyModelCache) return difficultyModelCache;
-  try {
-    const cachePath = path.join(getArcDir(), "router", "difficulty.json");
-    if (await ensureRouterModelFile(cachePath)) {
-      const data = JSON.parse(await fs.readFile(cachePath, "utf8")) as DifficultyModel;
-      difficultyModelCache = loadDifficultyModel(data);
-      return difficultyModelCache;
+async function loadRouterAssets(): Promise<RouterAssets> {
+  if (routerAssetsCache) return routerAssetsCache;
+  const cacheDir = path.join(getArcDir(), "router");
+  const result: RouterAssets = { difficulty: null, calibration: null, capability: null, domain: null };
+  const names = ["difficulty", "calibration", "capability", "domain"] as const;
+  for (const name of names) {
+    const spec = ROUTER_ASSETS[name];
+    try {
+      const cachePath = path.join(cacheDir, spec.file);
+      if (await ensureRouterAsset(name, cachePath)) {
+        const raw = await fs.readFile(cachePath, "utf8");
+        if (name === "difficulty") result.difficulty = loadDifficultyModel(JSON.parse(raw));
+        else if (name === "calibration") result.calibration = loadCalibrationModel(JSON.parse(raw));
+        else if (name === "capability") result.capability = loadCapabilityModel(JSON.parse(raw));
+        else result.domain = loadDomainModel(JSON.parse(raw));
+        continue;
+      }
+      const bundled = ctxRef.asAbsolutePath(path.join("resources", "router", spec.file));
+      const raw = await fs.readFile(bundled, "utf8");
+      if (name === "difficulty") result.difficulty = loadDifficultyModel(JSON.parse(raw));
+      else if (name === "calibration") result.calibration = loadCalibrationModel(JSON.parse(raw));
+      else if (name === "capability") result.capability = loadCapabilityModel(JSON.parse(raw));
+      else result.domain = loadDomainModel(JSON.parse(raw));
+    } catch (e) {
+      log.appendLine(`[arc] router ${name} load failed: ${errMsg(e)}`);
     }
-    const bundled = ctxRef.asAbsolutePath(path.join("resources", "router", "difficulty.json"));
-    const data = JSON.parse(await fs.readFile(bundled, "utf8")) as DifficultyModel;
-    difficultyModelCache = loadDifficultyModel(data);
-    return difficultyModelCache;
-  } catch (e) {
-    log.appendLine(`[arc] failed to load router difficulty model: ${(e as Error).message}`);
-    return null;
   }
+  routerAssetsCache = result;
+  return result;
+}
+const ROUTER_TAU_KEY = "arc.router.tau";
+let routerTau = 0;
+const routerEmptyCount = new Map<string, number>();
+const routerTurnCount = new Map<string, number>();
+function persistRouterTau(): void {
+  void ctxRef?.globalState.update(ROUTER_TAU_KEY, routerTau);
+}
+function loadRouterTau(): void {
+  routerTau = ctxRef?.globalState.get<number>(ROUTER_TAU_KEY, 0) ?? 0;
+}
+function modelLatencyMs(modelId: string): number {
+  const refs = registry.providersFor(modelId);
+  if (!refs.length) return 3000;
+  let total = 0;
+  let n = 0;
+  for (const r of refs) {
+    const l = perf.latency(r.id, modelId);
+    if (l > 0) { total += l; n++; }
+  }
+  return n ? total / n : 3000;
+}
+function modelHealth(modelId: string): number {
+  const refs = registry.providersFor(modelId);
+  if (!refs.length) return 100;
+  let total = 0;
+  let n = 0;
+  let cbOpen = false;
+  for (const r of refs) {
+    if (perf.isOpen(r.id, modelId)) cbOpen = true;
+    total += perf.score(r.id, modelId);
+    n++;
+  }
+  let health = cbOpen ? 0 : (n ? total / n : 100);
+  const turns = routerTurnCount.get(modelId) ?? 0;
+  if (turns >= 3) {
+    const emptyRate = (routerEmptyCount.get(modelId) ?? 0) / turns;
+    health -= emptyRate * 40;
+  }
+  return Math.max(0, Math.min(100, Math.round(health)));
+}
+function recordRoutedTurn(modelId: string, empty: boolean): void {
+  routerTurnCount.set(modelId, (routerTurnCount.get(modelId) ?? 0) + 1);
+  if (empty) routerEmptyCount.set(modelId, (routerEmptyCount.get(modelId) ?? 0) + 1);
+}
+function softFail(agent: Agent, beforeSteps: number, currentSteps: number): boolean {
+  if (currentSteps > beforeSteps) return false;
+  const msgs = agent.getMessages() as ChatMessage[];
+  const last = [...msgs].reverse().find((m) => m.role === "assistant");
+  const content = typeof last?.content === "string" ? last.content.trim() : "";
+  return content.length === 0;
 }
 const MAIN_AGENT_EXCLUDED_TOOLS = new Set(["subagent.askParent"]);
 const ENABLED_TOOLS: readonly string[] = Object.keys(TOOL_PARAM_SPECS).filter((t) => !MAIN_AGENT_EXCLUDED_TOOLS.has(t));
@@ -992,11 +1112,25 @@ function toolCategory(name: string): string {
     default: return "Other";
   }
 }
-const TOOL_CATALOG: { name: string; category: string; description: string }[] = ENABLED_TOOLS.map((name) => ({
-  name,
-  category: toolCategory(name),
-  description: TOOL_PARAM_SPECS[name].description,
-}));
+let cachedToolCatalogJson: string | undefined;
+function getToolCatalogJson(): string {
+  if (!cachedToolCatalogJson) {
+    const catalog = ENABLED_TOOLS.map((name) => ({
+      name,
+      category: toolCategory(name),
+      description: TOOL_PARAM_SPECS[name]?.description ?? "",
+    }));
+    cachedToolCatalogJson = JSON.stringify(catalog);
+  }
+  return cachedToolCatalogJson;
+}
+let cachedProviderCatalogJson: string | undefined;
+function getProviderCatalogJson(): string {
+  if (!cachedProviderCatalogJson) {
+    cachedProviderCatalogJson = JSON.stringify(PROVIDERS);
+  }
+  return cachedProviderCatalogJson;
+}
 const buildSystemPrompt = async (mcpAggregator?: McpAggregator): Promise<string> => {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
   const globalParts = await loadGlobalPrompts();
@@ -1233,21 +1367,40 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
         const textOutput = parts.join("\n").trim() || (ok ? "(cell executed with no text output)" : "Cell execution failed.");
         return { ok, output: `${textOutput}${truncated ? "\n[notebook output truncated at 1 MiB]" : ""}`, images };
       } catch (e: unknown) {
-        return { ok: false, output: `Failed to execute cell: ${(e as Error).message}` };
+        return { ok: false, output: `Failed to execute cell: ${errMsg(e)}` };
       }
     },
   };
   const sinkId = session.id;
+  let textFlushTimer: ReturnType<typeof setTimeout> | undefined;
+  let textFlushLatest: { id: string; text: string } | undefined;
+  let stepsFlushTimer: ReturnType<typeof setTimeout> | undefined;
+  const flushAssistantText = (): void => {
+    textFlushTimer = undefined;
+    if (textFlushLatest) {
+      const { id, text } = textFlushLatest;
+      textFlushLatest = undefined;
+      if (session.messages.some((m) => m.id === id)) return;
+      broadcast(session, { type: "session/assistantText", id, text, sessionId: sinkId });
+    }
+  };
+  const flushSteps = (): void => {
+    stepsFlushTimer = undefined;
+    broadcast(session, { type: "session/steps", steps: session.steps, sessionId: sinkId });
+  };
   const sink: import("@arc/host").AgentEventSink = {
     message: (m) => {
       session.messages.push(m);
       broadcast(session, { type: "session/message", message: m, sessionId: sinkId });
     },
-    assistantDelta: (id, text) => broadcast(session, { type: "session/assistantText", id, text, sessionId: sinkId }),
+    assistantDelta: (id, text) => {
+      textFlushLatest = { id, text };
+      if (!textFlushTimer) textFlushTimer = setTimeout(flushAssistantText, 50);
+    },
     steps: (steps) => {
       session.steps = steps;
       chatHistory?.setSteps(session.id, steps);
-      broadcast(session, { type: "session/steps", steps, sessionId: sinkId });
+      if (!stepsFlushTimer) stepsFlushTimer = setTimeout(flushSteps, 50);
       const lastStep = steps[steps.length - 1];
       if (lastStep?.type === "tool" && (lastStep.toolName === "file.edit" || lastStep.toolName === "file.write" || lastStep.toolName === "file.read")) {
         const toolStep = lastStep as { toolName: string; args?: Record<string, unknown>; filePath?: string };
@@ -1262,7 +1415,13 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       broadcast(session, { type: "session/turnStart", turnId, sessionId: sinkId });
       reportAgentActivity("think");
     },
-    turnEnd: (turnId, ok, error) => broadcast(session, { type: "session/turnEnd", turnId, ok, ...(error ? { error } : {}), sessionId: sinkId }),
+    turnEnd: (turnId, ok, error) => {
+      if (textFlushTimer) { clearTimeout(textFlushTimer); textFlushTimer = undefined; }
+      flushAssistantText();
+      if (stepsFlushTimer) { clearTimeout(stepsFlushTimer); stepsFlushTimer = undefined; }
+      flushSteps();
+      broadcast(session, { type: "session/turnEnd", turnId, ok, ...(error ? { error } : {}), sessionId: sinkId });
+    },
     usage: (usage, perModel) => {
       const totals = chatTotals.get(session.id) ?? { cost: 0, promptTokens: 0, completionTokens: 0, window: 0 };
       totals.promptTokens = Math.max(totals.promptTokens, usage.prompt);
@@ -1273,7 +1432,9 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       chatTotals.set(session.id, totals);
       if (chatHistory) {
         chatHistory.bump(session.id, usage.cost);
-        chatHistory.setMessages(session.id, session.messages);
+        chatHistory.bumpPromptTokens(session.id, totals.promptTokens);
+        const full = stripHiddenMessages((session.agent?.getMessages()?.length ? session.agent.getMessages() : session.messages) as ChatMessage[]);
+        chatHistory.setMessages(session.id, full);
         chatHistory.setSteps(session.id, session.steps);
       }
       broadcast(session, { type: "session/usage", usage, perModel });
@@ -1291,7 +1452,14 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     clarification: (id, question, options) => broadcast(session, { type: "session/clarification", id, question, options }),
     done: () => {
       notify("done", "Task complete");
-      if (chatHistory) chatHistory.setMessages(session.id, session.messages);
+      if (chatHistory) {
+        const full = stripHiddenMessages((session.agent?.getMessages()?.length ? session.agent.getMessages() : session.messages) as ChatMessage[]);
+        chatHistory.setMessages(session.id, full);
+      }
+      if (textFlushTimer) { clearTimeout(textFlushTimer); textFlushTimer = undefined; }
+      flushAssistantText();
+      if (stepsFlushTimer) { clearTimeout(stepsFlushTimer); stepsFlushTimer = undefined; }
+      flushSteps();
       clearTimeout(persistTimer);
       void persistAsync?.();
       broadcast(session, { type: "session/done" });
@@ -1301,6 +1469,10 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     error: (message) => {
       const code = classifyError(message);
       notify("error", message);
+      if (textFlushTimer) { clearTimeout(textFlushTimer); textFlushTimer = undefined; }
+      flushAssistantText();
+      if (stepsFlushTimer) { clearTimeout(stepsFlushTimer); stepsFlushTimer = undefined; }
+      flushSteps();
       broadcast(session, { type: "error", message, ...(code ? { code } : {}) });
     },
     compaction: (before, after, reason) => broadcast(session, { type: "session/compaction", before, after, reason }),
@@ -1317,6 +1489,10 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     verifyMode: (vscode.workspace.getConfiguration().get<string>("arc.verify.mode", "default") ?? "default") as "none" | "default" | "custom",
     verifyMaxRetries: vscode.workspace.getConfiguration().get<number>("arc.verify.customMaxRetries", 3),
     condensingPrompt: vscode.workspace.getConfiguration().get<string>("arc.compaction.customPrompt", "") || undefined,
+    compactionConfig: {
+      safetyMargin: vscode.workspace.getConfiguration().get<number>("arc.compaction.safetyMargin", 0.15),
+      strategy: vscode.workspace.getConfiguration().get<string>("arc.compaction.strategy", "model-aware") === "fixed" ? "fixed" : "model-aware",
+    },
     proxyUrl: resolveProxy("url"),
     proxyProvider: resolveProxy("providerUrl"),
     toolContext,
@@ -1330,9 +1506,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     restoreBrowserTabs: async (tabs) => {
       if (!tabs.length) return;
       const b = await getBrowser();
-      for (const t of tabs) {
-        await b.newTab(t.url);
-      }
+      await Promise.all(tabs.map((t) => b.newTab(t.url)));
     },
     autoSessionNotes: vscode.workspace.getConfiguration().get<boolean>("arc.memory.autoNotes", true),
     approveShell: async (description, meta) => {
@@ -1342,13 +1516,13 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       }
       const id = String(++approvalId);
       const promise = new Promise<boolean>((resolve) => {
-        pendingApprovals.set(id, { resolve, session });
-        setTimeout(() => {
+        const timer = setTimeout(() => {
           if (pendingApprovals.has(id)) {
             pendingApprovals.delete(id);
             resolve(false);
           }
         }, 120_000);
+        pendingApprovals.set(id, { resolve, session, timer });
       });
       const msg: any = { type: "approval/request", id, description, kind: "shell" };
       if (meta?.command) msg.command = meta.command;
@@ -1386,7 +1560,7 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     try {
       await session.agent.restore(pendingAgentState as any);
     } catch (e) {
-      log.appendLine(`[arc] agent state restore failed: ${(e as Error)?.message ?? e}`);
+      log.appendLine(`[arc] agent state restore failed: ${errMsg(e)}`);
     }
     pendingAgentState = undefined;
     void ctxRef.globalState.update("arc.agentState", undefined);
@@ -1430,12 +1604,14 @@ function broadcastChatListAll() {
 }
 function switchToChat(chatId: string, webview: vscode.Webview) {
   if (sidebarSession.agent) {
-    chatHistory?.setMessages(sidebarSession.id, sidebarSession.messages);
+    const full = stripHiddenMessages((sidebarSession.agent.getMessages?.()?.length ? sidebarSession.agent.getMessages() : sidebarSession.messages) as ChatMessage[]);
+    chatHistory?.setMessages(sidebarSession.id, full);
     void persistAsync?.();
   }
   for (const [, s] of fullscreenSessions) {
     if (s.agent) {
       chatHistory?.setMessages(s.id, s.messages);
+      if (s.agent.isActive) void s.agent.stop();
     }
     s.id = chatId;
     s.steps = [];
@@ -1443,13 +1619,13 @@ function switchToChat(chatId: string, webview: vscode.Webview) {
     s.agentReady = undefined;
   }
   webview.postMessage({ type: "chat/current", chatId });
-  webview.postMessage({ type: "session/steps", steps: [] });
   const persisted = (chatHistory?.getMessages(chatId) ?? []) as ChatMessage[];
   const persistedSteps = chatHistory?.getSteps(chatId) ?? [];
   if (sidebarSession) {
     sidebarSession.id = chatId;
     sidebarSession.messages = persisted;
     sidebarSession.steps = persistedSteps as ProcessStep[];
+    if (sidebarSession.agent?.isActive) void sidebarSession.agent.stop();
     sidebarSession.agent = undefined as unknown as Agent;
     sidebarSession.agentReady = undefined;
   }
@@ -1464,15 +1640,11 @@ function switchToChat(chatId: string, webview: vscode.Webview) {
   const chatMeta = chatHistory?.list().find((c) => c.id === chatId);
   chatTotals.set(chatId, {
     cost: chatMeta?.cost ?? 0,
-    promptTokens: estimateTokens(persisted as ChatMessage[]),
+    promptTokens: chatMeta?.promptTokens && chatMeta.promptTokens > 0 ? chatMeta.promptTokens : estimateTokens(persisted as ChatMessage[]),
     completionTokens: 0,
     window: 0,
   });
   pushContextStats(webview, chatId);
-  for (const [, s] of fullscreenSessions) {
-    s.agent = undefined as unknown as Agent;
-    s.agentReady = undefined;
-  }
 }
 function pushContextStats(webview: vscode.Webview, chatId: string) {
   const totals = chatTotals.get(chatId) ?? { cost: 0, promptTokens: 0, completionTokens: 0, window: 0 };
@@ -1537,7 +1709,7 @@ async function reindexWorkspace(webview?: vscode.Webview) {
   }
   searchIndexer = new Indexer({ backend: be });
   searchProgress = { filesScanned: 0, filesIndexed: 0, chunksEmbedded: 0, errors: 0 };
-  const files = await walkWorkspace(root);
+  const files = await walk(root, DEFAULT_INCLUDE, DEFAULT_EXCLUDE);
   searchProgress.filesScanned = files.length;
   broadcastAll({ type: "search/indexProgress", filesScanned: files.length, filesIndexed: 0, chunksEmbedded: 0, errors: 0 });
   if (signal.aborted) return;
@@ -1560,54 +1732,6 @@ async function reindexWorkspace(webview?: vscode.Webview) {
   }
   startIndexWatcherIfEnabled();
 }
-async function walkWorkspace(root: string): Promise<string[]> {
-  const include = [
-    "**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx", "**/*.mjs", "**/*.cjs",
-    "**/*.py", "**/*.rs", "**/*.go", "**/*.java", "**/*.kt", "**/*.cs",
-    "**/*.rb", "**/*.php", "**/*.swift", "**/*.c", "**/*.cpp", "**/*.h",
-    "**/*.hpp", "**/*.md", "**/*.mdx", "**/*.txt", "**/*.json", "**/*.yaml", "**/*.yml",
-    "**/*.toml", "**/*.html", "**/*.css", "**/*.scss", "**/*.sql",
-  ];
-  const exclude = [
-    "**/node_modules/**", "**/.git/**", "**/dist/**", "**/out/**", "**/build/**",
-    "**/.next/**", "**/.vscode/**", "**/coverage/**", "**/.cache/**",
-    "**/target/**", "**/venv/**", "**/__pycache__/**", "**/*.min.js", "**/*.lock",
-    "**/*.lockb", "**/package-lock.json", "**/pnpm-lock.yaml", "**/yarn.lock",
-  ];
-  const out: string[] = [];
-  async function visit(dir: string) {
-    let entries: import("node:fs").Dirent[];
-    try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
-    for (const ent of entries) {
-      const full = path.join(dir, ent.name);
-      const rel = path.relative(root, full).replace(/\\/g, "/");
-      if (ent.isDirectory()) {
-        if (matchAny(rel + "/", exclude)) continue;
-        await visit(full);
-      } else if (ent.isFile()) {
-        if (matchAny(rel, exclude)) continue;
-        if (matchAny(rel, include)) out.push(rel);
-      }
-    }
-  }
-  await visit(root);
-  return out;
-}
-function matchAny(p: string, patterns: string[]): boolean {
-  return patterns.some((pat) => {
-    let re = "^";
-    for (let i = 0; i < pat.length; i++) {
-      const c = pat[i];
-      if (c === "*") {
-        if (pat[i + 1] === "*") { re += ".*"; i++; if (pat[i + 1] === "/") i++; }
-        else re += "[^/]*";
-      } else if (c === "?") re += "[^/]";
-      else if ("\\^$.|+()[]{}".includes(c)) re += "\\" + c;
-      else re += c;
-    }
-    return new RegExp(re + "$").test(p);
-  });
-}
 function broadcastAll(msg: HostMsg) {
   for (const s of [sidebarSession, ...fullscreenSessions.values()]) {
     for (const v of [s.view?.webview, s.panel?.webview].filter(Boolean) as vscode.Webview[]) {
@@ -1618,9 +1742,8 @@ function broadcastAll(msg: HostMsg) {
 function getIndexPath(): string | undefined {
   const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!ws) return undefined;
-  const hash = createHash("sha1").update(ws).digest("hex").slice(0, 12);
   const dir = path.join(ctxRef.globalStorageUri.fsPath, "index");
-  return path.join(dir, `${hash}.arcx`);
+  return path.join(dir, `${workspaceHash(ws)}.arcx`);
 }
 function stopIndexWatcher(): void {
   indexWatcher?.stop();
@@ -1706,10 +1829,13 @@ const WEBVIEW_CONFIG_KEYS = new Set([
   "arc.titleGeneration.method", "arc.discord.spoofRpc", "arc.proxy.url", "arc.proxy.providerUrl", "arc.proxy.webUrl",
   "arc.proxy.shellUrl", "arc.verify.mode", "arc.verify.customMaxRetries", "arc.search.enabled", "arc.search.backend",
   "arc.search.modelTier", "arc.search.chunkCount", "arc.search.autoReindex", "arc.appearance.prideLogo", "arc.appearance.toolTree",
+  "arc.appearance.toolGroupSummary",
+  "arc.appearance.fontFamily", "arc.appearance.monoFontFamily", "arc.appearance.customFontFamily", "arc.appearance.customMonoFontFamily",
   "arc.diffView.autoOpen",
   "arc.reasoning.effort",
   "arc.promptPolish",
-  "arc.router.qualityBias",
+  "arc.router.quality",
+  "arc.router.autoRoute",
   "arc.tools.disabled",
   "arc.shell.approval",
   "arc.sandbox.profile",
@@ -1717,7 +1843,7 @@ const WEBVIEW_CONFIG_KEYS = new Set([
 ]);
 const SENSITIVE_CONFIG_KEYS = new Set(["arc.proxy.url", "arc.proxy.providerUrl", "arc.proxy.webUrl", "arc.proxy.shellUrl"]);
 const WEBVIEW_MESSAGE_KEYS: Record<string, readonly string[]> = {
-  "chat/send": ["type", "text", "attachments", "images", "modelId"], "chat/polish": ["type", "text"], "chat/route": ["type", "text", "attachments", "images"], "chat/guidance": ["type", "text"], "chat/stop": ["type"],
+  "chat/send": ["type", "text", "attachments", "images", "modelId"], "chat/polish": ["type", "text"], "chat/summarizeTools": ["type", "id", "titles"], "chat/saveGroupTitle": ["type", "stepId", "title", "mode"], "chat/route": ["type", "text", "attachments", "images"], "chat/guidance": ["type", "text"], "chat/stop": ["type"],
   "chat/retract": ["type", "turnId"], "chat/continue": ["type"], "chat/answerClarification": ["type", "id", "answer"],
   "model/select": ["type", "modelId"], "model/add": ["type", "model"], "model/remove": ["type", "modelId"],
   "provider/add": ["type", "provider", "apiKey"], "provider/update": ["type", "providerId", "changes", "apiKey"],
@@ -1731,8 +1857,8 @@ const WEBVIEW_MESSAGE_KEYS: Record<string, readonly string[]> = {
   "ui/showProblems": ["type"], "ui/openFullscreen": ["type", "show"], "ui/openSettings": ["type"], "ui/openFile": ["type", "path", "line", "endLine"],
   "ui/openFileDiff": ["type", "path", "hunks", "streamId"], "ui/openPrompt": ["type"], "ui/newTask": ["type"], "ready": ["type"],
   "chat/switch": ["type", "chatId"], "chat/rename": ["type", "chatId", "title"], "chat/delete": ["type", "chatId"],
-  "chat/new": ["type"], "chat/compact": ["type"], "ui/openSidebar": ["type"], "ui/openTab": ["type", "tab"],
-  "ui/showSettings": ["type"], "ui/openExternal": ["type", "url"], "search/reindex": ["type"], "model/bindUpdate": ["type", "modelId", "providerId", "remoteModel"],
+  "chat/new": ["type"], "chat/compact": ["type"], "ui/openSidebar": ["type"],
+  "ui/openExternal": ["type", "url"], "search/reindex": ["type"], "model/bindUpdate": ["type", "modelId", "providerId", "remoteModel"],
   "mode/select": ["type", "mode"], "mode/list": ["type"], "mode/save": ["type", "mode", "scope"], "mode/delete": ["type", "slug", "scope"],
   "autoApprove/toggle": ["type"], "approval/response": ["type", "id", "allowed", "rememberCommand", "rememberPrefix"],
   "approval/setPreset": ["type", "preset"], "chat/search": ["type", "query"], "chat/resume": ["type", "id"],
@@ -1741,17 +1867,28 @@ const WEBVIEW_MESSAGE_KEYS: Record<string, readonly string[]> = {
   "hooks/list": ["type"], "diff/accept": ["type", "stepId", "filePath"], "diff/reject": ["type", "stepId", "filePath", "hunks"],
   "provider/setupInternal": ["type"], "provider/startServer": ["type", "providerId"], "provider/stopServer": ["type", "providerId"],
 };
+function roughMessageSize(v: unknown): number {
+  if (typeof v === "string") return v.length;
+  if (typeof v === "number" || typeof v === "boolean") return 8;
+  if (Array.isArray(v)) {
+    let n = 0;
+    for (const x of v) n += roughMessageSize(x);
+    return n;
+  }
+  if (v && typeof v === "object") {
+    let n = 0;
+    for (const k in v as Record<string, unknown>) n += roughMessageSize((v as Record<string, unknown>)[k]);
+    return n;
+  }
+  return 0;
+}
 function isWebviewMessage(raw: unknown): raw is WebviewMsg {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
   const value = raw as Record<string, unknown>;
   const type = value.type;
   if (typeof type !== "string" || !WEBVIEW_MESSAGE_KEYS[type]) return false;
   if (Object.keys(value).some((key) => !WEBVIEW_MESSAGE_KEYS[type].includes(key))) return false;
-  try {
-    if (JSON.stringify(value).length > 2 * 1024 * 1024) return false;
-  } catch {
-    return false;
-  }
+  if (roughMessageSize(value) > 2 * 1024 * 1024) return false;
   if ((type === "config/get" || type === "config/set") && typeof value.key !== "string") return false;
   if (type === "approval/response" && (typeof value.id !== "string" || typeof value.allowed !== "boolean")) return false;
   if (type === "mcp/addServer") {
@@ -1819,7 +1956,6 @@ function wireWebview(webview: vscode.Webview, session: Session) {
               webview.postMessage({ type: "session/steps", steps: session.steps });
             }
           }
-          webview.postMessage({ type: "session/steps", steps: session.steps });
           broadcastChatList(webview);
           pushContextStats(webview, session.id);
           break;
@@ -1832,7 +1968,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
                 await vscode.env.openExternal(vscode.Uri.parse(msg.url));
               }
             } catch (e) {
-              log.appendLine(`[arc] openExternal failed: ${(e as Error)?.message ?? e}`);
+              log.appendLine(`[arc] openExternal failed: ${errMsg(e)}`);
             }
           }
           break;
@@ -1842,6 +1978,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             session.id = c.id;
             session.messages = [];
             session.steps = [];
+            if (session.agent?.isActive) void session.agent.stop();
             session.agent = undefined as unknown as Agent;
             session.agentReady = undefined;
             persist?.();
@@ -1881,10 +2018,23 @@ function wireWebview(webview: vscode.Webview, session: Session) {
                 agent.setPendingToolChain("describe_image", { count: descriptions.length }, content, `Described ${descriptions.length} image${descriptions.length > 1 ? "s" : ""}`);
               }
               const routed = msg.modelId ? registry?.get(msg.modelId) : undefined;
+              const autoRouted = msg.autoRouted === true && !!routed;
               const prevOverride = agent.getModelOverride();
               if (routed) agent.setModelOverride(routed);
               try {
+                const beforeSteps = session.steps.length;
                 await agent.send(text, msg.attachments, images);
+                if (autoRouted && routed) {
+                  if (softFail(agent, beforeSteps, session.steps.length)) {
+                    recordRoutedTurn(routed.id, true);
+                    routerTau = Math.min(8, routerTau + 1.5);
+                    persistRouterTau();
+                  } else {
+                    recordRoutedTurn(routed.id, false);
+                    routerTau = Math.max(0, routerTau - 0.3);
+                    persistRouterTau();
+                  }
+                }
               } finally {
                 if (routed) agent.setModelOverride(prevOverride);
               }
@@ -1910,6 +2060,38 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             );
           }
           break;
+        case "chat/summarizeTools":
+          {
+            if (!registry || !Array.isArray(msg.titles) || !msg.titles.length) {
+              webview.postMessage({ type: "chat/toolsSummary", id: msg.id, text: "" });
+              break;
+            }
+            void llmGroupSummary(registry, msg.titles.slice(0, 60), resolveProxy("providerUrl") ?? resolveProxy("url")).then(
+              (text) => webview.postMessage({ type: "chat/toolsSummary", id: msg.id, text: text ?? "" }),
+              () => webview.postMessage({ type: "chat/toolsSummary", id: msg.id, text: "" }),
+            );
+          }
+          break;
+        case "chat/saveGroupTitle":
+          {
+            const findStep = (steps: ProcessStep[], id: string): ProcessStep | undefined => {
+              for (const s of steps) {
+                if (s.id === id) return s;
+                if (s.children?.length) {
+                  const f = findStep(s.children, id);
+                  if (f) return f;
+                }
+              }
+              return undefined;
+            };
+            const st = findStep(session.steps, msg.stepId);
+            if (st && msg.title) {
+              st.groupTitle = String(msg.title).slice(0, 60);
+              st.groupTitleMode = msg.mode === "ai" ? "ai" : "tools";
+              chatHistory?.setSteps(session.id, session.steps);
+            }
+          }
+          break;
         case "chat/route":
           {
             if (!registry) {
@@ -1918,29 +2100,44 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             }
             void (async () => {
               try {
-                const difficultyModel = await loadDifficultyModelAsset();
-                if (!difficultyModel) {
+                const assets = await loadRouterAssets();
+                if (!assets.difficulty) {
                   webview.postMessage({ type: "chat/routeFailed", original: msg.text, reason: "model-unavailable" });
                   return;
                 }
-                const bias = secureSetting<QualityBias>("arc.router.qualityBias", "off");
+                const preset = (secureSetting<string>("arc.router.quality", "balanced") ?? "balanced") as RouterQualityPreset;
+                const presetCfg = ROUTER_QUALITY_PRESETS[preset] ?? ROUTER_QUALITY_PRESETS.balanced;
                 const effort = (secureSetting<string>("arc.reasoning.effort", "high") ?? "high") as "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+                const quality = qualityForPreset(preset, effort);
                 const fleet = registry
                   .list()
+                  .filter((m) => registry.providersFor(m.id).length > 0)
                   .map((m) => {
                     const aa = lookupIntelligence(m.id, m.label);
-                    const score = aa?.score ?? tierFallbackScore(m.tier);
+                    const score = aa?.score ?? 0;
                     const cost = m.costPer1mIn + (m.costPer1mOut ?? 0);
-                    return { modelId: m.id, score, cost, model: m };
+                    return {
+                      modelId: m.id,
+                      score,
+                      cost,
+                      latencyMs: modelLatencyMs(m.id),
+                      health: modelHealth(m.id),
+                      model: m,
+                    };
                   });
-                const usable = fleet.filter((f) => registry.providersFor(f.modelId).length > 0);
+                const usable = fleet.filter((f) => f.score > 0);
                 if (!usable.length) {
                   webview.postMessage({ type: "chat/routeFailed", original: msg.text, reason: "no-model" });
                   return;
                 }
-                const decision = routePrompt(msg.text, difficultyModel, usable, {
-                  qualityBias: bias,
-                  temperature: temperatureForEffort(effort),
+                const decision = routePrompt(msg.text, assets.difficulty, usable, {
+                  calibration: assets.calibration ?? undefined,
+                  capability: assets.capability ?? undefined,
+                  domainModel: assets.domain ?? undefined,
+                }, {
+                  qualityBias: presetCfg.bias,
+                  quality,
+                  tau: routerTau,
                 });
                 const chosen = registry.get(decision.modelId);
                 webview.postMessage({
@@ -1951,10 +2148,12 @@ function wireWebview(webview: vscode.Webview, session: Session) {
                   aaScore: decision.scored,
                   requiredScore: decision.requiredScore,
                   difficulty: decision.difficulty,
+                  domain: decision.domain,
                   confidence: decision.confidence,
+                  tau: decision.tau,
                 });
               } catch (e) {
-                log.appendLine(`[arc] router error: ${(e as Error)?.message ?? String(e)}`);
+                log.appendLine(`[arc] router error: ${errMsg(e)}`);
                 webview.postMessage({ type: "chat/routeFailed", original: msg.text, reason: "error" });
               }
             })();
@@ -1970,6 +2169,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           {
             for (const [id, a] of pendingApprovals) {
               if (a.session === session) {
+                clearTimeout(a.timer);
                 pendingApprovals.delete(id);
                 a.resolve(false);
               }
@@ -2101,7 +2301,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
               const modes = modeRegistry.list().map((m) => ({ ...m, source: modeRegistry.sourceOf(m.slug) ?? "workspace" as const }));
               webview.postMessage({ type: "mode/list", modes });
             } catch (e) {
-              webview.postMessage({ type: "error", message: `Failed to save mode: ${(e as Error).message}` });
+              webview.postMessage({ type: "error", message: `Failed to save mode: ${errMsg(e)}` });
             }
           }
           break;
@@ -2207,8 +2407,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
               if (!createVenv.ok) throw new Error(createVenv.stderr || "failed to create provider virtual environment");
             }
             const lockFile = path.join(repoDir, "internal-api-requirements.lock");
-            const lockPath = path.join(repoDir, "internal-api-requirements.lock");
-            const lockContent = await fs.readFile(lockPath, "utf8");
+            const lockContent = await fs.readFile(lockFile, "utf8");
             const lockHash = createHash("sha256").update(lockContent, "utf8").digest("hex");
             if (lockHash !== "ed54fcf480a309358a4db284c45a4035e63f62ef4d4f5d213f777f7da3604f2a") throw new Error("internal dependency lock digest mismatch");
             if (lockContent.toLowerCase().match(/lucky[ -]?cat/)) throw new Error("internal dependency lock failed identifier hygiene check");
@@ -2267,7 +2466,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             sendProviders();
             report("Done", 100);
           } catch (e) {
-            report("Setup failed", 0, (e as Error).message);
+            report("Setup failed", 0, errMsg(e));
           }
           break;
         }
@@ -2410,7 +2609,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             const { stdout } = result;
             if (!stdout.trim()) break;
             webview.postMessage({ type: "session/attachment", uri: "git:unstaged", preview: `git diff (unstaged)  ·  ${stdout.trim().slice(0, 200)}` });
-          } catch (e) { webview.postMessage({ type: "error", message: `git diff failed: ${(e as Error).message}` }); }
+          } catch (e) { webview.postMessage({ type: "error", message: `git diff failed: ${errMsg(e)}` }); }
           break;
         }
         case "ui/attachGitStaged": {
@@ -2421,7 +2620,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             const { stdout } = result;
             if (!stdout.trim()) break;
             webview.postMessage({ type: "session/attachment", uri: "git:staged", preview: `git diff --staged  ·  ${stdout.trim().slice(0, 200)}` });
-          } catch (e) { webview.postMessage({ type: "error", message: `git diff --staged failed: ${(e as Error).message}` }); }
+          } catch (e) { webview.postMessage({ type: "error", message: `git diff --staged failed: ${errMsg(e)}` }); }
           break;
         }
         case "ui/attachChangedFiles": {
@@ -2433,7 +2632,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             if (!stdout.trim()) break;
             const files = stdout.trim().split("\n").length;
             webview.postMessage({ type: "session/attachment", uri: "git:changed", preview: `${files} changed file${files === 1 ? "" : "s"}  ·  ${stdout.trim().slice(0, 200)}` });
-          } catch (e) { webview.postMessage({ type: "error", message: `git diff --name-status failed: ${(e as Error).message}` }); }
+          } catch (e) { webview.postMessage({ type: "error", message: `git diff --name-status failed: ${errMsg(e)}` }); }
           break;
         }
         case "ui/attachPullRequest": {
@@ -2446,7 +2645,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             const summary = `#${pr.number} ${pr.title} (${pr.state}) by ${pr.author.login}\n${pr.headRefName} → ${pr.baseRefName}  |  +${pr.additions} -${pr.deletions} across ${pr.files?.length ?? "?"} files\n${pr.url}\n\n${pr.body ?? ""}`;
             webview.postMessage({ type: "session/attachment", uri: `pr:${pr.number}`, preview: summary.slice(0, 2000) });
           } catch (e) {
-            const msg = (e as Error).message;
+            const msg = errMsg(e);
             if (msg.includes("not found") || msg.includes("ENOENT") || msg.includes("not recognized")) {
               webview.postMessage({ type: "error", message: "GitHub CLI (gh) not found. Install from https://cli.github.com" });
             } else if (msg.includes("no pull request")) {
@@ -2488,7 +2687,9 @@ function wireWebview(webview: vscode.Webview, session: Session) {
                 editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
                 editor.selection = new vscode.Selection(start, range.end);
               }
-            } catch {  }
+            } catch (e) {
+              log.appendLine(`[arc] openFile failed: ${errMsg(e)}`);
+            }
           }
           break;
         }
@@ -2537,7 +2738,9 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             const beforeContent = buildBeforeContentFromHunks(msg.hunks);
             const beforeUri = createDiffPreviewUri(msg.path, beforeContent);
             await vscode.commands.executeCommand("vscode.diff", beforeUri, fileUri, path.basename(msg.path));
-          } catch {  }
+          } catch (e) {
+            log.appendLine(`[arc] openFileDiff failed: ${errMsg(e)}`);
+          }
           break;
         }
         case "diff/accept": {
@@ -2551,7 +2754,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
               const beforeContent = buildBeforeContentFromHunks(msg.hunks);
               await vscode.workspace.fs.writeFile(fileUri, new TextEncoder().encode(beforeContent));
             } catch (e) {
-              webview.postMessage({ type: "error", message: `Failed to revert ${msg.filePath}: ${(e as Error).message}` });
+              webview.postMessage({ type: "error", message: `Failed to revert ${msg.filePath}: ${errMsg(e)}` });
             }
           }
           if (session.agent) session.agent.injectSystemNote(`User rejected the edit to ${msg.filePath}. The file has been reverted to its previous content. Do not reapply this edit unless asked again.`);
@@ -2602,7 +2805,6 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           await initReady;
           if (chatHistory) {
             chatHistory.remove(msg.chatId);
-            chatSessions.delete(msg.chatId);
             chatTotals.delete(msg.chatId);
             persist?.();
             void persistAsync?.();
@@ -2658,7 +2860,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           if (mcp) {
             await mcp.removeServer(msg.name);
             const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-            await ctxRef.secrets.delete(`${MCP_HEADERS_PREFIX}${createHash("sha256").update(root + "\0" + msg.name).digest("hex")}`);
+            await ctxRef.secrets.delete(mcpSecretKey(root, msg.name));
             await persistMcpConfig(mcp, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd());
             const list = mcp.listServers().map((s) => ({ name: s.name, enabled: s.enabled, transport: s.transport.type, toolCount: s.tools.length }));
             webview.postMessage({ type: "mcp/list", servers: list });
@@ -2690,12 +2892,10 @@ function wireWebview(webview: vscode.Webview, session: Session) {
                 if (!cursor) break;
               }
             };
-            await fetchPage(q);
-            if (q && !/\s/.test(q)) {
-              try {
-                await fetchPage(`${q}-mcp-server`);
-} catch {  }
-            }
+            await Promise.allSettled([
+              fetchPage(q),
+              ...(q && !/\s/.test(q) ? [fetchPage(`${q}-mcp-server`)] : []),
+            ]);
             const seen = new Set<string>();
             const unique = servers.filter((s: any) => {
               const id = String(s.server?.name ?? s.server?.id ?? s.id ?? "");
@@ -2710,6 +2910,11 @@ function wireWebview(webview: vscode.Webview, session: Session) {
               .map((x: any) => x.s);
             const results = scored;
             marketplaceCache.set(cacheKey, { ts: Date.now(), results });
+            while (marketplaceCache.size > 30) {
+              const oldest = marketplaceCache.keys().next().value as string | undefined;
+              if (oldest) marketplaceCache.delete(oldest);
+              else break;
+            }
             webview.postMessage({ type: "mcp/marketplaceResults", results });
           } catch (e: any) { webview.postMessage({ type: "mcp/marketplaceResults", error: e.message || "Unknown error" }); }
           break;
@@ -2744,7 +2949,10 @@ Prompts: ${server.prompts?.length ?? 0}`;
             const entries = await loadMemory(root);
             const memories = entries.map((e, i) => ({ index: i, category: e.category, content: e.content, createdAt: e.createdAt }));
             webview.postMessage({ type: "memory/list", memories });
-          } catch {}
+          } catch (e) {
+            log.appendLine(`[arc] memory/list failed: ${errMsg(e)}`);
+            webview.postMessage({ type: "memory/list", memories: [] });
+          }
           break;
         }
         case "memory/delete": {
@@ -2754,7 +2962,10 @@ Prompts: ${server.prompts?.length ?? 0}`;
             const entries = await loadMemory(root);
             const memories = entries.map((e, i) => ({ index: i, category: e.category, content: e.content, createdAt: e.createdAt }));
             webview.postMessage({ type: "memory/list", memories });
-          } catch {}
+          } catch (e) {
+            log.appendLine(`[arc] memory/delete failed: ${errMsg(e)}`);
+            webview.postMessage({ type: "memory/list", memories: [] });
+          }
           break;
         }
         case "hooks/list": {
@@ -2773,6 +2984,7 @@ Prompts: ${server.prompts?.length ?? 0}`;
         case "approval/response": {
           const p = pendingApprovals.get(msg.id);
           if (p) {
+            clearTimeout(p.timer);
             pendingApprovals.delete(msg.id);
             if (msg.rememberPrefix) {
               p.session.agent?.addCommandPrefix(msg.rememberPrefix);
@@ -2806,6 +3018,7 @@ Prompts: ${server.prompts?.length ?? 0}`;
             const results = chatHistory.search(msg.query);
             webview.postMessage({
               type: "chat/searchResults",
+              query: msg.query,
               results: results.map((r) => ({
                 id: r.chat.id,
                 title: r.chat.title,
@@ -2836,9 +3049,7 @@ Prompts: ${server.prompts?.length ?? 0}`;
               for (const m of (msgs ?? []) as ChatMessage[]) {
                 webview.postMessage({ type: "session/message", message: m, sessionId: session.id });
               }
-              for (const s of (steps ?? []) as ProcessStep[]) {
-                webview.postMessage({ type: "session/step", step: s, sessionId: session.id });
-              }
+              webview.postMessage({ type: "session/steps", steps: (steps ?? []) as ProcessStep[], sessionId: session.id });
             }
           }
           break;
@@ -2846,7 +3057,7 @@ Prompts: ${server.prompts?.length ?? 0}`;
       }
     } catch (e) {
       log.appendLine(`[arc] message handler error: ${(e as Error)?.stack ?? e}`);
-try { webview.postMessage({ type: "error", message: (e as Error).message }); } catch {  }
+try { webview.postMessage({ type: "error", message: errMsg(e) }); } catch {  }
     }
   });
 }
@@ -2856,8 +3067,8 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
   const monoLogo = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "assets", "arc-logo-mono.svg"));
   const prideLogo = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "assets", "arc-logo-pride.svg"));
   const monoLogoText = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "assets", "arc-logo-mono-text.svg"));
-  const providerCatalog = JSON.stringify(PROVIDERS);
-  const toolCatalog = JSON.stringify(TOOL_CATALOG);
+  const providerCatalog = getProviderCatalogJson();
+  const toolCatalog = getToolCatalogJson();
   const extVersion = ctxRef?.extension?.packageJSON?.version ?? "0.0.0";
   const prideMode: PrideMode = vscode.workspace.getConfiguration().get<PrideMode>("arc.appearance.prideLogo", "june") ?? "june";
   let isPride: boolean;
@@ -2865,6 +3076,10 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
   else if (prideMode === "always") isPride = true;
   else isPride = new Date().getUTCMonth() === 5;
   const toolTree = vscode.workspace.getConfiguration().get<string>("arc.appearance.toolTree", "auto") ?? "auto";
+  const fontUi = vscode.workspace.getConfiguration().get<string>("arc.appearance.fontFamily", "atkinson") ?? "atkinson";
+  const fontMono = vscode.workspace.getConfiguration().get<string>("arc.appearance.monoFontFamily", "ibm-plex-mono") ?? "ibm-plex-mono";
+  const customFontUi = vscode.workspace.getConfiguration().get<string>("arc.appearance.customFontFamily", "") ?? "";
+  const customFontMono = vscode.workspace.getConfiguration().get<string>("arc.appearance.customMonoFontFamily", "") ?? "";
   const favicon = isPride ? prideLogo : monoLogo;
   const nonce = randomBytes(24).toString("base64");
   return `<!doctype html>
@@ -2876,7 +3091,7 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, mode:
   <link rel="stylesheet" href="${styleUri}" />
 </head>
 <body>
-  <div id="root" data-mode="${mode}" data-mono="${monoLogo}" data-pride="${prideLogo}" data-mono-text="${monoLogoText}" data-pride-active="${isPride}" data-tool-tree="${toolTree}" data-version="${extVersion}" data-catalog="${providerCatalog.replace(/"/g, '&quot;')}" data-tools="${toolCatalog.replace(/"/g, '&quot;')}"></div>
+  <div id="root" data-mode="${mode}" data-mono="${monoLogo}" data-pride="${prideLogo}" data-mono-text="${monoLogoText}" data-pride-active="${isPride}" data-tool-tree="${toolTree}" data-font-ui="${fontUi}" data-font-mono="${fontMono}" data-custom-font-ui="${customFontUi.replace(/\"/g, '&quot;')}" data-custom-font-mono="${customFontMono.replace(/\"/g, '&quot;')}" data-version="${extVersion}" data-catalog="${providerCatalog.replace(/"/g, '&quot;')}" data-tools="${toolCatalog.replace(/"/g, '&quot;')}"></div>
   <script type="module" nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
@@ -2923,7 +3138,7 @@ async function hydrateMcp(mcp: McpAggregator, root: string) {
       try {
         let transport = def.transport;
         transport = interpolateMcpEnv(transport);
-        const secretKey = `${MCP_HEADERS_PREFIX}${createHash("sha256").update(root + "\0" + name).digest("hex")}`;
+        const secretKey = mcpSecretKey(root, name);
         const storedSecret = await ctxRef.secrets.get(secretKey);
         const parsedSecret = storedSecret ? JSON.parse(storedSecret) as { headers?: Record<string, string>; env?: Record<string, string>; args?: string[] } : {};
         if (transport.type === "http") {
@@ -2938,7 +3153,7 @@ async function hydrateMcp(mcp: McpAggregator, root: string) {
         }
         await mcp.addServer({ name, enabled: def.enabled ?? true, transport });
       } catch (e) {
-        log.appendLine(`[arc] failed to start MCP server '${name}': ${(e as Error)?.message ?? e}`);
+        log.appendLine(`[arc] failed to start MCP server '${name}': ${errMsg(e)}`);
       }
     }
 } catch {  }
@@ -2977,7 +3192,7 @@ function registerDiffSecretScan(context: vscode.ExtensionContext): void {
         }
         void vscode.window.showWarningMessage(`Arc: potential secrets in the current diff: ${hits.map((h) => h.label).join(", ")}. Review before committing.`);
       } catch (e) {
-        void vscode.window.showErrorMessage(`Arc: diff secret scan failed: ${(e as Error)?.message ?? e}`);
+        void vscode.window.showErrorMessage(`Arc: diff secret scan failed: ${errMsg(e)}`);
       }
     }),
   );
@@ -2995,11 +3210,10 @@ function setupHeapSnapshotOnHighUsage(): void {
         const file = v8.writeHeapSnapshot();
         log.appendLine(`[arc] captured heap snapshot at ${(used / 1024 / 1024 / 1024).toFixed(2)} GiB: ${file}`);
       }
-} catch {  }
+    } catch {  }
   };
   const t = setInterval(check, 60_000);
   t.unref?.();
-  check();
 }
 function interpolateMcpEnv(t: import("@arc/host").McpTransport): import("@arc/host").McpTransport {
   const sub = (v: string) => v.replace(/\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name: string) => process.env[name] ?? "");
@@ -3022,7 +3236,7 @@ async function persistMcpConfig(mcp: McpAggregator, root: string) {
   const entries: [string, { enabled: boolean; transport: import("@arc/host").McpTransport }][] = [];
   for (const server of servers) {
     let transport = server.transport;
-    const secretKey = `${MCP_HEADERS_PREFIX}${createHash("sha256").update(root + "\0" + server.name).digest("hex")}`;
+    const secretKey = mcpSecretKey(root, server.name);
     if (transport.type === "http") {
       if (transport.headers && Object.keys(transport.headers).length) await ctxRef.secrets.store(secretKey, JSON.stringify({ headers: transport.headers }));
       else await ctxRef.secrets.delete(secretKey);
@@ -3057,6 +3271,16 @@ export async function deactivate() {
       void fs.writeFile(path.join(ctxRef.globalStorageUri.fsPath, "arc.agentState.json"), encoded, { encoding: "utf8", mode: 0o600 }).catch(() => {});
     }
   }
+  killActiveProcesses();
+  for (const proc of serverProcesses.values()) {
+    if (!proc.killed) terminateProcessTree(proc);
+  }
+  serverProcesses.clear();
+  clearTimeout(persistTimer);
+  clearTimeout(browserIdleTimer);
+  mcpChangeDispose?.();
+  for (const s of inlineChatSessions.values()) void s.agent?.stop();
+  inlineChatSessions.clear();
   stopIndexWatcher();
   ruleWatcherDispose?.();
   stopAutoReindexSchedule();

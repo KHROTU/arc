@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Plus, Trash2, Plug, X, Check, Info, Play, RefreshCw, CircleDot, AlertTriangle, Pencil, ChevronDown, ChevronRight } from "./icons";
 import type { RpcClient, HostEvent } from "../rpc";
 import type { ModelDescriptor, ModelTier, ProviderKind, ProviderSummary } from "@arc/host/protocol";
+import { UI_FONT_OPTIONS, MONO_FONT_OPTIONS, applyFonts } from "../fonts";
 type ProviderSpec = { kind: ProviderKind; label: string; tags: string[]; defaultBaseUrl?: string };
 type ToolSpec = { name: string; category: string; description: string };
 type Props = { client: RpcClient; onClose: () => void; models: ModelDescriptor[]; providers: ProviderSummary[]; monoLogoText: string; version: string; providerCatalog: ProviderSpec[]; toolCatalog: ToolSpec[] };
@@ -249,7 +250,7 @@ function ModelsTab({ client, providers, models, onSwitchTab }: { client: RpcClie
                         className="arc-input arc-input-sm arc-bind-slug"
                         placeholder="remote slug (e.g. gpt-4o)"
                         value={p.remoteModel ?? ""}
-                        onChange={(e) => client.send({ type: "model/bindUpdate", modelId: m.id, providerId: p.id, remoteModel: e.target.value.trim() || undefined })}
+                        onBlur={(e) => client.send({ type: "model/bindUpdate", modelId: m.id, providerId: p.id, remoteModel: e.target.value.trim() || undefined })}
                       />
                       <button className="arc-iconbtn" onClick={() => bind(m, p.id)} title="Unbind"><Trash2 size={12} /></button>
                     </li>
@@ -320,7 +321,7 @@ function ProvidersTab({ client, providers, models, providerCatalog }: { client: 
     setLabel(""); setBaseUrl(""); setApiKey(""); setStartCommand(""); setProviderSearch(""); setAdding(false);
   };
   const filteredProviders = providerSearch.length > 0
-    ? providerCatalog.filter((p) => fuzzyMatch(providerSearch, p.label) || fuzzyMatch(providerSearch, p.kind) || p.tags.some((t) => fuzzyMatch(providerSearch, t)))
+    ? providerCatalog.filter((p) => fuzzyMatch(providerSearch, p.label) || fuzzyMatch(providerSearch, p.kind) || (p.tags && p.tags.some((t) => fuzzyMatch(providerSearch, t))))
     : providerCatalog;
   return (
     <Section
@@ -654,7 +655,8 @@ function AgentTab({ client }: { client: RpcClient }) {
   const [attentionApproval, setAttentionApproval] = useState(true);
   const [attentionError, setAttentionError] = useState(true);
   const [polishLevel, setPolishLevel] = useState<"off" | "basic" | "polish">("off");
-  const [qualityBias, setQualityBias] = useState<"off" | "prefer-cheap" | "prefer-powerful">("off");
+  const [routerQuality, setRouterQuality] = useState<"balanced" | "economy" | "power">("balanced");
+  const [autoRoute, setAutoRoute] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState<"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max">("high");
   useEffect(() => {
     void client.request("arc.compaction.strategy").then((v) => setCompactionStrategy((v as typeof compactionStrategy) ?? "model-aware"));
@@ -668,7 +670,11 @@ function AgentTab({ client }: { client: RpcClient }) {
     void client.request("arc.attention.approval").then((v) => setAttentionApproval(v !== false));
     void client.request("arc.attention.error").then((v) => setAttentionError(v !== false));
     void client.request("arc.promptPolish").then((v) => setPolishLevel(v === "basic" || v === "polish" ? v : "off"));
-    void client.request("arc.router.qualityBias").then((v) => setQualityBias(v === "prefer-cheap" || v === "prefer-powerful" ? v : "off"));
+    void client.request("arc.router.quality").then((v) => {
+      const known = ["balanced", "economy", "power"];
+      setRouterQuality(known.includes(String(v)) ? v as typeof routerQuality : "balanced");
+    });
+    void client.request("arc.router.autoRoute").then((v) => setAutoRoute(v === true));
     void client.request("arc.reasoning.effort").then((v) => {
       const known = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
       setReasoningEffort(known.includes(String(v)) ? v as typeof reasoningEffort : "high");
@@ -746,14 +752,20 @@ function AgentTab({ client }: { client: RpcClient }) {
             </select>
           </div></li>
           <li className="arc-row"><div className="arc-row-main">
-            <span className="arc-row-label">Auto quality bias</span>
-            <span className="arc-row-meta">cost/quality tradeoff for the Auto model</span>
+            <span className="arc-row-label">Auto routing quality</span>
+            <span className="arc-row-meta">model strength vs cost for the Auto model</span>
             <span className="arc-spacer" />
-            <select className="arc-input arc-input-sm" value={qualityBias} onChange={(e) => { const v = e.target.value as typeof qualityBias; setQualityBias(v); client.send({ type: "config/set", key: "arc.router.qualityBias", value: v }); }}>
-              <option value="off">off</option>
-              <option value="prefer-cheap">prefer cheap</option>
-              <option value="prefer-powerful">prefer powerful</option>
+            <select className="arc-input arc-input-sm" value={routerQuality} onChange={(e) => { const v = e.target.value as typeof routerQuality; setRouterQuality(v); client.send({ type: "config/set", key: "arc.router.quality", value: v }); }}>
+              <option value="balanced">Balanced (recommended)</option>
+              <option value="economy">Prefer cheaper</option>
+              <option value="power">Prefer stronger</option>
             </select>
+          </div></li>
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Auto route directly</span>
+            <span className="arc-row-meta">skip the routed-model confirmation and send immediately</span>
+            <span className="arc-spacer" />
+            <Toggle checked={autoRoute} onChange={(v) => { setAutoRoute(v); client.send({ type: "config/set", key: "arc.router.autoRoute", value: v }); }} />
           </div></li>
         </ul>
       </Section>
@@ -772,7 +784,7 @@ function AgentTab({ client }: { client: RpcClient }) {
       <Section title="Images" description="How attached images are handled when the active model is not multimodal.">
         <ImageProcessingSection client={client} />
       </Section>
-      <Section title="Sounds" description="Optional attention sounds for agent activity (pure WebAudio, no assets).">
+      <Section title="Sounds" description="Optional attention sounds for agent activity.">
         <ul className="arc-rows">
           <li className="arc-row"><div className="arc-row-main">
             <span className="arc-row-label">Enabled</span>
@@ -1172,7 +1184,12 @@ function WorkspaceTab({ client }: { client: RpcClient }) {
   const [hooks, setHooks] = useState<{ event: string; matcher: string; command: string; enabled: boolean; tools?: string[] }[]>([]);
   const [prideLogo, setPrideLogo] = useState<"always" | "june" | "never">("june");
   const [toolTree, setToolTree] = useState<"auto" | "collapsed">("auto");
+  const [groupSummary, setGroupSummary] = useState<"count" | "tools" | "ai">("count");
   const [autoOpenDiff, setAutoOpenDiff] = useState(true);
+  const [fontFamily, setFontFamily] = useState<string>("atkinson");
+  const [monoFontFamily, setMonoFontFamily] = useState<string>("ibm-plex-mono");
+  const [customFontFamily, setCustomFontFamily] = useState<string>("");
+  const [customMonoFontFamily, setCustomMonoFontFamily] = useState<string>("");
   useEffect(() => {
     const offMem = client.on((e: any) => {
       if (e.type === "memory/list") { setMemories(e.memories); setMemLoading(false); }
@@ -1184,7 +1201,12 @@ function WorkspaceTab({ client }: { client: RpcClient }) {
     client.send({ type: "hooks/list" });
     void client.request("arc.appearance.prideLogo").then((v) => setPrideLogo(v === "always" || v === "never" ? v as typeof prideLogo : "june"));
     void client.request("arc.appearance.toolTree").then((v) => setToolTree(v === "auto" ? "auto" : "collapsed"));
+    void client.request("arc.appearance.toolGroupSummary").then((v) => setGroupSummary(v === "tools" ? "tools" : v === "ai" ? "ai" : "count"));
     void client.request("arc.diffView.autoOpen").then((v) => setAutoOpenDiff(v !== false));
+    void client.request("arc.appearance.fontFamily").then((v) => setFontFamily(typeof v === "string" ? v : "atkinson"));
+    void client.request("arc.appearance.monoFontFamily").then((v) => setMonoFontFamily(typeof v === "string" ? v : "ibm-plex-mono"));
+    void client.request("arc.appearance.customFontFamily").then((v) => setCustomFontFamily(typeof v === "string" ? v : ""));
+    void client.request("arc.appearance.customMonoFontFamily").then((v) => setCustomMonoFontFamily(typeof v === "string" ? v : ""));
     return () => { offMem(); offHooks(); };
   }, [client]);
   return (
@@ -1225,11 +1247,55 @@ function WorkspaceTab({ client }: { client: RpcClient }) {
             </select>
           </div></li>
           <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Tool run summary</span>
+            <span className="arc-row-meta">how a finished chain of tool calls is titled in the chat</span>
+            <span className="arc-spacer" />
+            <select className="arc-input arc-input-sm" value={groupSummary} onChange={(e) => { const v = e.target.value as typeof groupSummary; setGroupSummary(v); client.send({ type: "config/set", key: "arc.appearance.toolGroupSummary", value: v }); }}>
+              <option value="count">count</option>
+              <option value="tools">top tools</option>
+              <option value="ai">summary</option>
+            </select>
+          </div></li>
+          <li className="arc-row"><div className="arc-row-main">
             <span className="arc-row-label">Auto-open diff</span>
             <span className="arc-row-meta">stream file-edit diffs into the main-window diff editor as they're generated</span>
             <span className="arc-spacer" />
             <Toggle checked={autoOpenDiff} onChange={(v) => { setAutoOpenDiff(v); client.send({ type: "config/set", key: "arc.diffView.autoOpen", value: v }); }} />
           </div></li>
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">UI font</span>
+            <span className="arc-row-meta">font for the chat interface (self-hosted)</span>
+            <span className="arc-spacer" />
+            <select className="arc-input arc-input-sm" value={fontFamily} onChange={(e) => { const v = e.target.value; setFontFamily(v); client.send({ type: "config/set", key: "arc.appearance.fontFamily", value: v }); applyFonts(v, customFontFamily, monoFontFamily, customMonoFontFamily); }}>
+              {UI_FONT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              <option value="custom">Custom…</option>
+            </select>
+          </div></li>
+          {fontFamily === "custom" && (
+            <li className="arc-row"><div className="arc-row-main">
+              <span className="arc-row-label">Custom UI font</span>
+              <span className="arc-row-meta">font family name (system or your own self-hosted @font-face)</span>
+              <span className="arc-spacer" />
+              <input className="arc-input arc-input-sm" type="text" placeholder="My Font" value={customFontFamily} onChange={(e) => { const v = e.target.value; setCustomFontFamily(v); applyFonts(fontFamily, v, monoFontFamily, customMonoFontFamily); }} onBlur={() => client.send({ type: "config/set", key: "arc.appearance.customFontFamily", value: customFontFamily.trim() })} style={{ width: 200 }} />
+            </div></li>
+          )}
+          <li className="arc-row"><div className="arc-row-main">
+            <span className="arc-row-label">Mono font</span>
+            <span className="arc-row-meta">monospace font for code blocks and tool output (self-hosted)</span>
+            <span className="arc-spacer" />
+            <select className="arc-input arc-input-sm" value={monoFontFamily} onChange={(e) => { const v = e.target.value; setMonoFontFamily(v); client.send({ type: "config/set", key: "arc.appearance.monoFontFamily", value: v }); applyFonts(fontFamily, customFontFamily, v, customMonoFontFamily); }}>
+              {MONO_FONT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              <option value="custom">Custom…</option>
+            </select>
+          </div></li>
+          {monoFontFamily === "custom" && (
+            <li className="arc-row"><div className="arc-row-main">
+              <span className="arc-row-label">Custom mono font</span>
+              <span className="arc-row-meta">font family name (system or your own self-hosted @font-face)</span>
+              <span className="arc-spacer" />
+              <input className="arc-input arc-input-sm" type="text" placeholder="My Mono" value={customMonoFontFamily} onChange={(e) => { const v = e.target.value; setCustomMonoFontFamily(v); applyFonts(fontFamily, customFontFamily, monoFontFamily, v); }} onBlur={() => client.send({ type: "config/set", key: "arc.appearance.customMonoFontFamily", value: customMonoFontFamily.trim() })} style={{ width: 200 }} />
+            </div></li>
+          )}
         </ul>
       </Section>
       <Section title="Memories" description="Persistent facts, preferences, and gotchas saved across sessions.">

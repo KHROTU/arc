@@ -41,9 +41,16 @@ export function createClient(): RpcClient {
     request<T>(key: string): Promise<T | undefined> {
       const id = `req-${Math.random().toString(36).slice(2, 10)}`;
       return new Promise((resolve) => {
-        pending.set(id, (v) => resolve(v as T));
+        const timer = setTimeout(() => {
+          if (pending.delete(id)) resolve(undefined);
+        }, 10_000);
+        pending.set(id, (v) => {
+          clearTimeout(timer);
+          pending.delete(id);
+          resolve(v as T);
+        });
         if (vscode) vscode.postMessage({ type: "config/get", key, id });
-        else resolve(undefined);
+        else { clearTimeout(timer); pending.delete(id); resolve(undefined); }
       });
     },
   };

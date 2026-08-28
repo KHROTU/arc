@@ -303,3 +303,78 @@ describe("transports end the stream cleanly", () => {
     }
   });
 });
+describe("stream content cap", () => {
+  const BIG = "x".repeat(512 * 1024);
+  const reasoningChunks = (field: string): string[] => {
+    const out: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      out.push(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { [field]: BIG } }] })}\n\n`);
+    }
+    return out;
+  };
+  it("openai-compatible: long reasoning does not trip the stream cap", async () => {
+    const real = globalThis.fetch;
+    globalThis.fetch = mockFetchChunked([...reasoningChunks("reasoning_content"), "data: [DONE]\n\n"]) as typeof fetch;
+    try {
+      const handle = await openAICompatibleTransport.stream(mkReq() as any);
+      const events: any[] = [];
+      for await (const ev of handle.events) events.push(ev);
+      expect(events.some((e) => e.type === "error")).toBe(false);
+      expect(events.at(-1)?.type).toBe("done");
+      const thinking = events.filter((e) => e.type === "thinking").map((e) => e.delta).join("");
+      expect(thinking.length).toBeGreaterThan(4 * 1024 * 1024);
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+  it("openai-compatible: >4 MiB of actual text content trips the cap", async () => {
+    const real = globalThis.fetch;
+    globalThis.fetch = mockFetchChunked([...reasoningChunks("content"), "data: [DONE]\n\n"]) as typeof fetch;
+    try {
+      const handle = await openAICompatibleTransport.stream(mkReq() as any);
+      const events: any[] = [];
+      for await (const ev of handle.events) events.push(ev);
+      const err = events.find((e) => e.type === "error");
+      expect(err).toBeTruthy();
+      expect((err as { message?: string })?.message).toContain("4 MiB");
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+  it("anthropic: long thinking deltas do not trip the stream cap", async () => {
+    const real = globalThis.fetch;
+    const chunks: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      chunks.push(`data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: BIG } })}\n\n`);
+    }
+    chunks.push(`data: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+    globalThis.fetch = mockFetchChunked(chunks) as typeof fetch;
+    try {
+      const req: any = { ...mkReq(), provider: { id: "p1", kind: "anthropic", label: "p1", enabled: true, baseUrl: "https://example.invalid" } };
+      const handle = await anthropicTransport.stream!(req);
+      const events: any[] = [];
+      for await (const ev of handle.events) events.push(ev);
+      expect(events.some((e) => e.type === "error")).toBe(false);
+      expect(events.at(-1)?.type).toBe("done");
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+  it("ollama: long thinking does not trip the stream cap", async () => {
+    const real = globalThis.fetch;
+    const chunks: string[] = [];
+    for (let i = 0; i < 10; i++) chunks.push(JSON.stringify({ message: { role: "assistant", thinking: BIG }, done: false }) + "\n\n");
+    chunks.push(JSON.stringify({ message: { role: "assistant", content: "" }, done: true }) + "\n\n");
+    globalThis.fetch = mockFetchChunked(chunks) as typeof fetch;
+    try {
+      const req: any = { ...mkReq(), provider: { id: "p1", kind: "ollama", label: "p1", enabled: true, baseUrl: "http://127.0.0.1:11434" } };
+      const handle = await ollamaTransport.stream!(req);
+      const events: any[] = [];
+      for await (const ev of handle.events) events.push(ev);
+      expect(events.some((e) => e.type === "error")).toBe(false);
+      expect(events.at(-1)?.type).toBe("done");
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+});

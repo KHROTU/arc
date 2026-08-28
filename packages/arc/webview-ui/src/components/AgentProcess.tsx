@@ -5,44 +5,11 @@ import {
   HelpCircle, CornerDownLeft, Sparkles, AlertTriangle, Terminal, ExternalLink, StopCircle, Maximize2,
 } from "./icons";
 import ModelIcon from "./ModelIcon";
-type StepType =
-  | "tool_group" | "tool" | "subagent" | "handoff"
-  | "todo_list" | "clarification" | "thought" | "result" | "error";
-interface TodoItem {
-  id: string;
-  text: string;
-  state: "pending" | "in_progress" | "done" | "skipped" | "blocked" | "failed";
-  children?: TodoItem[];
-}
-export interface DiffHunk {
-  added: boolean;
-  removed: boolean;
-  value: string;
-}
-export interface ProcessStep {
-  id: string;
-  type: StepType;
-  title: string;
-  ts?: number;
-  durationMs?: number;
-  pending?: boolean;
-  content?: string;
-  command?: string;
-  output?: string;
-  runAfterCommand?: string;
-  runAfterOutput?: string;
-  toolName?: string;
-  filePath?: string;
-  diffHunks?: DiffHunk[];
-  fromModel?: string;
-  toModel?: string;
-  reason?: string;
-  modelId?: string;
-  modelLabel?: string;
-  todos?: TodoItem[];
-  options?: string[];
-  children?: ProcessStep[];
-  interrupted?: boolean;
+import type { ProcessStep as HostProcessStep, DiffHunk as HostDiffHunk, TodoItem as HostTodoItem } from "@arc/host/protocol";
+export type StepType = HostProcessStep["type"];
+export interface TodoItem extends HostTodoItem {}
+export type DiffHunk = HostDiffHunk;
+export interface ProcessStep extends HostProcessStep {
   noMark?: boolean;
 }
 const AnimatedNumber = memo(({ value }: { value: number }) => (
@@ -207,9 +174,153 @@ const ClarificationBlock = memo(({ question, options }: { question?: string; opt
 ));
 ClarificationBlock.displayName = "ClarificationBlock";
 export type ToolTreeMode = "auto" | "collapsed";
-const GroupNode = memo(({ step, onOpenFile, onOpenFullscreenDiff, toolTreeMode, resolvedDiffs, onResolveDiff }: { step: ProcessStep; onOpenFile?: (path: string) => void; onOpenFullscreenDiff?: (payload: { filePath?: string; hunks: DiffHunk[] }) => void; toolTreeMode: ToolTreeMode; resolvedDiffs?: Record<string, "accepted" | "rejected">; onResolveDiff?: (step: ProcessStep, action: "accept" | "reject") => void }) => {
+type GroupSummaryMode = import("@arc/host").GroupSummaryMode;
+const GROUP_SUMMARY_CAP = 50;
+type ToolPhrase = readonly [verb: string, object: string];
+const TOOL_PHRASES: Record<string, ToolPhrase> = {
+  "file.read": ["Read", "files"],
+  "notebook.read": ["Read", "files"],
+  "file.edit": ["Edited", "files"],
+  "file.write": ["Wrote", "files"],
+  "file.grep": ["Searched", "files"],
+  "file.glob": ["Globbed", "files"],
+  "file.semanticSearch": ["Ran", "semantic search"],
+  "shell.run": ["Ran", "commands"],
+  "shell.backgroundRun": ["Started", "background process"],
+  "shell.check": ["Checked", "processes"],
+  "shell.write": ["Managed", "processes"],
+  "shell.customRun": ["Created", "custom runs"],
+  "shell.editCustomRun": ["Edited", "custom runs"],
+  "shell.runCustomRun": ["Ran", "custom runs"],
+  "lsp.problems": ["Checked", "diagnostics"],
+  "lsp.problemsFor": ["Checked", "diagnostics"],
+  "todo.write": ["Updated", "plan"],
+  "web.search": ["Searched", "the web"],
+  "web.fetch": ["Fetched", "pages"],
+  "mcp.call": ["Called", "MCP tools"],
+  "mcp.create": ["Registered", "MCP servers"],
+  "mcp.remove": ["Removed", "MCP servers"],
+  "mcp.toggle": ["Toggled", "MCP servers"],
+  "mcp.resources/list": ["Listed", "MCP resources"],
+  "mcp.resources/read": ["Read", "MCP resources"],
+  "mcp.prompts/list": ["Listed", "MCP prompts"],
+  "mcp.prompts/get": ["Fetched", "MCP prompts"],
+  "test.run": ["Ran", "tests"],
+  "subagent.spawn": ["Spawned", "subagents"],
+  "subagent.askParent": ["Asked", "the parent"],
+  "clarification.askUser": ["Asked", "questions"],
+  "checkpoint.list": ["Listed", "checkpoints"],
+  "checkpoint.revert": ["Reverted", "checkpoints"],
+  "checkpoint.compare": ["Compared", "checkpoints"],
+  "handoff": ["Handed off", "models"],
+  "context.retrieve": ["Retrieved", "context"],
+  "memory.add": ["Updated", "memory"],
+  "memory.note": ["Saved", "notes"],
+  "memory.list": ["Listed", "memories"],
+  "memory.edit": ["Edited", "memory"],
+  "memory.delete": ["Deleted", "memory"],
+  "mode.switch": ["Switched", "modes"],
+  "skill.use": ["Loaded", "skills"],
+  "skill.read": ["Read", "skills"],
+  "rule.list": ["Listed", "rules"],
+  "rule.read": ["Read", "rules"],
+  "rule.create": ["Created", "rules"],
+  "session.exportTrace": ["Exported", "trace"],
+};
+const TOOL_PREFIX_PHRASES: [string, ToolPhrase][] = [
+  ["browser.", ["Used", "the browser"]],
+  ["notebook.", ["Edited", "notebooks"]],
+  ["git.", ["Inspected", "git"]],
+  ["wait.", ["Waited", ""]],
+];
+function toolPair(name: string | undefined): ToolPhrase | undefined {
+  if (!name) return undefined;
+  if (TOOL_PHRASES[name]) return TOOL_PHRASES[name];
+  for (const [prefix, pair] of TOOL_PREFIX_PHRASES) {
+    if (name.startsWith(prefix)) return pair;
+  }
+  return undefined;
+}
+function labelOf(p: ToolPhrase): string {
+  return p[1] ? `${p[0]} ${p[1]}` : p[0];
+}
+function joinPair(a: ToolPhrase, b?: ToolPhrase): string {
+  if (!b) return labelOf(a);
+  const [v1, o1] = a;
+  const [v2, o2] = b;
+  if (o1 && o2 && o1 === o2) return `${v1} and ${v2.toLowerCase()} ${o1}`;
+  if (v1 === v2) return o2 ? `${v1} ${o1} and ${o2}` : labelOf(a);
+  if (!o2) return `${v1} ${o1} and ${v2.toLowerCase()}`;
+  return `${v1} ${o1} and ${v2.toLowerCase()} ${o2}`;
+}
+function topToolLabel(children: ProcessStep[] | undefined): string {
+  const counts = new Map<string, { pair: ToolPhrase; n: number }>();
+  const visit = (s: ProcessStep): void => {
+    const p = toolPair(s.toolName);
+    if (p) {
+      const key = labelOf(p);
+      const e = counts.get(key);
+      if (e) e.n += 1;
+      else counts.set(key, { pair: p, n: 1 });
+    }
+    for (const c of s.children ?? []) visit(c);
+  };
+  for (const c of children ?? []) visit(c);
+  const ranked = [...counts.values()].sort((a, b) => b.n - a.n).map((e) => e.pair);
+  if (!ranked.length) return "";
+  return ranked.length === 1 ? joinPair(ranked[0]) : joinPair(ranked[0], ranked[1]);
+}
+const savedGroupTitles = new Set<string>();
+const GroupNode = memo(({ step, onOpenFile, onOpenFullscreenDiff, toolTreeMode, resolvedDiffs, onResolveDiff, groupSummaryMode = "count", requestAISummary, saveGroupTitle }: { step: ProcessStep; onOpenFile?: (path: string) => void; onOpenFullscreenDiff?: (payload: { filePath?: string; hunks: DiffHunk[] }) => void; toolTreeMode: ToolTreeMode; resolvedDiffs?: Record<string, "accepted" | "rejected">; onResolveDiff?: (step: ProcessStep, action: "accept" | "reject") => void; groupSummaryMode?: GroupSummaryMode; requestAISummary?: (groupId: string, titles: string[]) => Promise<string>; saveGroupTitle?: (stepId: string, title: string, mode: string) => void }) => {
   const [open, setOpen] = useState(step.type === "subagent" || toolTreeMode === "auto");
   const childCount = step.children?.length || 0;
+  const isToolGroup = step.type === "tool_group";
+  const ended = isToolGroup && !!step.children?.length && step.children.every((s) => s.pending === false);
+  const lastChildId = isToolGroup ? step.children?.[step.children.length - 1]?.id : undefined;
+  const lastChildTitle = isToolGroup ? step.children?.[step.children.length - 1]?.groupTitle : undefined;
+  const [aiTitle, setAiTitle] = useState("");
+  useEffect(() => {
+    if (!ended || !isToolGroup || !lastChildId || !saveGroupTitle) return;
+    if (lastChildTitle) return;
+    if (savedGroupTitles.has(lastChildId)) return;
+    if (groupSummaryMode === "tools") {
+      const label = topToolLabel(step.children);
+      if (label) {
+        savedGroupTitles.add(lastChildId);
+        saveGroupTitle(lastChildId, label.slice(0, GROUP_SUMMARY_CAP), "tools");
+      }
+    }
+  }, [lastChildId, ended, groupSummaryMode, lastChildTitle, saveGroupTitle]);
+  useEffect(() => {
+    if (!ended || !isToolGroup || !lastChildId || !requestAISummary || groupSummaryMode !== "ai") return;
+    if (lastChildTitle && step.children?.[step.children.length - 1]?.groupTitleMode === "ai") {
+      setAiTitle(lastChildTitle);
+      return;
+    }
+    if (savedGroupTitles.has(lastChildId)) return;
+    savedGroupTitles.add(lastChildId);
+    let cancelled = false;
+    setAiTitle("");
+    const titles = [...new Set((step.children ?? []).flatMap((c) => [c.title, ...(c.children ?? []).map((g) => g.title)]).filter(Boolean) as string[])].slice(0, 60);
+    requestAISummary(step.id, titles).then((t) => {
+      if (cancelled || !t) return;
+      const text = t.length > GROUP_SUMMARY_CAP ? `${t.slice(0, GROUP_SUMMARY_CAP - 1)}…` : t;
+      setAiTitle(text);
+      saveGroupTitle?.(lastChildId, text, "ai");
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [step.id, ended, groupSummaryMode, requestAISummary, lastChildId, lastChildTitle]);
+  let groupTitle = step.title || "Called";
+  if (ended && isToolGroup && groupSummaryMode !== "count") {
+    if (lastChildTitle) {
+      groupTitle = lastChildTitle;
+    } else if (groupSummaryMode === "tools") {
+      const label = topToolLabel(step.children);
+      if (label) groupTitle = label;
+    } else if (groupSummaryMode === "ai" && aiTitle) {
+      groupTitle = aiTitle;
+    }
+  }
   return (
     <div className="arc-proc-group">
       <button className={`arc-proc-group-toggle${open ? " is-open" : ""}`} onClick={() => setOpen((o) => !o)} aria-expanded={open}>
@@ -225,8 +336,8 @@ const GroupNode = memo(({ step, onOpenFile, onOpenFullscreenDiff, toolTreeMode, 
             <Terminal size={13} className="arc-proc-group-icon" />
           )}
         </span>
-        <span className="arc-proc-group-title">{step.title || "Called"}</span>
-        {step.type === "tool_group" && (
+        <span className="arc-proc-group-title">{groupTitle}</span>
+        {step.type === "tool_group" && (!ended || groupSummaryMode === "count") && (
           <span className="arc-proc-group-meta">
             <AnimatedNumber value={childCount} /> {childCount === 1 ? "tool" : "tools"}
           </span>
@@ -276,8 +387,8 @@ const ThoughtNode = memo(({ step }: { step: ProcessStep }) => {
   );
 });
 ThoughtNode.displayName = "ThoughtNode";
-const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, onOpenFullscreenDiff, toolTreeMode, resolvedDiffs, onResolveDiff }: { step: ProcessStep; isActive: boolean; onToggle: () => void; onOpenFile?: (path: string) => void; onOpenFullscreenDiff?: (payload: { filePath?: string; hunks: DiffHunk[] }) => void; toolTreeMode: ToolTreeMode; resolvedDiffs?: Record<string, "accepted" | "rejected">; onResolveDiff?: (step: ProcessStep, action: "accept" | "reject") => void }) => {
-  if (step.type === "tool_group") return <GroupNode step={step} onOpenFile={onOpenFile} onOpenFullscreenDiff={onOpenFullscreenDiff} toolTreeMode={toolTreeMode} resolvedDiffs={resolvedDiffs} onResolveDiff={onResolveDiff} />;
+const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, onOpenFullscreenDiff, toolTreeMode, resolvedDiffs, onResolveDiff, groupSummaryMode, requestAISummary, saveGroupTitle }: { step: ProcessStep; isActive: boolean; onToggle: () => void; onOpenFile?: (path: string) => void; onOpenFullscreenDiff?: (payload: { filePath?: string; hunks: DiffHunk[] }) => void; toolTreeMode: ToolTreeMode; resolvedDiffs?: Record<string, "accepted" | "rejected">; onResolveDiff?: (step: ProcessStep, action: "accept" | "reject") => void; groupSummaryMode?: GroupSummaryMode; requestAISummary?: (groupId: string, titles: string[]) => Promise<string>; saveGroupTitle?: (stepId: string, title: string, mode: string) => void }) => {
+  if (step.type === "tool_group") return <GroupNode step={step} onOpenFile={onOpenFile} onOpenFullscreenDiff={onOpenFullscreenDiff} toolTreeMode={toolTreeMode} resolvedDiffs={resolvedDiffs} onResolveDiff={onResolveDiff} groupSummaryMode={groupSummaryMode} requestAISummary={requestAISummary} saveGroupTitle={saveGroupTitle} />;
   if (step.type === "subagent") return <GroupNode step={step} onOpenFile={onOpenFile} onOpenFullscreenDiff={onOpenFullscreenDiff} toolTreeMode={toolTreeMode} resolvedDiffs={resolvedDiffs} onResolveDiff={onResolveDiff} />;
   if (step.type === "thought") return <ThoughtNode step={step} />;
   const isReadTool = step.toolName === "file.read";
@@ -383,7 +494,7 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, onOpenFullscre
   );
 });
 ProcessNode.displayName = "ProcessNode";
-const StepList = memo(({ steps, onOpenFile, onOpenFullscreenDiff, toolTreeMode, resolvedDiffs, onResolveDiff }: { steps: ProcessStep[]; onOpenFile?: (path: string) => void; onOpenFullscreenDiff?: (payload: { filePath?: string; hunks: DiffHunk[] }) => void; toolTreeMode: ToolTreeMode; resolvedDiffs?: Record<string, "accepted" | "rejected">; onResolveDiff?: (step: ProcessStep, action: "accept" | "reject") => void }) => {
+const StepList = memo(({ steps, onOpenFile, onOpenFullscreenDiff, toolTreeMode, resolvedDiffs, onResolveDiff, groupSummaryMode, requestAISummary, saveGroupTitle }: { steps: ProcessStep[]; onOpenFile?: (path: string) => void; onOpenFullscreenDiff?: (payload: { filePath?: string; hunks: DiffHunk[] }) => void; toolTreeMode: ToolTreeMode; resolvedDiffs?: Record<string, "accepted" | "rejected">; onResolveDiff?: (step: ProcessStep, action: "accept" | "reject") => void; groupSummaryMode?: GroupSummaryMode; requestAISummary?: (groupId: string, titles: string[]) => Promise<string>; saveGroupTitle?: (stepId: string, title: string, mode: string) => void }) => {
   const isEnded = useMemo(() => steps.length > 0 && steps.every((s) => s.pending === false), [steps]);
   const [openIds, setOpenIds] = useState<Set<string>>(() => {
     if (toolTreeMode === "collapsed") return new Set<string>();
@@ -437,20 +548,23 @@ const StepList = memo(({ steps, onOpenFile, onOpenFullscreenDiff, toolTreeMode, 
           toolTreeMode={toolTreeMode}
           resolvedDiffs={resolvedDiffs}
           onResolveDiff={onResolveDiff}
+          groupSummaryMode={groupSummaryMode}
+          requestAISummary={requestAISummary}
+          saveGroupTitle={saveGroupTitle}
         />
       ))}
     </>
   );
 });
 StepList.displayName = "StepList";
-export default function ArcProcessUI({ steps = [], onOpenFile, onOpenFullscreenDiff, toolTreeMode = "auto", resolvedDiffs, onResolveDiff }: { steps: ProcessStep[]; onOpenFile?: (path: string) => void; onOpenFullscreenDiff?: (payload: { filePath?: string; hunks: DiffHunk[] }) => void; toolTreeMode?: ToolTreeMode; resolvedDiffs?: Record<string, "accepted" | "rejected">; onResolveDiff?: (step: ProcessStep, action: "accept" | "reject") => void }) {
+export default function ArcProcessUI({ steps = [], onOpenFile, onOpenFullscreenDiff, toolTreeMode = "auto", resolvedDiffs, onResolveDiff, groupSummaryMode = "count", requestAISummary, saveGroupTitle }: { steps: ProcessStep[]; onOpenFile?: (path: string) => void; onOpenFullscreenDiff?: (payload: { filePath?: string; hunks: DiffHunk[] }) => void; toolTreeMode?: ToolTreeMode; resolvedDiffs?: Record<string, "accepted" | "rejected">; onResolveDiff?: (step: ProcessStep, action: "accept" | "reject") => void; groupSummaryMode?: GroupSummaryMode; requestAISummary?: (groupId: string, titles: string[]) => Promise<string>; saveGroupTitle?: (stepId: string, title: string, mode: string) => void }) {
   if (!steps.length) return null;
   const rendered: ProcessStep[] = steps.length > 1
     ? [{ id: `called-${steps[0].id}`, type: "tool_group", title: "Called", children: steps }]
     : steps;
   return (
     <div className="arc-proc">
-      <StepList steps={rendered} onOpenFile={onOpenFile} onOpenFullscreenDiff={onOpenFullscreenDiff} toolTreeMode={toolTreeMode} resolvedDiffs={resolvedDiffs} onResolveDiff={onResolveDiff} />
+      <StepList steps={rendered} onOpenFile={onOpenFile} onOpenFullscreenDiff={onOpenFullscreenDiff} toolTreeMode={toolTreeMode} resolvedDiffs={resolvedDiffs} onResolveDiff={onResolveDiff} groupSummaryMode={groupSummaryMode} requestAISummary={requestAISummary} saveGroupTitle={saveGroupTitle} />
     </div>
   );
 }

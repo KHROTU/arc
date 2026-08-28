@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { renderMarkdown } from "../src/util/markdown";
+import { renderMath } from "../src/util/math";
 describe("markdown self-check", () => {
   it("renders all six heading levels", () => {
     const md = ["# H1", "## H2", "### H3", "#### H4", "##### H5", "###### H6"].join("\n");
@@ -115,5 +116,91 @@ describe("markdown self-check", () => {
     expect(html).not.toContain('autofocus="true"');
     expect(html).not.toContain('onerror="alert(1)"');
     expect(html).toContain("&lt;/a&gt;&lt;style&gt;");
+  });
+  it("renders inline math ($...$) and display math ($$...$$)", () => {
+    const inline = renderMarkdown("The energy is $E = mc^2$ and $\\frac{a}{b}$.");
+    expect(inline).toContain('class="katex"');
+    expect(inline).toContain('class="mord mathnormal"');
+    expect(inline).toContain("msupsub");
+    const display = renderMarkdown("$$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$$");
+    expect(display).toContain('class="katex-display"');
+    expect(display).toContain("mfrac");
+    expect(display).toContain("∑");
+  });
+  it("does not treat currency or plain $ as math", () => {
+    const html = renderMarkdown("Cost is $5 and $1,000 total.");
+    expect(html).not.toContain('class="katex"');
+  });
+  it("renders enhanced code blocks with header and copy button, no line numbers", () => {
+    const md = ["```python", "def greet(name):", "    return f'Hi {name}'", "```"].join("\n");
+    const html = renderMarkdown(md);
+    expect(html).toContain('class="arc-md-codeblock"');
+    expect(html).toContain('class="arc-md-copy"');
+    expect(html).toContain("arc-md-copy-icon");
+    expect(html).not.toContain('class="arc-md-lnums"');
+    expect(html).toContain("data-lang=\"python\"");
+    expect(html).toContain('<span class="arc-syn-kw">def</span>');
+  });
+  it("highlights diff blocks with add/del/meta tokens", () => {
+    const md = [
+      "```diff",
+      "--- a/file.ts",
+      "+++ b/file.ts",
+      "@@ -1,3 +1,3 @@",
+      "-const old = 1;",
+      "+const next = 2;",
+      "```",
+    ].join("\n");
+    const html = renderMarkdown(md);
+    expect(html).toContain("arc-syn-diff-meta");
+    expect(html).toContain("arc-syn-diff-del");
+    expect(html).toContain("arc-syn-diff-add");
+    expect(html).toContain("arc-syn-diff-head");
+  });
+  it("highlights powershell variables", () => {
+    const html = renderMarkdown(["```powershell", "$name = 'arc'", "Write-Output $name", "```"].join("\n"));
+    expect(html).toContain('class="arc-syn-var"');
+    expect(html).toContain("$name");
+  });
+});
+describe("math renderer (mini KaTeX)", () => {
+  it("renders fractions, sqrt, and greek letters", () => {
+    const html = renderMath("\\frac{1}{2} + \\sqrt{x} + \\alpha");
+    expect(html).toContain('class="katex"');
+    expect(html).toContain("mfrac");
+    expect(html).toContain("sqrt");
+    expect(html).toContain("α");
+  });
+  it("renders superscripts and subscripts", () => {
+    const html = renderMath("x^2 + y_{ij}");
+    expect(html).toContain("msupsub");
+    expect(html).toContain("msupsub-exp");
+    expect(html).toContain("msupsub-sub");
+  });
+  it("renders big operators with stacked limits", () => {
+    const html = renderMath("\\sum_{i=1}^n i");
+    expect(html).toContain("∑");
+    expect(html).toContain("mop");
+    expect(html).toContain("op-limits");
+  });
+  it("renders text mode and escaped delimiters", () => {
+    const html = renderMath("\\text{if } x \\leq 5 \\text{ then}");
+    expect(html).toContain("textrm");
+    expect(html).toContain("≤");
+    expect(html).toContain("if");
+  });
+  it("renders a bmatrix", () => {
+    const html = renderMath("\\begin{bmatrix} a & b \\\\ c & d \\end{bmatrix}");
+    expect(html).toContain("mtable");
+    expect(html).toContain("mtr");
+    expect(html).toContain("mtd");
+    expect(html).toContain("a");
+    expect(html).toContain("d");
+  });
+  it("wraps atoms in KaTeX classes", () => {
+    const html = renderMath("a + b = c");
+    expect(html).toContain('class="mord mathnormal"');
+    expect(html).toContain('class="mbin"');
+    expect(html).toContain('class="mrel"');
   });
 });

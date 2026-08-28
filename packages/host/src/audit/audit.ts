@@ -45,16 +45,19 @@ export async function readAuditLog(filePath: string): Promise<AuditEntry[]> {
   }
 }
 const appendChains = new Map<string, Promise<unknown>>();
+const LOCK_STALE_MS = 30_000;
+const LOCK_ACQUIRE_ATTEMPTS = 600;
+const LOCK_ACQUIRE_WAIT_MS = 25;
 async function acquireFileLock(filePath: string): Promise<fs.FileHandle> {
   const lockPath = `${filePath}.lock`;
-  for (let attempt = 0; attempt < 200; attempt++) {
+  for (let attempt = 0; attempt < LOCK_ACQUIRE_ATTEMPTS; attempt++) {
     try { return await fs.open(lockPath, "wx", 0o600); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const stale = await fs.stat(lockPath).then((stat) => Date.now() - stat.mtimeMs > 30_000).catch(() => false);
+      const stale = await fs.stat(lockPath).then((stat) => Date.now() - stat.mtimeMs > LOCK_STALE_MS).catch(() => false);
       if (stale) { await fs.rm(lockPath, { force: true }); continue; }
-      if (attempt === 199) throw new Error("Timed out acquiring audit log lock.");
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      if (attempt === LOCK_ACQUIRE_ATTEMPTS - 1) throw new Error("Timed out acquiring audit log lock.");
+      await new Promise((resolve) => setTimeout(resolve, LOCK_ACQUIRE_WAIT_MS));
     }
   }
   throw new Error("Timed out acquiring audit log lock.");

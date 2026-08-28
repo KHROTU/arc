@@ -1,8 +1,23 @@
+import { renderMath } from "./math";
 const ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const escape = (s: string): string => s.replace(/[&<>"']/g, (c) => ESC[c] ?? c);
 const FILE_REF_RE = /(?<![\w./\\-])([A-Za-z0-9_@][\w./\\-]*\.[A-Za-z0-9]{1,8}):(\d+)(?:-(\d+))?(?![\d-])/g;
 const FILE_REF_FULL = /(?<![\w./\\-])([A-Za-z0-9_@][\w./\\-]*\.[A-Za-z0-9]{1,8}):(\d+)(?:-(\d+))?(?![\d-])/;
-function renderInline(s: string): string {
+function renderInline(s: string): string {  const mathBlocks: string[] = [];
+  s = s.replace(/\$\$([\s\S]+?)\$\$/g, (_, latex: string) => {
+    mathBlocks.push(renderMath(latex, true));
+    return `\u0001M${mathBlocks.length - 1}\u0001`;
+  });
+  s = s.replace(/\$([^$\n]+?)\$/g, (_, latex: string) => {
+    if (!latex.trim()) return `$${latex}$`;
+    if (!/[\\^_{}$[\]]/.test(latex)) return `$${latex}$`;
+    mathBlocks.push(renderMath(latex, false));
+    return `\u0001M${mathBlocks.length - 1}\u0001`;
+  });
+  s = s.replace(/\\\(([\s\S]+?)\\\)/g, (_, latex: string) => {
+    mathBlocks.push(renderMath(latex, false));
+    return `\u0001M${mathBlocks.length - 1}\u0001`;
+  });
   const codes: string[] = [];
   s = s.replace(/`([^`\n]+)`/g, (_, c) => {
     codes.push(c);
@@ -13,16 +28,16 @@ function renderInline(s: string): string {
     refs.push({ path, line, ...(endLine ? { endLine } : {}) });
     return `\u0001R${refs.length - 1}\u0001`;
   });
-  const images: string[] = [];
+  const images: { alt: string; src: string }[] = [];
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g, (_, alt, src) => {
     if (!/^(https?:\/\/|\/)/i.test(src)) return alt; 
-    images.push(JSON.stringify({ alt, src }));
+    images.push({ alt, src });
     return `\u0001I${images.length - 1}\u0001`;
   });
-  const links: string[] = [];
+  const links: { text: string; href: string }[] = [];
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, text, href) => {
     if (!/^(https?:\/\/|\/|#)/i.test(href)) return text; 
-    links.push(JSON.stringify({ text, href }));
+    links.push({ text, href });
     return `\u0001L${links.length - 1}\u0001`;
   });
   s = escape(s);
@@ -33,11 +48,11 @@ function renderInline(s: string): string {
   s = s.replace(/(^|[^\*])\*([\s\S]+?)\*(?!\*)/g, (_, p, t) => `${p}<em>${t}</em>`);
   s = s.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, (_, p, t) => `${p}<em>${t}</em>`);
   s = s.replace(/\u0001I(\d+)\u0001/g, (_, idx) => {
-    const { alt, src } = JSON.parse(images[Number(idx)]) as { alt: string; src: string };
+    const { alt, src } = images[Number(idx)];
     return `<img src="${escape(src)}" alt="${escape(alt)}" loading="lazy" />`;
   });
   s = s.replace(/\u0001L(\d+)\u0001/g, (_, idx) => {
-    const { text, href } = JSON.parse(links[Number(idx)]) as { text: string; href: string };
+    const { text, href } = links[Number(idx)];
     return `<a href="${escape(href)}" rel="noopener noreferrer" target="_blank">${escape(text)}</a>`;
   });
   s = s.replace(/\u0001R(\d+)\u0001/g, (_, idx) => {
@@ -55,9 +70,10 @@ function renderInline(s: string): string {
     }
     return `<code>${escape(raw)}</code>`;
   });
+  s = s.replace(/\u0001M(\d+)\u0001/g, (_, idx) => mathBlocks[Number(idx)]);
   return s;
 }
-type Lang = "python" | "javascript" | "typescript" | "json" | "bash" | "css" | "html" | string;
+type Lang = "python" | "javascript" | "typescript" | "json" | "bash" | "css" | "html" | "go" | "rust" | "java" | "cpp" | "ruby" | "php" | "sql" | "yaml" | "powershell" | "diff" | string;
 const KEYWORDS: Record<string, RegExp> = {
   python: /\b(def|class|return|if|elif|else|for|while|in|not|and|or|import|from|as|with|try|except|finally|raise|pass|break|continue|lambda|yield|global|nonlocal|is|None|True|False|self|async|await)\b/g,
   javascript: /\b(var|let|const|function|return|if|else|for|while|do|switch|case|break|continue|new|class|extends|super|this|throw|try|catch|finally|typeof|instanceof|in|of|async|await|yield|import|export|from|as|default|null|undefined|true|false)\b/g,
@@ -66,9 +82,23 @@ const KEYWORDS: Record<string, RegExp> = {
   css: /\b(important|inherit|initial|unset|none|block|inline|flex|grid|absolute|relative|fixed|static|sticky)\b/g,
   json: /\b(true|false|null)\b/g,
   html: /\b(html|head|body|div|span|p|a|img|table|tr|td|th|tbody|thead|class|id|src|href|alt|title|style|script|meta|link|input|button|form|label|select|option|textarea)\b/g,
+  go: /\b(package|import|func|var|const|type|struct|interface|map|chan|go|defer|return|if|else|for|range|switch|case|default|break|continue|fallthrough|goto|select|select|len|cap|make|new|nil|true|false)\b/g,
+  rust: /\b(fn|let|mut|const|static|struct|enum|trait|impl|mod|use|pub|crate|super|self|Self|match|if|else|for|while|loop|return|break|continue|move|ref|as|where|dyn|async|await|unsafe|type|in|let)\b/g,
+  java: /\b(public|private|protected|static|final|abstract|class|interface|extends|implements|new|return|if|else|for|while|do|switch|case|break|continue|throw|throws|try|catch|finally|this|super|import|package|void|boolean|int|long|float|double|char|byte|short|synchronized|volatile|native|transient|strictfp|enum|default)\b/g,
+  cpp: /\b(if|else|for|while|do|switch|case|default|break|continue|return|goto|struct|union|enum|typedef|const|static|extern|volatile|register|signed|unsigned|short|int|long|float|double|char|void|sizeof|new|delete|class|public|private|protected|virtual|override|template|typename|namespace|using|try|catch|throw|true|false|nullptr)\b/g,
+  ruby: /\b(def|end|class|module|if|elsif|else|unless|case|when|while|until|for|do|yield|return|begin|rescue|ensure|raise|break|next|redo|retry|and|or|not|require|include|extend|attr_accessor|self|nil|true|false)\b/g,
+  php: /\b(function|class|interface|trait|extends|implements|public|private|protected|static|return|if|else|elseif|for|foreach|while|do|switch|case|break|continue|new|throw|try|catch|finally|namespace|use|require|require_once|include|include_once|echo|isset|empty|global|const|true|false|null)\b/g,
+  sql: /\b(select|from|where|insert|into|values|update|set|delete|create|table|alter|drop|index|view|join|inner|left|right|full|outer|on|group|by|order|having|limit|offset|union|all|distinct|as|and|or|not|null|default|primary|key|foreign|references|constraint|check|unique|is)\b/g,
+  yaml: /\b(true|false|null|yes|no|on|off)\b/g,
+  powershell: /\b(function|param|return|if|else|elseif|foreach|for|while|do|switch|case|default|break|continue|try|catch|finally|throw|new|begin|process|end|filter|until|in|not|and|or|$true|$false|null)\b/g,
 };
 const TYPE_KEYWORDS: Record<string, RegExp> = {
   typescript: /\b(string|number|boolean|bigint|symbol|object|Function|Array|Map|Set|Promise|Date|RegExp|Error)\b/g,
+  go: /\b(string|int|int8|int16|int32|int64|uint|uint8|uint16|uint32|uint64|uintptr|float32|float64|bool|byte|rune|error|any)\b/g,
+  rust: /\b(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128|isize|usize|f32|f64|bool|char|str|String|Vec|Option|Result|Box)\b/g,
+  java: /\b(String|Integer|Long|Boolean|Float|Double|Character|Byte|Short|Object|List|Map|Set|ArrayList|HashMap|Exception|Throwable)\b/g,
+  cpp: /\b(string|vector|map|set|pair|shared_ptr|unique_ptr|size_t|bool|void|int|long|float|double|char)\b/g,
+  php: /\b(string|int|float|bool|array|object|mixed|void|callable|iterable|null)\b/g,
 };
 const COMMENT: Record<string, { line?: RegExp; block?: RegExp }> = {
   python: { line: /(^|\s)#.*$/gm, block: undefined },
@@ -78,6 +108,15 @@ const COMMENT: Record<string, { line?: RegExp; block?: RegExp }> = {
   css: { block: /\/\*[\s\S]*?\*\//g },
   html: { block: /<!--[\s\S]*?-->/g },
   json: {},
+  go: { line: /\/\/.*$/gm, block: /\/\*[\s\S]*?\*\//g },
+  rust: { line: /\/\/.*$/gm, block: /\/\*[\s\S]*?\*\//g },
+  java: { line: /\/\/.*$/gm, block: /\/\*[\s\S]*?\*\//g },
+  cpp: { line: /\/\/.*$/gm, block: /\/\*[\s\S]*?\*\//g },
+  ruby: { line: /(^|\s)#.*$/gm },
+  php: { line: /(\/\/|#).*$/gm, block: /\/\*[\s\S]*?\*\//g },
+  sql: { line: /--.*$/gm, block: /\/\*[\s\S]*?\*\//g },
+  yaml: { line: /(^|\s)#.*$/gm },
+  powershell: { line: /(^|\s)#.*$/gm, block: /<#[\s\S]*?#>/g },
 };
 const STRING_RE: Record<string, RegExp> = {
   python: /("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')/g,
@@ -87,10 +126,27 @@ const STRING_RE: Record<string, RegExp> = {
   json: /("(?:\\.|[^"\\])*")/g,
   css: /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
   html: /("[^"]*"|'[^']*')/g,
+  go: /(`[\s\S]*?`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
+  rust: /(r#"[^"]*"#|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
+  java: /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
+  cpp: /(R"([^()\\]*)\([\s\S]*?\)\2"|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
+  ruby: /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
+  php: /(`(?:\\.|[^`\\])*`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
+  sql: /('(?:\\.|[^'\\])*')/g,
+  yaml: /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
+  powershell: /("(?:\\.|`"|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
 };
 const NUM_RE = /\b\d+(?:\.\d+)?\b/g;
+const VAR_RE: Record<string, RegExp> = {
+  powershell: /\$[A-Za-z_][A-Za-z0-9_]*/g,
+  php: /\$[A-Za-z_][A-Za-z0-9_]*/g,
+  bash: /\$[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?|\$\{[^}]*\}/g,
+  ruby: /@[A-Za-z_][A-Za-z0-9_]*|@@[A-Za-z_][A-Za-z0-9_]*|\$[A-Za-z_][A-Za-z0-9_]*/g,
+};
 function highlightCode(src: string, lang: Lang): string {
-  if (!lang || !KEYWORDS[lang]) return escape(src);
+  if (!lang) return escape(src);
+  if (lang === "diff") return highlightDiff(src);
+  if (!KEYWORDS[lang]) return escape(src);
   type Patch = { start: number; end: number; html: string };
   const patches: Patch[] = [];
   const collect = (re: RegExp, wrap: (raw: string) => string) => {
@@ -108,6 +164,7 @@ function highlightCode(src: string, lang: Lang): string {
   collect(NUM_RE, (m) => `<span class="arc-syn-num">${m}</span>`);
   collect(KEYWORDS[lang], (m) => `<span class="arc-syn-kw">${m}</span>`);
   if (TYPE_KEYWORDS[lang]) collect(TYPE_KEYWORDS[lang], (m) => `<span class="arc-syn-type">${m}</span>`);
+  if (VAR_RE[lang]) collect(VAR_RE[lang], (m) => `<span class="arc-syn-var">${escape(m)}</span>`);
   patches.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
   let out = "";
   let cursor = 0;
@@ -119,6 +176,17 @@ function highlightCode(src: string, lang: Lang): string {
   }
   out += escape(src.slice(cursor));
   return out;
+}
+function highlightDiff(src: string): string {
+  const rows = src.split("\n").map((l) => {
+    if (/^(diff --git|index |new file|deleted file|rename from|rename to|similarity index|old mode|new mode)/.test(l)) return `<span class="arc-syn-diff-meta">${escape(l)}</span>`;
+    if (/^@@/.test(l)) return `<span class="arc-syn-diff-head">${escape(l)}</span>`;
+    if (/^\+\+\+/.test(l) || /^---$/.test(l) || /^--- /.test(l)) return `<span class="arc-syn-diff-meta">${escape(l)}</span>`;
+    if (/^\+/.test(l)) return `<span class="arc-syn-diff-add">${escape(l)}</span>`;
+    if (/^-/.test(l)) return `<span class="arc-syn-diff-del">${escape(l)}</span>`;
+    return escape(l);
+  });
+  return rows.join("\n");
 }
 function renderBlock(s: string): string {
   const lines = s.split("\n");
@@ -136,6 +204,37 @@ function renderBlock(s: string): string {
       html.push(renderBlockquote(raw, 0));
       continue;
     }
+    if (/^\s*\$\$/.test(line)) {
+      const sameLine = /^\s*\$\$([\s\S]*?)\$\$\s*$/.exec(line);
+      if (sameLine) {
+        html.push(renderMath(sameLine[1].trim(), true));
+        i++;
+        continue;
+      }
+      const block: string[] = [line.replace(/^\s*\$\$/, "")];
+      i++;
+      while (i < lines.length && !/\$\$\s*$/.test(lines[i])) {
+        block.push(lines[i]);
+        i++;
+      }
+      if (i < lines.length) {
+        block.push(lines[i].replace(/\$\$\s*$/, ""));
+        i++;
+      }
+      html.push(renderMath(block.join("\n").trim(), true));
+      continue;
+    }
+    if (/^\s*\\\[\s*$/.test(line)) {
+      const block: string[] = [];
+      i++;
+      while (i < lines.length && !/^\s*\\\]\s*$/.test(lines[i])) {
+        block.push(lines[i]);
+        i++;
+      }
+      if (i < lines.length) i++;
+      html.push(renderMath(block.join("\n").trim(), true));
+      continue;
+    }
     const fenceOpen = /^ {0,3}```([a-zA-Z0-9_+\-#]*)\s*$/.exec(line);
     if (fenceOpen) {
       const lang = (fenceOpen[1] || "").toLowerCase();
@@ -149,7 +248,15 @@ function renderBlock(s: string): string {
       const code = body.join("\n");
       const innerHtml = lang ? highlightCode(code, lang) : escape(code);
       const langClass = lang ? ` data-lang="${lang}"` : "";
-      html.push(`<pre class="arc-md-pre"${langClass}><code class="arc-md-code">${innerHtml}</code></pre>`);
+      const headLabel = lang ? `<span class="arc-md-lang-label">${escape(lang)}</span>` : "";
+      const copyIcon = `<svg class="arc-md-copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`;
+      const checkIcon = `<svg class="arc-md-copy-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>`;
+      html.push(
+        `<div class="arc-md-codeblock"${langClass}>` +
+          `<div class="arc-md-codehead">${headLabel}<button type="button" class="arc-md-copy" title="Copy code" aria-label="Copy code">${copyIcon}${checkIcon}</button></div>` +
+          `<pre class="arc-md-pre"${langClass}><code class="arc-md-code">${innerHtml}</code></pre>` +
+          `</div>`,
+      );
       continue;
     }
     html.push(renderBlockDispatch0(lines, i));

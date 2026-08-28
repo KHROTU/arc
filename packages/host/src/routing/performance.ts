@@ -90,4 +90,3 @@ export class ProviderPerformanceTracker {
   resetAll(): void { M.clear(); }
 }
 export const perf = new ProviderPerformanceTracker();
-export { perf as performanceTracker };

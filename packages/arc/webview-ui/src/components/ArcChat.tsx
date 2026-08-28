@@ -13,6 +13,7 @@ import { renderMarkdown } from "../util/markdown";
 import type { RpcClient } from "../rpc";
 const ConversationSearch = lazy(() => import("./ConversationSearch"));
 const SettingsModal = lazy(() => import("./SettingsView"));
+const AUTO_CONFIRM_CONFIDENCE = 0.45;
 type ChatMeta = { id: string; title: string; updatedAt: number; cost: number; isActive: boolean };
 type Props = {
   client: RpcClient;
@@ -86,6 +87,8 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [handoff, setHandoff] = useState<{ from: string; to: string; reason: string } | null>(null);
   const [, setUsage] = useState<TurnUsage | null>(null);
   const [ctxStats, setCtxStats] = useState<{ usedPct: number; tokens: number; window: number; cost: number } | null>(null);
+  const [groupSummaryMode, setGroupSummaryMode] = useState<"count" | "tools" | "ai">("count");
+  const pendingToolSummaries = useRef(new Map<string, (text: string) => void>());
   const [models, setModels] = useState<ModelDescriptor[]>([]);
   const [currentModel, setCurrentModel] = useState<string>("");
   const [modes, setModes] = useState<{ slug: string; description: string; source?: string }[]>([]);
@@ -107,8 +110,9 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [polishing, setPolishing] = useState(false);
   const [polishPending, setPolishPending] = useState<{ original: string; polished: string } | null>(null);
   const [routing, setRouting] = useState(false);
-  const [routePending, setRoutePending] = useState<{ original: string; modelId: string; modelLabel: string } | null>(null);
+  const [routePending, setRoutePending] = useState<{ original: string; modelId: string; modelLabel: string; domain?: string; confidence?: number } | null>(null);
   const routeRef = useRef<{ text: string; attachments?: { uri: string; preview?: string }[]; images?: string[] } | null>(null);
+  const autoRouteRef = useRef(false);
   const [autoApproveActive, setAutoApproveActive] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState<Effort>("high");
   const [resolvedDiffs, setResolvedDiffs] = useState<Record<string, "accepted" | "rejected">>({});
@@ -129,7 +133,8 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
       client.request<boolean>("arc.attention.approval"),
       client.request<boolean>("arc.attention.error"),
       client.request<string>("arc.promptPolish"),
-    ]).then(([enabled, volume, completion, approval, error, promptPolish]) => {
+      client.request<boolean>("arc.router.autoRoute"),
+    ]).then(([enabled, volume, completion, approval, error, promptPolish, autoRoute]) => {
       attentionRef.current = {
         enabled: enabled === true,
         volume: typeof volume === "number" ? volume : 70,
@@ -138,6 +143,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         error: error !== false,
       };
       setPolishLevel(promptPolish === "basic" || promptPolish === "polish" ? promptPolish : "off");
+      autoRouteRef.current = autoRoute === true;
     });
     const off = client.on((e: any) => {
       switch (e.type) {
@@ -223,9 +229,6 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
             return next;
           });
           break;
-        case "session/loadComposer":
-          setPrefillText(e.text);
-          break;
         case "session/replaceState":
           setMessages(e.messages);
           setSteps(e.steps);
@@ -246,6 +249,10 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         case "session/attachment": setPendingAttachment(e.preview); break;
         case "session/usage": setUsage(e.usage); break;
         case "context/stats": setCtxStats(e); break;
+        case "chat/toolsSummary":
+          pendingToolSummaries.current.get(e.id)?.(e.text ?? "");
+          pendingToolSummaries.current.delete(e.id);
+          break;
         case "model/list": setModels(e.models); setCurrentModel(e.currentModelId); break;
         case "provider/list": setProviders(e.providers); break;
         case "ui/showSettings": setShowSettings(true); break;
@@ -266,11 +273,20 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           break;
         case "chat/routeResult":
           setRouting(false);
-          setRoutePending({
-            original: e.original,
-            modelId: e.modelId,
-            modelLabel: e.modelLabel || models.find((m) => m.id === e.modelId)?.label || e.modelId,
-          });
+          if (autoRouteRef.current && (e.confidence ?? 1) >= AUTO_CONFIRM_CONFIDENCE) {
+            const r = routeRef.current;
+            setRoutePending(null);
+            routeRef.current = null;
+            if (r) send(r.text, r.attachments, r.images, e.modelId, true);
+          } else {
+            setRoutePending({
+              original: e.original,
+              modelId: e.modelId,
+              modelLabel: e.modelLabel || models.find((m) => m.id === e.modelId)?.label || e.modelId,
+              domain: e.domain,
+              confidence: e.confidence,
+            });
+          }
           break;
         case "chat/routeFailed":
           {
@@ -283,6 +299,8 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         case "config/changed":
           if (e.key === "arc.promptPolish") setPolishLevel(e.value === "basic" || e.value === "polish" ? e.value : "off");
           if (e.key === "arc.diffView.autoOpen") setAutoOpenDiff(e.value !== false);
+          if (e.key === "arc.router.autoRoute") autoRouteRef.current = e.value === true;
+          if (e.key === "arc.appearance.toolGroupSummary") setGroupSummaryMode(e.value === "tools" ? "tools" : e.value === "ai" ? "ai" : "count");
           break;
         case "error":
           if (attentionRef.current.error) beep(220, 0.25);
@@ -311,7 +329,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     const el = transcriptRef.current;
     if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
   }, [steps, streaming, clarification, messages]);
-  const send = (text: string, attachments?: { uri: string; preview?: string }[], images?: string[], modelId?: string) => {
+  const send = (text: string, attachments?: { uri: string; preview?: string }[], images?: string[], modelId?: string, autoRouted?: boolean) => {
     if (streaming) {
       setQueuedMessage(text);
       return;
@@ -328,7 +346,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     setMessages((prev) => prev.find((m) => m.content === text && m.role === "user")
       ? prev
       : [...prev, { id: `local-${Date.now()}`, role: "user", content: text, ts: Date.now() }]);
-    client.send({ type: "chat/send", text, attachments, images, ...(modelId ? { modelId } : {}) });
+    client.send({ type: "chat/send", text, attachments, images, ...(modelId ? { modelId } : {}), ...(autoRouted ? { autoRouted: true } : {}) });
   };
   const route = (text: string, attachments?: { uri: string; preview?: string }[], images?: string[]) => {
     routeRef.current = { text, attachments, images };
@@ -346,7 +364,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
       route(text, attachments, images);
       return;
     }
-    send(text, attachments, images);
+    send(text, attachments, images, currentModel);
   };
   const acceptRouted = () => {
     const r = routeRef.current;
@@ -396,6 +414,23 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   };
   const onTranscriptClick = (e: ReactMouseEvent) => {
     const target = e.target as HTMLElement;
+    const copyBtn = target.closest?.(".arc-md-copy") as HTMLElement | null;
+    if (copyBtn) {
+      const block = copyBtn.closest?.(".arc-md-codeblock") as HTMLElement | null;
+      const pre = block?.querySelector("pre.arc-md-pre") as HTMLElement | null;
+      const code = pre?.textContent ?? "";
+      if (code) {
+        void navigator.clipboard.writeText(code).then(() => {
+          copyBtn.classList.add("is-copied");
+          copyBtn.setAttribute("aria-label", "Copied");
+          window.setTimeout(() => {
+            copyBtn.classList.remove("is-copied");
+            copyBtn.setAttribute("aria-label", "Copy code");
+          }, 1400);
+        });
+      }
+      return;
+    }
     const ref = target.closest?.(".arc-ref, .arc-ref-code") as HTMLElement | null;
     if (!ref) return;
     const path = ref.getAttribute("data-path");
@@ -481,6 +516,8 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   }, []);
   const pct = ctxStats?.usedPct ?? 0;
   const chatCost = ctxStats?.cost ?? 0;
+  const costShort = chatCost.toFixed(1);
+  const costPrecise = String(Number(chatCost.toFixed(3)));
   const isEmpty = steps.length === 0 && streaming === null && !hasEverSent && !lastTurnError;
   type TimelineItem =
     | { kind: "msg"; ts: number; seq: number; msg: ChatMessage }
@@ -507,6 +544,23 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     }
     return items.sort((a, b) => a.ts - b.ts || a.seq - b.seq);
   }, [messages, steps, streaming]);
+  const requestAISummary = useCallback((groupId: string, titles: string[]): Promise<string> => {
+    return new Promise<string>((resolve) => {
+      const timer = setTimeout(() => {
+        pendingToolSummaries.current.delete(groupId);
+        resolve("");
+      }, 15_000);
+      pendingToolSummaries.current.set(groupId, (t) => {
+        clearTimeout(timer);
+        pendingToolSummaries.current.delete(groupId);
+        resolve(t);
+      });
+      client.send({ type: "chat/summarizeTools", id: groupId, titles });
+    });
+  }, [client]);
+  const saveGroupTitle = useCallback((stepId: string, title: string, mode: string) => {
+    client.send({ type: "chat/saveGroupTitle", stepId, title, mode });
+  }, [client]);
   const timelineNodes = useMemo<ReactNode[]>(() => {
     const out: ReactNode[] = [];
     let run: ProcessStep[] = [];
@@ -532,6 +586,9 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
             toolTreeMode={toolTreeMode}
             resolvedDiffs={resolvedDiffs}
             onResolveDiff={handleResolveDiff}
+            groupSummaryMode={groupSummaryMode}
+            requestAISummary={requestAISummary}
+            saveGroupTitle={saveGroupTitle}
           />,
         );
         run = [];
@@ -577,7 +634,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
     }
     flush();
     return out;
-  }, [timeline, toolTreeMode, variant, resolvedDiffs, client]);
+  }, [timeline, toolTreeMode, variant, resolvedDiffs, client, groupSummaryMode, requestAISummary, saveGroupTitle]);
   const latestTodos = useMemo(() => {
     for (let i = steps.length - 1; i >= 0; i--) {
       if (steps[i].type === "todo_list" && steps[i].todos?.length) return steps[i].todos ?? null;
@@ -605,6 +662,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [autoOpenDiff, setAutoOpenDiff] = useState(true);
   useEffect(() => {
     void client.request<boolean>("arc.diffView.autoOpen").then((v) => setAutoOpenDiff(v !== false));
+    void client.request<string>("arc.appearance.toolGroupSummary").then((v) => setGroupSummaryMode(v === "tools" ? "tools" : v === "ai" ? "ai" : "count"));
   }, [client]);
   const latestStreamingDiff = useMemo(() => {
     for (let i = steps.length - 1; i >= 0; i--) {
@@ -677,7 +735,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
         )}
         <span className="arc-topbar-spacer" />
         <span className="arc-ctx-pct" title={`Context ${pct.toFixed(0)}% used`}>{pct.toFixed(0)}%</span>
-        <span className="arc-topbar-cost" title="This chat's spend">${chatCost.toFixed(3)}</span>
+        <span className="arc-topbar-cost" title={`${costPrecise} spent`}>${costShort}</span>
         <span className="arc-topbar-sep" />
         <button className="arc-iconbtn" title="Compress context" onClick={compact} disabled={!!streaming}>
           <FoldVertical size={15} />
@@ -840,7 +898,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
               onPolish={polish}
               autoMode={currentModel === AUTO_MODEL_ID}
               routing={routing}
-              routePending={routePending ? { modelLabel: routePending.modelLabel } : null}
+              routePending={routePending ? { modelLabel: routePending.modelLabel, domain: routePending.domain, confidence: routePending.confidence } : null}
               onAcceptRouted={acceptRouted}
               onRejectRouted={rejectRouted}
               placeholder={currentModel === AUTO_MODEL_ID ? "Ask anything" : (currentModelLabel ? `Ask ${currentModelLabel}` : undefined)}

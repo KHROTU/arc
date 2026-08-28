@@ -302,6 +302,7 @@ export interface ChatMessage {
   meta?: { modelId: string; providerId: string; tier: ModelTier };
   images?: { type: string; image_url: { url: string } }[];
   noCompact?: boolean;
+  hidden?: boolean;
 }
 export interface ToolCall {
   id: string;
@@ -327,15 +328,6 @@ export type ExecutionEvent =
   | { type: "context_compressed"; turnId: string; toolName: string; kind: string; saved: number; ts: number }
   | { type: "error"; turnId: string; message: string; ts: number }
   | { type: "retry"; turnId: string; toolName: string; attempt: number; reason: string; ts: number };
-export interface TurnRecord {
-  id: string;
-  messages: ChatMessage[];
-  usage: TurnUsage;
-  startedAt: number;
-  endedAt?: number;
-  checkpointed: boolean;
-  retracted?: boolean;
-}
 export type HostMsg =
   | { type: "session/init"; sessionId: string; chatId?: string; models: ModelDescriptor[]; currentModelId: string; modes?: { slug: string; description: string }[]; currentMode?: string }
   | { type: "session/message"; message: ChatMessage; sessionId?: string }
@@ -359,8 +351,9 @@ export type HostMsg =
   | { type: "config/get"; value: unknown; inReplyTo: string }
   | { type: "config/changed"; key: string; value: unknown }
   | { type: "mcp/list"; servers: { name: string; enabled: boolean; transport: "stdio" | "http"; toolCount: number }[] }
+  | { type: "mcp/marketplaceResults"; results?: unknown[]; error?: string }
   | { type: "mode/list"; modes: { slug: string; roleDefinition: string; allowedTools: string[]; writeGlob?: string; description: string; whenToUse: string; model?: string; source: "builtin" | "workspace" | "global" }[] }
-  | { type: "chat/searchResults"; results: { id: string; title: string; matches: string[] }[] }
+  | { type: "chat/searchResults"; results: { id: string; title: string; matches: string[] }[]; query?: string }
   | { type: "ui/showSettings" }
   | { type: "ui/showSearch" }
   | { type: "ui/showUpdate"; version: string; url: string }
@@ -372,20 +365,22 @@ export type HostMsg =
   | { type: "mcp/traffic"; server: string; dir: string; msg: string }
   | { type: "memory/list"; memories: { index: number; category: string; content: string; createdAt: string }[] }
   | { type: "hooks/list"; hooks: { event: string; matcher: string; command: string; enabled: boolean; tools?: string[] }[] }
-  | { type: "session/loadComposer"; text: string }
   | { type: "session/replaceState"; messages: ChatMessage[]; steps: ProcessStep[]; loadComposer?: string }
   | { type: "session/guidance"; text: string }
   | { type: "error"; message: string; code?: "timeout" | "rate_limit" | "auth" | "provider" | "malformed" | "network" | "aborted"; inReplyTo?: string }
   | { type: "provider/internalSetupProgress"; phase: string; pct: number; error?: string }
   | { type: "provider/serverState"; providerId: string; running: boolean; pid?: number }
   | { type: "chat/polishResult"; original: string; polished: string }
+  | { type: "chat/toolsSummary"; id: string; text: string }
   | { type: "chat/polishFailed"; original: string }
-  | { type: "chat/routeResult"; original: string; modelId: string; modelLabel: string; aaScore: number; requiredScore: number; difficulty: number; confidence: number }
+  | { type: "chat/routeResult"; original: string; modelId: string; modelLabel: string; aaScore: number; requiredScore: number; difficulty: number; domain?: string; confidence: number; tau?: number }
   | { type: "chat/routeFailed"; original: string; reason?: "no-model" | "model-unavailable" | "error" };
 export type WebviewMsg =
-  | { type: "chat/send"; text: string; attachments?: { uri: string; preview?: string }[]; images?: string[]; modelId?: string }
+  | { type: "chat/send"; text: string; attachments?: { uri: string; preview?: string }[]; images?: string[]; modelId?: string; autoRouted?: boolean }
   | { type: "chat/route"; text: string; attachments?: { uri: string; preview?: string }[]; images?: string[] }
   | { type: "chat/polish"; text: string }
+  | { type: "chat/summarizeTools"; id: string; titles: string[] }
+  | { type: "chat/saveGroupTitle"; stepId: string; title: string; mode: string }
   | { type: "chat/guidance"; text: string }
   | { type: "chat/stop" }
   | { type: "chat/retract"; turnId: string }
@@ -431,8 +426,6 @@ export type WebviewMsg =
   | { type: "chat/new" }
   | { type: "chat/compact" }
   | { type: "ui/openSidebar" }
-  | { type: "ui/openTab"; tab: string }
-  | { type: "ui/showSettings" }
   | { type: "search/reindex" }
   | { type: "model/bindUpdate"; modelId: string; providerId: string; remoteModel?: string }
   | { type: "mode/select"; mode: string }

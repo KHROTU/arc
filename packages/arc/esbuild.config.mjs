@@ -1,11 +1,15 @@
 import esbuild from "esbuild";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { existsSync } from "node:fs";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const watch = process.argv.includes("--watch");
 const isProd = !watch && process.env.NODE_ENV !== "development";
+const hostSrc = resolve(__dirname, "../host/src");
+if (!watch) {
+  await rm(resolve(__dirname, "dist"), { recursive: true, force: true });
+}
 await mkdir(resolve(__dirname, "dist"), { recursive: true });
 const host = {
   entryPoints: [resolve(__dirname, "src/extension/host-entry.ts")],
@@ -30,6 +34,19 @@ const host = {
       name: "skip-playwright",
       setup(b) {
         b.onResolve({ filter: /^playwright/ }, (args) => ({ path: args.path, external: true }));
+      },
+    },
+    {
+      name: "host-ts-source",
+      setup(b) {
+        b.onResolve({ filter: /^@arc\/host$/ }, () => ({ path: resolve(hostSrc, "index.ts") }));
+        b.onResolve({ filter: /^@arc\/host\/(.*)$/ }, (args) => {
+          const sub = args.path.replace(/^@arc\/host\//, "");
+          if (sub === "catalog") return { path: resolve(hostSrc, "providers/catalog.ts") };
+          if (sub === "protocol") return { path: resolve(hostSrc, "protocol/index.ts") };
+          if (sub === "util") return { path: resolve(hostSrc, "util/index.ts") };
+          return { path: resolve(hostSrc, `${sub}.ts`) };
+        });
       },
     },
   ],

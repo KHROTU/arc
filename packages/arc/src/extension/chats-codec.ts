@@ -1,10 +1,10 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { deflateSync, inflateSync } from "node:zlib";
+import { aesGcmEncrypt, aesGcmDecrypt } from "@arc/host/util";
 import type { ChatMeta, ChatSnapshot, ChatMessage, Role, ModelTier } from "@arc/host";
 export const CHATS_FILE_NAME = "arc.chats.arcx";
 export const LEGACY_CHATS_FILE_NAME = "arc.chats.json";
 const MAGIC = Buffer.from("ARCX1", "ascii");
-const FORMAT_VERSION = 1;
+const FORMAT_VERSION = 2;
 const ROLE_INDEX: Record<Role, number> = { system: 0, user: 1, assistant: 2, tool: 3, developer: 4 };
 const ROLE_NAMES: Role[] = ["system", "user", "assistant", "tool", "developer"];
 const TIER_INDEX: Record<ModelTier, number> = { heavy: 0, default: 1, light: 2, free: 3 };
@@ -129,6 +129,7 @@ function encodeSnapshot(snap: ChatSnapshot): Buffer {
     w.varint(c.createdAt);
     w.varint(c.updatedAt);
     w.f64(c.cost);
+    w.f64(c.promptTokens ?? 0);
   }
   const msgEntries = Object.entries(snap.messages ?? {});
   w.varint(msgEntries.length);
@@ -150,12 +151,16 @@ function encodeSnapshot(snap: ChatSnapshot): Buffer {
 function decodeSnapshot(buf: Buffer): ChatSnapshot {
   const r = new Reader(buf, { o: 0 });
   const version = r.u8();
-  if (version !== FORMAT_VERSION) throw new Error(`ARCX: unsupported format version ${version}`);
+  if (version !== 1 && version !== FORMAT_VERSION) throw new Error(`ARCX: unsupported format version ${version}`);
   const snap: ChatSnapshot = { chats: [], messages: {}, steps: {} };
   if (r.u8()) snap.currentId = r.str();
   const chatCount = r.varint();
   for (let i = 0; i < chatCount; i++) {
     const c: ChatMeta = { id: r.str(), title: r.str(), createdAt: r.varint(), updatedAt: r.varint(), cost: r.f64() };
+    if (version >= 2) {
+      const pt = r.f64();
+      if (pt > 0) c.promptTokens = pt;
+    }
     snap.chats.push(c);
   }
   const msgChatCount = r.varint();
@@ -178,11 +183,8 @@ function decodeSnapshot(buf: Buffer): ChatSnapshot {
 }
 export function encryptChatSnapshot(snap: ChatSnapshot, key: Buffer): Buffer {
   const plaintext = encodeSnapshot(snap);
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", key, iv);
-  const ct = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  const payload = Buffer.concat([iv, tag, ct]);
+  const { iv, tag, data } = aesGcmEncrypt(key, plaintext);
+  const payload = Buffer.concat([iv, tag, data]);
   const header = Buffer.alloc(10);
   MAGIC.copy(header, 0);
   header[5] = FORMAT_VERSION;
@@ -194,11 +196,10 @@ export function decryptChatSnapshot(fileBuf: Buffer, key: Buffer): ChatSnapshot 
   const payloadLen = fileBuf.readUInt32BE(6);
   if (10 + payloadLen > fileBuf.length) throw new Error("ARCX: truncated payload");
   const payload = fileBuf.subarray(10, 10 + payloadLen);
-  const iv = payload.subarray(0, 12);
-  const tag = payload.subarray(12, 28);
-  const ct = payload.subarray(28);
-  const decipher = createDecipheriv("aes-256-gcm", key, iv);
-  decipher.setAuthTag(tag);
-  const plaintext = Buffer.concat([decipher.update(ct), decipher.final()]);
+  const plaintext = aesGcmDecrypt(key, {
+    iv: payload.subarray(0, 12),
+    tag: payload.subarray(12, 28),
+    data: payload.subarray(28),
+  });
   return decodeSnapshot(plaintext);
 }

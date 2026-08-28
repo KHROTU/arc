@@ -29,7 +29,7 @@ type Props = {
   onPolish?: (text: string) => void;
   autoMode?: boolean;
   routing?: boolean;
-  routePending?: { modelLabel: string } | null;
+  routePending?: { modelLabel: string; domain?: string; confidence?: number } | null;
   onAcceptRouted?: () => void;
   onRejectRouted?: () => void;
   variant: "sidebar" | "fullscreen";
@@ -226,6 +226,9 @@ export default function Composer({
           <div className="arc-composer-route-bar">
             <span className="arc-composer-route-label">
               Routed to <strong>{routePending.modelLabel}</strong>
+              {routePending.domain && routePending.domain !== "general" ? (
+                <span className="arc-composer-route-domain">{routePending.domain}</span>
+              ) : null}
             </span>
             <button className="arc-btn" onClick={acceptRoute}>Accept</button>
             <button className="arc-btn-ghost" onClick={rejectRoute}>Reject</button>
@@ -235,7 +238,7 @@ export default function Composer({
       {todos && todos.length > 0 && (
         <div className={`arc-composer-plan ${todosOpen ? "is-open" : ""}`}>
           <button className="arc-composer-plan-head" onClick={onToggleTodos}>
-            <span className="arc-composer-plan-title">Plan</span>
+            {todosOpen && <span className="arc-composer-plan-title">Plan</span>}
             {!todosOpen && currentTodo && (
               <span className={`arc-composer-plan-current ${currentTodo.state === "in_progress" ? "is-active" : ""}`}>{currentTodo.text}</span>
             )}

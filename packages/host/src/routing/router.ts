@@ -1,4 +1,4 @@
-import type { ModelDescriptor, ModelTier, ProviderConfig, ProviderRef, TurnUsage } from "../protocol/protocol.js";
+import type { ModelDescriptor, ModelTier, ProviderConfig, ProviderRef } from "../protocol/protocol.js";
 import type { ModelRegistry } from "./registry.js";
 import type { StreamEvent, StreamHandle } from "../providers/transport.js";
 import { AsyncEventQueue } from "../util/stream.js";
@@ -217,7 +217,4 @@ export async function routeStream(
 export function estimateCost(model: ModelDescriptor, usage: { prompt: number; completion: number; thinking?: number }): number {
   const t = usage.thinking ?? 0;
   return (usage.prompt / 1_000_000) * model.costPer1mIn + (usage.completion / 1_000_000) * model.costPer1mOut + (t / 1_000_000) * model.costPer1mOut;
-}
-export function emptyUsage(): TurnUsage {
-  return { prompt: 0, completion: 0, thinking: 0, cost: 0 };
 }

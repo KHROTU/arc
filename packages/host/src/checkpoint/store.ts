@@ -10,27 +10,33 @@ export interface TurnSnapshot {
   todoItems?: { id: string; text: string; state: "pending" | "in_progress" | "done" | "skipped" | "blocked" | "failed" }[];
   label?: string;
 }
-export type TurnSnapshotWithTodo = TurnSnapshot;
+export interface RestoreResult {
+  restored: string[];
+  conflicts: string[];
+  errors?: string[];
+}
 export interface CheckpointStoreOptions {
   dir: string;
   encrypt?: (content: Buffer) => Promise<Buffer>;
   decrypt?: (content: Buffer) => Promise<Buffer>;
 }
 export class CheckpointStore {
+  private metaCache = new Map<string, Map<string, TurnSnapshot>>();
   constructor(private opts: CheckpointStoreOptions) {}
   static hash(content: string | Buffer): string {
     return crypto.createHash("sha256").update(content).digest("hex").slice(0, 32);
   }
   async snapshot(turnId: string, root: string, files: string[], todoItems?: TurnSnapshot["todoItems"], label?: string): Promise<TurnSnapshot> {
-    const map: Record<string, string> = {};
-    for (const rel of files) {
+    const prev = await this.load(root, turnId);
+    const map: Record<string, string> = { ...(prev?.files ?? {}) };
+    await Promise.all(files.map(async (rel) => {
       const abs = resolveAuthorizedPath(root, rel);
       let content: Buffer;
       try {
         content = await fs.readFile(abs);
       } catch {
         map[rel] = "__none__";
-        continue;
+        return;
       }
       const h = CheckpointStore.hash(content);
       map[rel] = h;
@@ -41,99 +47,148 @@ export class CheckpointStore {
         await fs.mkdir(path.dirname(blobPath), { recursive: true, mode: 0o700 });
         await fs.writeFile(blobPath, this.opts.encrypt ? await this.opts.encrypt(content) : content, { mode: 0o600 });
       }
-    }
+    }));
     const snap: TurnSnapshot = { turnId, ts: Date.now(), files: map, root };
-    if (todoItems && todoItems.length) snap.todoItems = todoItems;
-    if (label) snap.label = label;
+    if ((todoItems && todoItems.length) || prev?.todoItems) snap.todoItems = todoItems?.length ? todoItems : prev?.todoItems;
+    if (label || prev?.label) snap.label = label ?? prev?.label;
     const metaPath = this.metaPath(root, turnId);
     await fs.mkdir(path.dirname(metaPath), { recursive: true, mode: 0o700 });
     await fs.writeFile(metaPath, JSON.stringify(snap, null, 2), { encoding: "utf-8", mode: 0o600 });
+    this.cacheFor(root).set(turnId, snap);
     return snap;
   }
   async listTurns(root: string): Promise<string[]> {
     const dir = this.turnsDir(root);
+    let ids: string[] = [];
     try {
       const entries = await fs.readdir(dir, { withFileTypes: true });
-      const ids = entries
-        .filter((e) => e.isFile() && e.name.endsWith(".json"))
-        .map((e) => e.name.replace(/\.json$/, ""));
-      const loaded = await Promise.all(ids.map(async (id) => {
-        const snap = await this.load(root, id);
-        return { id, ts: snap?.ts ?? 0 };
-      }));
-      loaded.sort((a, b) => b.ts - a.ts || (a.id < b.id ? 1 : -1));
-      return loaded.map((t) => t.id);
+      ids = entries.filter((e) => e.isFile() && e.name.endsWith(".json")).map((e) => e.name.replace(/\.json$/, ""));
     } catch {
       return [];
     }
+    const cache = this.cacheFor(root);
+    for (const id of [...cache.keys()]) {
+      if (!ids.includes(id)) cache.delete(id);
+    }
+    const loaded = await Promise.all(ids.map(async (id) => ({ id, snap: await this.load(root, id).catch(() => undefined) })));
+    loaded.sort((a, b) => (b.snap?.ts ?? 0) - (a.snap?.ts ?? 0) || (a.id < b.id ? 1 : -1));
+    return loaded.map((t) => t.id);
   }
   async load(root: string, turnId: string): Promise<TurnSnapshot | undefined> {
+    const cached = this.cacheFor(root).get(turnId);
+    if (cached) return cached;
     try {
       const raw = await fs.readFile(this.metaPath(root, turnId), "utf-8");
-      return JSON.parse(raw) as TurnSnapshot;
+      const snap = JSON.parse(raw) as TurnSnapshot;
+      if (!snap || typeof snap !== "object" || !snap.files || typeof snap.files !== "object") return undefined;
+      this.cacheFor(root).set(turnId, snap);
+      return snap;
     } catch {
       return undefined;
     }
   }
-  async restore(root: string, turnId: string): Promise<{ restored: string[]; conflicts: string[] }> {
+  async restore(root: string, turnId: string): Promise<RestoreResult> {
     const snap = await this.load(root, turnId);
     if (!snap) throw new Error(`No snapshot for turn ${turnId}`);
+    const result = await this.restoreFiles(root, [snap]);
+    await this.deleteNewerThan(root, turnId);
+    return result;
+  }
+  async restoreRange(root: string, afterTs: number, beforeTs: number): Promise<RestoreResult> {
+    const all = await this.listTurns(root);
+    const targets: TurnSnapshot[] = [];
+    for (const id of all) {
+      const snap = await this.load(root, id);
+      if (snap && snap.ts > afterTs && snap.ts <= beforeTs) targets.push(snap);
+    }
+    if (!targets.length) return { restored: [], conflicts: [] };
+    targets.sort((a, b) => a.ts - b.ts);
+    const chosen = new Map<string, string>();
+    for (const s of targets) {
+      for (const [rel, h] of Object.entries(s.files)) {
+        if (!chosen.has(rel)) chosen.set(rel, h);
+      }
+    }
+    const ordered: TurnSnapshot[] = [{ turnId: "(range)", ts: targets[0].ts, root, files: Object.fromEntries(chosen) }];
+    const result = await this.restoreFiles(root, ordered);
+    await Promise.all(targets.map(async (t) => {
+      await fs.unlink(this.metaPath(root, t.turnId)).catch(() => undefined);
+      this.cacheFor(root).delete(t.turnId);
+    }));
+    await this.gcBlobs(root);
+    return result;
+  }
+  private async restoreFiles(root: string, snaps: TurnSnapshot[]): Promise<RestoreResult> {
     const restored: string[] = [];
     const conflicts: string[] = [];
-    for (const [rel, hash] of Object.entries(snap.files)) {
-      const abs = resolveAuthorizedPath(root, rel);
-      if (hash === "__none__") {
+    const errors: string[] = [];
+    for (const snap of snaps) {
+      const entries = Object.entries(snap.files);
+      const outcomes = await Promise.all(entries.map(async ([rel, hash]) => {
+        const abs = resolveAuthorizedPath(root, rel);
         try {
-          await fs.unlink(abs);
-          restored.push(rel);
-        } catch {
+          if (hash === "__none__") {
+            await fs.unlink(abs).catch(() => undefined);
+            return { rel, ok: true, conflict: false };
+          }
+          let current: Buffer | undefined;
+          try {
+            current = await fs.readFile(abs);
+          } catch {}
+          const conflict = !!(current && CheckpointStore.hash(current) !== hash);
+          const stored = await fs.readFile(this.blobPath(hash));
+          const blob = this.opts.decrypt ? await this.opts.decrypt(stored) : stored;
+          await fs.mkdir(path.dirname(abs), { recursive: true });
+          await fs.writeFile(abs, blob);
+          return { rel, ok: true, conflict };
+        } catch (e) {
+          return { rel, ok: false, conflict: false, error: (e as Error)?.message ?? String(e) };
         }
-        continue;
+      }));
+      for (const o of outcomes) {
+        if (!o.ok && o.error) errors.push(`${o.rel}: ${o.error}`);
+        else {
+          if (!restored.includes(o.rel)) restored.push(o.rel);
+          if (o.conflict && !conflicts.includes(o.rel)) conflicts.push(o.rel);
+        }
       }
-      let current: Buffer | undefined;
-      try {
-        current = await fs.readFile(abs);
-      } catch {
-      }
-      if (current && CheckpointStore.hash(current) !== hash) {
-        conflicts.push(rel);
-      }
-      const stored = await fs.readFile(this.blobPath(hash));
-      const blob = this.opts.decrypt ? await this.opts.decrypt(stored) : stored;
-      await fs.mkdir(path.dirname(abs), { recursive: true });
-      await fs.writeFile(abs, blob);
-      restored.push(rel);
     }
+    return errors.length ? { restored, conflicts, errors } : { restored, conflicts };
+  }
+  private async deleteNewerThan(root: string, keepTurnId: string): Promise<void> {
     const all = await this.listTurns(root);
-    const idx = all.indexOf(turnId);
-    for (const newer of all.slice(0, idx)) {
-      await fs.unlink(this.metaPath(root, newer)).catch(() => undefined);
-    }
-    const remaining = await this.listTurns(root);
-    const referenced = new Set<string>();
-    for (const rem of remaining) {
-      const snap = await this.load(root, rem);
-      if (snap) {
-        for (const hash of Object.values(snap.files)) {
-          if (hash !== "__none__") referenced.add(hash);
-        }
-      }
-    }
-    const blobsDir = path.join(this.opts.dir, "blobs");
+    const idx = all.indexOf(keepTurnId);
+    if (idx <= 0) return;
+    const newer = all.slice(0, idx);
+    await Promise.all(newer.map(async (id) => {
+      await fs.unlink(this.metaPath(root, id)).catch(() => undefined);
+      this.cacheFor(root).delete(id);
+    }));
+    await this.gcBlobs(root);
+  }
+  private async gcBlobs(root: string): Promise<void> {
     try {
-      const blobDirs = await fs.readdir(blobsDir, { withFileTypes: true });
-      for (const dirEnt of blobDirs) {
-        if (!dirEnt.isDirectory()) continue;
-        const subDir = path.join(blobsDir, dirEnt.name);
-        const files = await fs.readdir(subDir);
-        for (const f of files) {
-          if (!referenced.has(f)) {
-            await fs.unlink(path.join(subDir, f)).catch(() => {});
+      const remaining = await this.listTurns(root);
+      const referenced = new Set<string>();
+      await Promise.all(remaining.map(async (id) => {
+        const snap = await this.load(root, id);
+        if (snap) {
+          for (const hash of Object.values(snap.files)) {
+            if (hash !== "__none__") referenced.add(hash);
           }
         }
-      }
+      }));
+      const blobsDir = path.join(this.opts.dir, "blobs");
+      const blobDirs = await fs.readdir(blobsDir, { withFileTypes: true });
+      await Promise.all(blobDirs.map(async (dirEnt) => {
+        if (!dirEnt.isDirectory()) return;
+        const subDir = path.join(blobsDir, dirEnt.name);
+        const files = await fs.readdir(subDir);
+        await Promise.all(files.map(async (f) => {
+          if (!referenced.has(f)) await fs.unlink(path.join(subDir, f)).catch(() => {});
+        }));
+      }));
     } catch {}
-    return { restored, conflicts };
   }
   async clear(root: string) {
     const dir = this.turnsDir(root);
@@ -141,6 +196,7 @@ export class CheckpointStore {
       const entries = await fs.readdir(dir);
       await Promise.all(entries.map((e) => fs.unlink(path.join(dir, e))));
 } catch {  }
+    this.metaCache.delete(root);
   }
   async compare(root: string, turnA: string, turnB: string): Promise<{ added: string[]; removed: string[]; modified: string[] }> {
     const snapA = await this.load(root, turnA);
@@ -158,6 +214,14 @@ export class CheckpointStore {
       else if (hashA !== hashB) modified.push(file);
     }
     return { added, removed, modified };
+  }
+  private cacheFor(root: string): Map<string, TurnSnapshot> {
+    let m = this.metaCache.get(root);
+    if (!m) {
+      m = new Map();
+      this.metaCache.set(root, m);
+    }
+    return m;
   }
   private blobPath(hash: string): string {
     return path.join(this.opts.dir, "blobs", hash.slice(0, 2), hash);

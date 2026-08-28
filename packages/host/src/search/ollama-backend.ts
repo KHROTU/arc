@@ -42,6 +42,3 @@ export const DEFAULT_EMBEDDING_MODELS: Record<"low" | "mid" | "high", string> = 
   mid: "qwen3-embedding:0.6b",
   high: "qwen3-embedding:8b",
 };
-export function backendForTier(tier: "low" | "mid" | "high", opts: OllamaEmbeddingOptions = {}): OllamaEmbeddingBackend {
-  return new OllamaEmbeddingBackend(DEFAULT_EMBEDDING_MODELS[tier], opts);
-}

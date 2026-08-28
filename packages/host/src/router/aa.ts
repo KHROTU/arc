@@ -4,201 +4,30 @@ export interface AAModel {
   provider: string;
   score?: number;
 }
-export const AA_INTELLIGENCE: AAModel[] = [
-  { name: "Claude Opus 5", slug: "claude-opus-5", provider: "Anthropic", score: 61 },
-  { name: "Claude Fable 5", slug: "claude-fable-5", provider: "Anthropic", score: 60 },
-  { name: "GPT-5.6 Sol", slug: "gpt-5-6-sol", provider: "OpenAI", score: 59 },
-  { name: "Kimi K3", slug: "kimi-k3", provider: "Kimi", score: 57 },
-  { name: "GPT-5.6 Terra", slug: "gpt-5-6-terra", provider: "OpenAI", score: 55 },
-  { name: "Grok 4.5", slug: "grok-4-5", provider: "SpaceXAI", score: 54 },
-  { name: "Claude Sonnet 5", slug: "claude-sonnet-5", provider: "Anthropic", score: 53 },
-  { name: "GPT-5.6 Luna", slug: "gpt-5-6-luna", provider: "OpenAI", score: 51 },
-  { name: "GLM-5.2", slug: "glm-5-2", provider: "Z AI", score: 51 },
-  { name: "Muse Spark 1.1", slug: "muse-spark-1-1", provider: "Meta", score: 51 },
-  { name: "Gemini 3.5 Flash", slug: "gemini-3-5-flash", provider: "Google", score: 50 },
-  { name: "Gemini 3.6 Flash", slug: "gemini-3-6-flash", provider: "Google", score: 50 },
-  { name: "DeepSeek V4 Flash 0731", slug: "deepseek-v4-flash-0731", provider: "DeepSeek", score: 50 },
-  { name: "Gemini 3.1 Pro Preview", slug: "gemini-3-1-pro-preview", provider: "Google", score: 46 },
-  { name: "Qwen3.7 Max", slug: "qwen3-7-max", provider: "Alibaba", score: 46 },
-  { name: "MiniMax-M3", slug: "minimax-m3", provider: "MiniMax", score: 44 },
-  { name: "DeepSeek V4 Pro", slug: "deepseek-v4-pro", provider: "DeepSeek", score: 44 },
-  { name: "GPT-5.3 Codex", slug: "gpt-5-3-codex", provider: "OpenAI", score: 44 },
-  { name: "Motif 3", slug: "motif-3", provider: "Motif Technologies", score: 44 },
-  { name: "Muse Spark", slug: "muse-spark", provider: "Meta", score: 43 },
-  { name: "MiMo-V2.5-Pro", slug: "mimo-v2-5-pro", provider: "Xiaomi", score: 42 },
-  { name: "Kimi K2.7 Code", slug: "kimi-k2-7-code", provider: "Kimi", score: 42 },
-  { name: "Hy3", slug: "hy3", provider: "Tencent", score: 41 },
-  { name: "Nex-N2-Pro", slug: "nex-n2-pro", provider: "Nex AGI", score: 41 },
-  { name: "Inkling", slug: "inkling", provider: "Thinking Machines", score: 41 },
-  { name: "Inkling Small", slug: "inkling-small", provider: "Thinking Machines", score: 40 },
-  { name: "Qwen3.6 Plus", slug: "qwen3-6-plus", provider: "Alibaba", score: 40 },
-  { name: "Qwen3.7 Plus", slug: "qwen3-7-plus", provider: "Alibaba", score: 39 },
-  { name: "JT-4.1 Flash 236B A21B", slug: "jt-4-1-flash-236b-a21b", provider: "China Mobile", score: 39 },
-  { name: "Agnes 2.5 Pro Alpha", slug: "agnes-2-5-pro-alpha", provider: "Sapiens AI", score: 39 },
-  { name: "Nemotron 3 Ultra", slug: "nemotron-3-ultra", provider: "NVIDIA", score: 38 },
-  { name: "MiMo-V2.5", slug: "mimo-v2-5", provider: "Xiaomi", score: 37 },
-  { name: "Qwen3.6 27B", slug: "qwen3-6-27b", provider: "Alibaba", score: 37 },
-  { name: "Gemini 3.5 Flash-Lite", slug: "gemini-3-5-flash-lite", provider: "Google", score: 36 },
-  { name: "MiMo-V2-Omni-0327", slug: "mimo-v2-omni-0327", provider: "Xiaomi", score: 36 },
-  { name: "Grok 4.3", slug: "grok-4-3", provider: "SpaceXAI", score: 36 },
-  { name: "MiMo-V2-Omni", slug: "mimo-v2-omni", provider: "Xiaomi", score: 35 },
-  { name: "Kimi K2.6", slug: "kimi-k2-6", provider: "Kimi", score: 35 },
-  { name: "Claude Sonnet 4.6", slug: "claude-sonnet-4-6", provider: "Anthropic", score: 34 },
-  { name: "KAT-Coder-Pro V2", slug: "kat-coder-pro-v2", provider: "KwaiKAT", score: 34 },
-  { name: "Qwen3.5 397B A17B", slug: "qwen3-5-397b-a17b", provider: "Alibaba", score: 34 },
-  { name: "Hy3-preview", slug: "hy3-preview", provider: "Tencent", score: 34 },
-  { name: "LongCat 2.0", slug: "longcat-2-0", provider: "LongCat", score: 33 },
-  { name: "MiMo-V2-Flash", slug: "mimo-v2-flash", provider: "Xiaomi", score: 33 },
-  { name: "Qwen3.5 122B A10B", slug: "qwen3-5-122b-a10b", provider: "Alibaba", score: 32 },
-  { name: "Qwen3.6 35B A3B", slug: "qwen3-6-35b-a3b", provider: "Alibaba", score: 32 },
-  { name: "G9v3-39A5B", slug: "g9v3-39a5b", provider: "AI9Stars", score: 31 },
-  { name: "Qwen3.5 Omni Plus", slug: "qwen3-5-omni-plus", provider: "Alibaba", score: 31 },
-  { name: "Ring-2.6-1T", slug: "ring-2-6-1t", provider: "InclusionAI", score: 31 },
-  { name: "o3", slug: "o3", provider: "OpenAI", score: 30 },
-  { name: "Step 3.7 Flash", slug: "step-3-7-flash", provider: "StepFun", score: 30 },
-  { name: "Mistral Medium 3.5", slug: "mistral-medium-3-5", provider: "Mistral", score: 30 },
-  { name: "Claude 4.5 Haiku", slug: "claude-4-5-haiku", provider: "Anthropic", score: 30 },
-  { name: "Gemma 4 31B", slug: "gemma-4-31b", provider: "Google", score: 29 },
-  { name: "GPT-5.5 Instant", slug: "gpt-5-5-instant", provider: "OpenAI", score: 29 },
-  { name: "DeepSeek V4 Flash", slug: "deepseek-v4-flash", provider: "DeepSeek", score: 29 },
-  { name: "JT-35B-Flash", slug: "jt-35b-flash", provider: "China Mobile", score: 28 },
-  { name: "KAT-Coder-Pro V1", slug: "kat-coder-pro-v1", provider: "KwaiKAT", score: 28 },
-  { name: "Ling-2.6-1T", slug: "ling-2-6-1t", provider: "InclusionAI", score: 26 },
-  { name: "Doubao Seed Code", slug: "doubao-seed-code", provider: "ByteDance Seed", score: 26 },
-  { name: "Gemini 2.5 Pro", slug: "gemini-2-5-pro", provider: "Google", score: 26 },
-  { name: "Gemma 4 26B A4B", slug: "gemma-4-26b-a4b", provider: "Google", score: 26 },
-  { name: "NVIDIA Nemotron 3 Super", slug: "nvidia-nemotron-3-super", provider: "NVIDIA", score: 25 },
-  { name: "Gemini 3.1 Flash-Lite", slug: "gemini-3-1-flash-lite", provider: "Google", score: 25 },
-  { name: "Qwen3.5 35B A3B", slug: "qwen3-5-35b-a3b", provider: "Alibaba", score: 24 },
-  { name: "gpt-oss-120b", slug: "gpt-oss-120b", provider: "OpenAI", score: 24 },
-  { name: "Command A+", slug: "command-a", provider: "Cohere", score: 23 },
-  { name: "K-EXAONE", slug: "k-exaone", provider: "LG AI Research", score: 22 },
-  { name: "ERNIE 5.0 Thinking Preview", slug: "ernie-5-0-thinking-preview", provider: "Baidu", score: 22 },
-  { name: "Gemma 4 12B", slug: "gemma-4-12b", provider: "Google", score: 22 },
-  { name: "Nova 2.0 Pro Preview", slug: "nova-2-0-pro-preview", provider: "Amazon", score: 22 },
-  { name: "Qwen3.5 9B", slug: "qwen3-5-9b", provider: "Alibaba", score: 21 },
-  { name: "Mercury 2", slug: "mercury-2", provider: "Inception", score: 21 },
-  { name: "Qwen3 Coder Next", slug: "qwen3-coder-next", provider: "Alibaba", score: 21 },
-  { name: "Nova 2.0 Omni", slug: "nova-2-0-omni", provider: "Amazon", score: 21 },
-  { name: "Apriel-v1.6-15B-Thinker", slug: "apriel-v1-6-15b-thinker", provider: "ServiceNow", score: 21 },
-  { name: "EXAONE 4.5 33B", slug: "exaone-4-5-33b", provider: "LG AI Research", score: 20 },
-  { name: "Qwen3.5 4B", slug: "qwen3-5-4b", provider: "Alibaba", score: 20 },
-  { name: "North Mini Code", slug: "north-mini-code", provider: "Cohere", score: 20 },
-  { name: "Mistral Small 4", slug: "mistral-small-4", provider: "Mistral", score: 20 },
-  { name: "Devstral 2", slug: "devstral-2", provider: "Mistral", score: 19 },
-  { name: "Nova 2.0 Lite", slug: "nova-2-0-lite", provider: "Amazon", score: 19 },
-  { name: "Qwen3.5 Omni Flash", slug: "qwen3-5-omni-flash", provider: "Alibaba", score: 19 },
-  { name: "JT-MINI", slug: "jt-mini", provider: "China Mobile", score: 19 },
-  { name: "Trinity Large Thinking", slug: "trinity-large-thinking", provider: "Arcee AI", score: 18 },
-  { name: "Magistral Medium 1.2", slug: "magistral-medium-1-2", provider: "Mistral", score: 18 },
-  { name: "HyperNova 60B 2605", slug: "hypernova-60b-2605", provider: "Multiverse Computing", score: 18 },
-  { name: "Nemotron Cascade 2 30B A3B", slug: "nemotron-cascade-2-30b-a3b", provider: "NVIDIA", score: 18 },
-  { name: "Devstral Small 2", slug: "devstral-small-2", provider: "Mistral", score: 17 },
-  { name: "K2 Think V2", slug: "k2-think-v2", provider: "MBZUAI Institute of Foundation Models", score: 17 },
-  { name: "LongCat Flash Lite", slug: "longcat-flash-lite", provider: "LongCat", score: 17 },
-  { name: "HyperCLOVA X SEED Think", slug: "hyperclova-x-seed-think", provider: "Naver", score: 17 },
-  { name: "Qwen3 Next 80B A3B", slug: "qwen3-next-80b-a3b", provider: "Alibaba", score: 17 },
-  { name: "Mi:dm K 2.5 Pro", slug: "mi-dm-k-2-5-pro", provider: "Korea Telecom", score: 16 },
-  { name: "G9v3-3B", slug: "g9v3-3b", provider: "AI9Stars", score: 16 },
-  { name: "Mistral Large 3", slug: "mistral-large-3", provider: "Mistral", score: 16 },
-  { name: "INTELLECT-3", slug: "intellect-3", provider: "Prime Intellect", score: 16 },
-  { name: "Solar Open 100B", slug: "solar-open-100b", provider: "Upstage", score: 15 },
-  { name: "Nemotron 3 Nano Omni 30B A3B Reasoning", slug: "nemotron-3-nano-omni-30b-a3b-reasoning", provider: "NVIDIA", score: 15 },
-  { name: "gpt-oss-20b", slug: "gpt-oss-20b", provider: "OpenAI", score: 15 },
-  { name: "Llama 4 Maverick", slug: "llama-4-maverick", provider: "Meta", score: 14 },
-  { name: "K2-V2", slug: "k2-v2", provider: "MBZUAI Institute of Foundation Models", score: 14 },
-  { name: "NVIDIA Nemotron 3 Nano", slug: "nvidia-nemotron-3-nano", provider: "NVIDIA", score: 14 },
-  { name: "Solar Pro 3", slug: "solar-pro-3", provider: "Upstage", score: 14 },
-  { name: "Ling 2.6 Flash", slug: "ling-2-6-flash", provider: "InclusionAI", score: 14 },
-  { name: "DiffusionGemma 26B A4B", slug: "diffusiongemma-26b-a4b", provider: "Google", score: 13 },
-  { name: "Motif-2-12.7B", slug: "motif-2-12-7b", provider: "Motif Technologies", score: 13 },
-  { name: "Nova Premier", slug: "nova-premier", provider: "Amazon", score: 13 },
-  { name: "Llama Nemotron Super 49B v1.5", slug: "llama-nemotron-super-49b-v1-5", provider: "NVIDIA", score: 12 },
-  { name: "Tri-21B-Think", slug: "tri-21b-think", provider: "Trillion Labs", score: 12 },
-  { name: "Gemma 4 E4B", slug: "gemma-4-e4b", provider: "Google", score: 12 },
-  { name: "MiniCPM5-1B", slug: "minicpm5-1b", provider: "OpenBMB", score: 12 },
-  { name: "Sarvam 105B", slug: "sarvam-105b", provider: "Sarvam", score: 12 },
-  { name: "Celeris-1", slug: "celeris-1", provider: "Celeris", score: 12 },
-  { name: "Magistral Small 1.2", slug: "magistral-small-1-2", provider: "Mistral", score: 11 },
-  { name: "Nanbeige4.1-3B", slug: "nanbeige4-1-3b", provider: "Nanbeige", score: 11 },
-  { name: "Ministral 3 14B", slug: "ministral-3-14b", provider: "Mistral", score: 11 },
-  { name: "EXAONE 4.0 32B", slug: "exaone-4-0-32b", provider: "LG AI Research", score: 11 },
-  { name: "Llama 4 Scout", slug: "llama-4-scout", provider: "Meta", score: 10 },
-  { name: "Hermes 4 70B", slug: "hermes-4-70b", provider: "Nous Research", score: 10 },
-  { name: "Falcon-H1R-7B", slug: "falcon-h1r-7b", provider: "TII UAE", score: 10 },
-  { name: "Gemma 4 E2B", slug: "gemma-4-e2b", provider: "Google", score: 10 },
-  { name: "Qwen3 Omni 30B A3B", slug: "qwen3-omni-30b-a3b", provider: "Alibaba", score: 10 },
-  { name: "Step3 VL 10B", slug: "step3-vl-10b", provider: "StepFun", score: 9 },
-  { name: "Llama 3.3 70B", slug: "llama-3-3-70b", provider: "Meta", score: 9 },
-  { name: "Llama Nemotron Ultra", slug: "llama-nemotron-ultra", provider: "NVIDIA", score: 9 },
-  { name: "ERNIE 4.5 300B A47B", slug: "ernie-4-5-300b-a47b", provider: "Baidu", score: 9 },
-  { name: "Hermes 4 405B", slug: "hermes-4-405b", provider: "Nous Research", score: 9 },
-  { name: "NVIDIA Nemotron Nano 12B v2 VL", slug: "nvidia-nemotron-nano-12b-v2-vl", provider: "NVIDIA", score: 9 },
-  { name: "Ministral 3 8B", slug: "ministral-3-8b", provider: "Mistral", score: 9 },
-  { name: "Granite 4.1 30B", slug: "granite-4-1-30b", provider: "IBM", score: 9 },
-  { name: "NVIDIA Nemotron Nano 9B V2", slug: "nvidia-nemotron-nano-9b-v2", provider: "NVIDIA", score: 9 },
-  { name: "NVIDIA Nemotron 3 Nano 4B", slug: "nvidia-nemotron-3-nano-4b", provider: "NVIDIA", score: 9 },
-  { name: "Kimi Linear 48B A3B Instruct", slug: "kimi-linear-48b-a3b-instruct", provider: "Kimi", score: 9 },
-  { name: "Llama 3.1 405B", slug: "llama-3-1-405b", provider: "Meta", score: 9 },
-  { name: "LFM2.5-8B-A1B", slug: "lfm2-5-8b-a1b", provider: "Liquid AI", score: 8 },
-  { name: "Ring-flash-2.0", slug: "ring-flash-2-0", provider: "InclusionAI", score: 8 },
-  { name: "Olmo 3.1 32B Think", slug: "olmo-3-1-32b-think", provider: "Allen Institute for AI", score: 8 },
-  { name: "Command A", slug: "command-a", provider: "Cohere", score: 8 },
-  { name: "Qwen3.5 2B", slug: "qwen3-5-2b", provider: "Alibaba", score: 8 },
-  { name: "Llama 3.1 Nemotron 70B", slug: "llama-3-1-nemotron-70b", provider: "NVIDIA", score: 8 },
-  { name: "Ministral 3 3B", slug: "ministral-3-3b", provider: "Mistral", score: 7 },
-  { name: "Granite 4.1 8B", slug: "granite-4-1-8b", provider: "IBM", score: 7 },
-  { name: "Sarvam 30B", slug: "sarvam-30b", provider: "Sarvam", score: 7 },
-  { name: "Olmo 3.1 32B Instruct", slug: "olmo-3-1-32b-instruct", provider: "Allen Institute for AI", score: 6 },
-  { name: "R1 1776", slug: "r1-1776", provider: "Perplexity", score: 6 },
-  { name: "Llama 3.2 90B", slug: "llama-3-2-90b", provider: "Meta", score: 6 },
-  { name: "Phi-4 Mini", slug: "phi-4-mini", provider: "Microsoft", score: 6 },
-  { name: "Qwen3.5 0.8B", slug: "qwen3-5-0-8b", provider: "Alibaba", score: 5 },
-  { name: "DeepHermes 3 - Mistral 24B", slug: "deephermes-3-mistral-24b", provider: "Nous Research", score: 5 },
-  { name: "Jamba 1.7 Large", slug: "jamba-1-7-large", provider: "AI21 Labs", score: 5 },
-  { name: "Granite 4.0 H Small", slug: "granite-4-0-h-small", provider: "IBM", score: 5 },
-  { name: "LFM2 24B A2B", slug: "lfm2-24b-a2b", provider: "Liquid AI", score: 5 },
-  { name: "Phi-4", slug: "phi-4", provider: "Microsoft", score: 5 },
-  { name: "Nova Micro", slug: "nova-micro", provider: "Amazon", score: 5 },
-  { name: "Granite 4.1 3B", slug: "granite-4-1-3b", provider: "IBM", score: 5 },
-  { name: "Phi-4 Multimodal", slug: "phi-4-multimodal", provider: "Microsoft", score: 5 },
-  { name: "MiniCPM-V 4.6 1.3B", slug: "minicpm-v-4-6-1-3b", provider: "OpenBMB", score: 4 },
-  { name: "Jamba Reasoning 3B", slug: "jamba-reasoning-3b", provider: "AI21 Labs", score: 4 },
-  { name: "Reka Flash 3", slug: "reka-flash-3", provider: "Reka AI", score: 4 },
-  { name: "Olmo 3 7B Think", slug: "olmo-3-7b-think", provider: "Allen Institute for AI", score: 4 },
-  { name: "Molmo 7B-D", slug: "molmo-7b-d", provider: "Allen Institute for AI", score: 4 },
-  { name: "Ling-mini-2.0", slug: "ling-mini-2-0", provider: "InclusionAI", score: 4 },
-  { name: "Llama 3.2 11B", slug: "llama-3-2-11b", provider: "Meta", score: 3 },
-  { name: "Exaone 4.0 1.2B", slug: "exaone-4-0-1-2b", provider: "LG AI Research", score: 3 },
-  { name: "Olmo 3 7B", slug: "olmo-3-7b", provider: "Allen Institute for AI", score: 3 },
-  { name: "LFM2.5-1.2B-Thinking", slug: "lfm2-5-1-2b-thinking", provider: "Liquid AI", score: 3 },
-  { name: "Jamba 1.7 Mini", slug: "jamba-1-7-mini", provider: "AI21 Labs", score: 3 },
-  { name: "LFM2 2.6B", slug: "lfm2-2-6b", provider: "Liquid AI", score: 3 },
-  { name: "LFM2.5-1.2B-Instruct", slug: "lfm2-5-1-2b-instruct", provider: "Liquid AI", score: 3 },
-  { name: "Granite 4.0 H 1B", slug: "granite-4-0-h-1b", provider: "IBM", score: 3 },
-  { name: "Gemma 3 270M", slug: "gemma-3-270m", provider: "Google", score: 2 },
-  { name: "Apertus 70B Instruct", slug: "apertus-70b-instruct", provider: "Swiss AI Initiative", score: 2 },
-  { name: "Granite 4.0 Micro", slug: "granite-4-0-micro", provider: "IBM", score: 2 },
-  { name: "DeepHermes 3 - Llama-3.1 8B", slug: "deephermes-3-llama-3-1-8b", provider: "Nous Research", score: 2 },
-  { name: "Granite 4.0 1B", slug: "granite-4-0-1b", provider: "IBM", score: 2 },
-  { name: "Molmo2-8B", slug: "molmo2-8b", provider: "Allen Institute for AI", score: 2 },
-  { name: "LFM2 8B A1B", slug: "lfm2-8b-a1b", provider: "Liquid AI", score: 2 },
-  { name: "LFM2.5-VL-1.6B", slug: "lfm2-5-vl-1-6b", provider: "Liquid AI", score: 1 },
-  { name: "Granite 4.0 350M", slug: "granite-4-0-350m", provider: "IBM", score: 1 },
-  { name: "Tiny Aya Global", slug: "tiny-aya-global", provider: "Cohere", score: 1 },
-  { name: "Apertus 8B Instruct", slug: "apertus-8b-instruct", provider: "Swiss AI Initiative", score: 1 },
-  { name: "Granite 4.0 H 350M", slug: "granite-4-0-h-350m", provider: "IBM", score: 1 },
-  { name: "Gemini 3 Deep Think", slug: "gemini-3-deep-think", provider: "Google" },
-  { name: "Mi:dm K 2.5 Pro Preview", slug: "mi-dm-k-2-5-pro-preview", provider: "Korea Telecom" },
-  { name: "GPT-5.5 Pro", slug: "gpt-5-5-pro", provider: "OpenAI" },
-  { name: "Cogito v2.1", slug: "cogito-v2-1", provider: "Deep Cogito" },
-];
-const norm = (s: string): string => s.toLowerCase().replace(/[\s._:\-+()\/]+/g, "");
+const RAW = "Claude Opus 5|claude-opus-5|Anthropic|63\nClaude Fable 5|claude-fable-5|Anthropic|62\nGPT-5.6 Sol|gpt-5-6-sol|OpenAI|61\nGrok 4.6|grok-4-6|SpaceXAI|61\nKimi K3|kimi-k3|Kimi|60\nQwen3.8 2.4T A95B|qwen3-8-2-4t-a95b|Alibaba|58\nQwen3.8 Max|qwen3-8-max|Alibaba|58\nClaude Opus 4.8|claude-opus-4-8|Anthropic|57\nGPT-5.6 Terra|gpt-5-6-terra|OpenAI|57\nMuse Spark 1.2|muse-spark-1-2|Meta|57\nGemini 3.7 Flash|gemini-3-7-flash|Google|56\nGPT-5.5|gpt-5-5|OpenAI|56\nGrok 4.5|grok-4-5|SpaceXAI|56\nClaude Opus 4.7|claude-opus-4-7|Anthropic|55\nClaude Sonnet 5|claude-sonnet-5|Anthropic|55\nDeepSeek V4 Pro|deepseek-v4-pro|DeepSeek|53\nGLM-5.2|glm-5-2|Z AI|53\nGPT-5.4|gpt-5-4|OpenAI|53\nMuse Spark 1.1|muse-spark-1-1|Meta|53\nDeepSeek V4 Flash|deepseek-v4-flash|DeepSeek|52\nGemini 3.5 Flash|gemini-3-5-flash|Google|52\nGemini 3.6 Flash|gemini-3-6-flash|Google|52\nGPT-5.6 Luna|gpt-5-6-luna|OpenAI|52\nClaude Sonnet 4.6|claude-sonnet-4-6|Anthropic|48\nGemini 3.1 Pro Preview|gemini-3-1-pro-preview|Google|48\nMotif 3|motif-3|Motif Technologies|47\nQwen3.7 Max|qwen3-7-max|Alibaba|47\nGPT-5.3 Codex|gpt-5-3-codex|OpenAI|46\nClaude Opus 4.6|claude-opus-4-6|Anthropic|45\nKimi K2.6|kimi-k2-6|Kimi|45\nMiniMax-M3|minimax-m3|MiniMax|45\nMuse Spark|muse-spark|Meta|44\nGPT-5.2|gpt-5-2|OpenAI|43\nKimi K2.7 Code|kimi-k2-7-code|Kimi|43\nMiMo-V2.5-Pro|mimo-v2-5-pro|Xiaomi|43\nClaude Opus 4.5|claude-opus-4-5|Anthropic|42\nHy3|hy3|Tencent|42\nInkling|inkling|Thinking Machines|42\nNex-N2-Pro|nex-n2-pro|Nex AGI|42\nSolar Pro 4|solar-pro-4|Upstage|42\nGemini 3 Pro Preview|gemini-3-pro-preview|Google|41\nGLM-5|glm-5|Z AI|41\nGLM-5.1|glm-5-1|Z AI|41\nGPT-5.2 Codex|gpt-5-2-codex|OpenAI|41\nGPT-5.4 mini|gpt-5-4-mini|OpenAI|41\nGrok Build 0.1|grok-build-0-1|SpaceXAI|41\nInkling Small|inkling-small|Thinking Machines|41\nMiMo-V2-Pro|mimo-v2-pro|Xiaomi|41\nQwen3.6 Max Preview|qwen3-6-max-preview|Alibaba|41\nAgnes 2.5 Pro Alpha|agnes-2-5-pro-alpha|Sapiens AI|40\nGPT-5.4 nano|gpt-5-4-nano|OpenAI|40\nJT-4.1 Flash 236B A21B|jt-4-1-flash-236b-a21b|China Mobile|40\nQwen3.6 Plus|qwen3-6-plus|Alibaba|40\nGemini 3 Flash|gemini-3-flash|Google|39\nGLM-5-Turbo|glm-5-turbo|Z AI|39\nMiniMax-M2.7|minimax-m2-7|MiniMax|39\nQwen3.7 Plus|qwen3-7-plus|Alibaba|39\nGrok 4.20 v2|grok-4-20-v2|SpaceXAI|38\nGrok 4.3|grok-4-3|SpaceXAI|38\nLing 3.0 Flash|ling-3-0-flash|InclusionAI|38\nMiMo-V2.5|mimo-v2-5|Xiaomi|38\nNemotron 3 Ultra|nemotron-3-ultra|NVIDIA|38\nQwen3.6 27B|qwen3-6-27b|Alibaba|38\nClaude 4.5 Sonnet|claude-4-5-sonnet|Anthropic|37\nGemini 3.5 Flash-Lite|gemini-3-5-flash-lite|Google|37\nGPT-5 Codex|gpt-5-codex|OpenAI|37\nGPT-5.1|gpt-5-1|OpenAI|37\nGrok 4.20|grok-4-20|SpaceXAI|37\nMiMo-V2-Omni|mimo-v2-omni|Xiaomi|37\nSolar Open2 250B|solar-open2-250b|Upstage|37\nGPT-5.1 Codex|gpt-5-1-codex|OpenAI|36\nKimi K2.5|kimi-k2-5|Kimi|36\nA.X-K2|a-x-k2|SK Telecom|35\nClaude 4.1 Opus|claude-4-1-opus|Anthropic|35\nGLM 5V Turbo|glm-5v-turbo|Z AI|35\nGPT-5|gpt-5|OpenAI|35\nKAT-Coder-Pro V2|kat-coder-pro-v2|KwaiKAT|35\nMuse Glimmer|muse-glimmer|Meta|35\nQwen3.5 27B|qwen3-5-27b|Alibaba|35\nGLM-4.7|glm-4-7|Z AI|34\nGrok 4|grok-4|SpaceXAI|34\nHy3-preview|hy3-preview|Tencent|34\nLongCat 2.0|longcat-2-0|LongCat|34\nMiMo-V2-Flash|mimo-v2-flash|Xiaomi|34\nMiniMax-M2.5|minimax-m2-5|MiniMax|34\nQwen3.5 397B A17B|qwen3-5-397b-a17b|Alibaba|34\nDeepSeek V3.2|deepseek-v3-2|DeepSeek|33\nKimi K2 Thinking|kimi-k2-thinking|Kimi|33\no3-pro|o3-pro|OpenAI|33\nQwen3.5 122B A10B|qwen3-5-122b-a10b|Alibaba|33\nClaude 4 Opus|claude-4-opus|Anthropic|32\nG9v3-39A5B|g9v3-39a5b|AI9Stars|32\nGPT-5 mini|gpt-5-mini|OpenAI|32\nMiniMax-M2.1|minimax-m2-1|MiniMax|32\nQwen3 Max Thinking|qwen3-max-thinking|Alibaba|32\nQwen3.6 35B A3B|qwen3-6-35b-a3b|Alibaba|32\nDeepSeek V3.1 Terminus|deepseek-v3-1-terminus|DeepSeek|31\nGPT-5.1 Codex mini|gpt-5-1-codex-mini|OpenAI|31\nGrok 4.1 Fast|grok-4-1-fast|SpaceXAI|31\nK-EXAONE 2.0|k-exaone-2-0|LG AI Research|31\no3|o3|OpenAI|31\nQwen3.5 Omni Plus|qwen3-5-omni-plus|Alibaba|31\nRing-2.6-1T|ring-2-6-1t|InclusionAI|31\nStep 3.7 Flash|step-3-7-flash|StepFun|31\nClaude 4 Sonnet|claude-4-sonnet|Anthropic|30\nClaude 4.5 Haiku|claude-4-5-haiku|Anthropic|30\nGemma 4 31B|gemma-4-31b|Google|30\nMistral Medium 3.5|mistral-medium-3-5|Mistral|30\nQwen3.5 35B A3B|qwen3-5-35b-a3b|Alibaba|30\nGLM-4.6|glm-4-6|Z AI|29\nGPT-5.5 Instant|gpt-5-5-instant|OpenAI|29\nJT-35B-Flash|jt-35b-flash|China Mobile|29\nKAT-Coder-Pro V1|kat-coder-pro-v1|KwaiKAT|29\nMiniMax-M2|minimax-m2|MiniMax|29\nClaude 3.7 Sonnet|claude-3-7-sonnet|Anthropic|28\nGrok 4 Fast|grok-4-fast|SpaceXAI|28\nLing-2.6-1T|ling-2-6-1t|InclusionAI|27\nStep 3.5 Flash|step-3-5-flash|StepFun|27\nDeepSeek V3.2 Exp|deepseek-v3-2-exp|DeepSeek|26\nDoubao Seed Code|doubao-seed-code|ByteDance Seed|26\nGemini 2.5 Pro|gemini-2-5-pro|Google|26\nGemini 3.1 Flash-Lite|gemini-3-1-flash-lite|Google|26\nGemma 4 26B A4B|gemma-4-26b-a4b|Google|26\nNemotron 3 Super|nemotron-3-super|NVIDIA|26\no4-mini|o4-mini|OpenAI|26\nLing 3.0 Tiny|ling-3-0-tiny|InclusionAI|25\nGemini 2.5 Flash|gemini-2-5-flash|Google|24\ngpt-oss-120b|gpt-oss-120b|OpenAI|24\nKimi K2|kimi-k2|Kimi|24\nNemotron 3.5 Lightning|nemotron-3-5-lightning|NVIDIA|24\nQwen3 Max|qwen3-max|Alibaba|24\nCommand A+|command-a|Cohere|23\nDeepSeek V3.2 Speciale|deepseek-v3-2-speciale|DeepSeek|23\nGLM-4.7-Flash|glm-4-7-flash|Z AI|23\nGrok 3 mini Reasoning|grok-3-mini-reasoning|SpaceXAI|23\nApriel-v1.5-15B-Thinker|apriel-v1-5-15b-thinker|ServiceNow|22\nERNIE 5.0 Thinking Preview|ernie-5-0-thinking-preview|Baidu|22\nGemma 4 12B|gemma-4-12b|Google|22\nGrok Code Fast 1|grok-code-fast-1|SpaceXAI|22\nK-EXAONE|k-exaone|LG AI Research|22\nMercury 2|mercury-2|Inception|22\nNova 2.0 Pro Preview|nova-2-0-pro-preview|Amazon|22\nQwen3.5 9B|qwen3-5-9b|Alibaba|22\nApriel-v1.6-15B-Thinker|apriel-v1-6-15b-thinker|ServiceNow|21\nDeepSeek V3.1|deepseek-v3-1|DeepSeek|21\nEXAONE 4.5 33B|exaone-4-5-33b|LG AI Research|21\nNova 2.0 Lite|nova-2-0-lite|Amazon|21\nNova 2.0 Omni|nova-2-0-omni|Amazon|21\nQwen3 Coder Next|qwen3-coder-next|Alibaba|21\nQwen3 VL 235B A22B|qwen3-vl-235b-a22b|Alibaba|21\nDeepSeek R1|deepseek-r1|DeepSeek|20\nGLM-4.5|glm-4-5|Z AI|20\nGPT-4.1|gpt-4-1|OpenAI|20\nGPT-5 nano|gpt-5-nano|OpenAI|20\nMistral Small 4|mistral-small-4|Mistral|20\nNorth Mini Code|north-mini-code|Cohere|20\nQwen3 235B A22B|qwen3-235b-a22b|Alibaba|20\nQwen3.5 4B|qwen3-5-4b|Alibaba|20\nDevstral 2|devstral-2|Mistral|19\nGrok 3|grok-3|SpaceXAI|19\nJT-MINI|jt-mini|China Mobile|19\no1-pro|o1-pro|OpenAI|19\nQwen3.5 Omni Flash|qwen3-5-omni-flash|Alibaba|19\nSeed-OSS-36B-Instruct|seed-oss-36b-instruct|ByteDance Seed|19\nDevstral Small 2|devstral-small-2|Mistral|18\nHyperNova 60B|hypernova-60b-2605|Multiverse Computing|18\nMagistral Medium 1.2|magistral-medium-1-2|Mistral|18\nMiniMax M1 80k|minimax-m1-80k|MiniMax|18\nNemotron Cascade 2 30B A3B|nemotron-cascade-2-30b-a3b|NVIDIA|18\nQwen3 235B|qwen3-235b|Alibaba|18\nQwen3 Coder 480B|qwen3-coder-480b|Alibaba|18\nQwen3 VL 32B|qwen3-vl-32b|Alibaba|18\nTrinity Large Thinking|trinity-large-thinking|Arcee AI|18\nGLM-4.5-Air|glm-4-5-air|Z AI|17\nGLM-4.6V|glm-4-6v|Z AI|17\nHyperCLOVA X SEED Think|hyperclova-x-seed-think|Naver|17\nK2 Think V2|k2-think-v2|MBZUAI Institute of Foundation Models|17\nLongCat Flash Lite|longcat-flash-lite|LongCat|17\nMi:dm K 2.5 Pro|mi-dm-k-2-5-pro|Korea Telecom|17\nQwen3 Next 80B A3B|qwen3-next-80b-a3b|Alibaba|17\nG9v3-3B|g9v3-3b|AI9Stars|16\nINTELLECT-3|intellect-3|Prime Intellect|16\nMistral Large 3|mistral-large-3|Mistral|16\nRing-1T|ring-1t|InclusionAI|16\nDeepSeek V3|deepseek-v3|DeepSeek|15\nGemini 2.5 Flash-Lite|gemini-2-5-flash-lite|Google|15\nGPT-4.1 mini|gpt-4-1-mini|OpenAI|15\ngpt-oss-20b|gpt-oss-20b|OpenAI|15\nGrok 3 Reasoning Beta|grok-3-reasoning-beta|SpaceXAI|15\nMistral Medium 3.1|mistral-medium-3-1|Mistral|15\nMistral Small 3.1|mistral-small-3-1|Mistral|15\nNemotron 3 Nano|nemotron-3-nano|NVIDIA|15\nNemotron 3 Nano Omni 30B A3B|nemotron-3-nano-omni-30b-a3b|NVIDIA|15\nQwen3 30B A3B|qwen3-30b-a3b|Alibaba|15\nSolar Open 100B|solar-open-100b|Upstage|15\nGPT-4.5|gpt-4-5|OpenAI|14\nK2-V2|k2-v2|MBZUAI Institute of Foundation Models|14\nLing 2.6 Flash|ling-2-6-flash|InclusionAI|14\nLlama 4 Maverick|llama-4-maverick|Meta|14\nMiniMax M1 40k|minimax-m1-40k|MiniMax|14\nQwen3 Coder 30B A3B|qwen3-coder-30b-a3b|Alibaba|14\nSolar Pro 3|solar-pro-3|Upstage|14\nTri-21B-think Preview|tri-21b-think-preview|Trillion Labs|14\nDiffusionGemma 26B A4B|diffusiongemma-26b-a4b|Google|13\nLing-1T|ling-1t|InclusionAI|13\nMotif-2-12.7B|motif-2-12-7b|Motif Technologies|13\nNova Premier|nova-premier|Amazon|13\nQwen3 VL 30B A3B|qwen3-vl-30b-a3b|Alibaba|13\nQwQ-32B|qwq-32b|Alibaba|13\nSolar Pro 2|solar-pro-2|Upstage|13\nCeleris-1|celeris-1|Celeris|12\nDevstral Medium|devstral-medium|Mistral|12\nDevstral Small|devstral-small|Mistral|12\nGemma 4 E4B|gemma-4-e4b|Google|12\nGPT-4o|gpt-4o|OpenAI|12\nLlama 3.3 Nemotron Super 49B|llama-3-3-nemotron-super-49b|NVIDIA|12\nLlama Nemotron Super 49B v1.5|llama-nemotron-super-49b-v1-5|NVIDIA|12\nMagistral Medium 1|magistral-medium-1|Mistral|12\nMiniCPM5-1B|minicpm5-1b|OpenBMB|12\nMistral Medium 3|mistral-medium-3|Mistral|12\nQwen3 4B|qwen3-4b|Alibaba|12\nSarvam 105B|sarvam-105b|Sarvam|12\nTri-21B-Think|tri-21b-think|Trillion Labs|12\nEXAONE 4.0 32B|exaone-4-0-32b|LG AI Research|11\nMagistral Small 1|magistral-small-1|Mistral|11\nMagistral Small 1.2|magistral-small-1-2|Mistral|11\nMinistral 3 14B|ministral-3-14b|Mistral|11\nMistral Small 3.2|mistral-small-3-2|Mistral|11\nNanbeige4.1-3B|nanbeige4-1-3b|Nanbeige|11\nQwen3 32B|qwen3-32b|Alibaba|11\nDeepSeek R1 Qwen3 8B|deepseek-r1-qwen3-8b|DeepSeek|10\nFalcon-H1R-7B|falcon-h1r-7b|TII UAE|10\nGemma 4 E2B|gemma-4-e2b|Google|10\nGPT-4.1 nano|gpt-4-1-nano|OpenAI|10\nHermes 4 70B|hermes-4-70b|Nous Research|10\nLing-flash-2.0|ling-flash-2-0|InclusionAI|10\nLlama 4 Scout|llama-4-scout|Meta|10\nQwen3 14B|qwen3-14b|Alibaba|10\nQwen3 Omni 30B A3B|qwen3-omni-30b-a3b|Alibaba|10\nQwen3 VL 8B|qwen3-vl-8b|Alibaba|10\nERNIE 4.5 300B A47B|ernie-4-5-300b-a47b|Baidu|9\nGemini 2.0 Flash-Lite|gemini-2-0-flash-lite|Google|9\nGLM-4.5V|glm-4-5v|Z AI|9\nGranite 4.1 30B|granite-4-1-30b|IBM|9\nHermes 4 405B|hermes-4-405b|Nous Research|9\nLlama Nemotron Ultra|llama-nemotron-ultra|NVIDIA|9\nMinistral 3 8B|ministral-3-8b|Mistral|9\nNemotron 3 Nano 4B|nemotron-3-nano-4b|NVIDIA|9\nNVIDIA Nemotron Nano 12B v2 VL|nvidia-nemotron-nano-12b-v2-vl|NVIDIA|9\nNVIDIA Nemotron Nano 9B V2|nvidia-nemotron-nano-9b-v2|NVIDIA|9\nQwen3 30B|qwen3-30b|Alibaba|9\nStep3 VL 10B|step3-vl-10b|StepFun|9\nKimi Linear 48B A3B Instruct|kimi-linear-48b-a3b-instruct|Kimi|8\nLFM2.5-8B-A1B|lfm2-5-8b-a1b|Liquid AI|8\nLlama 3.1 Nemotron Nano 4B v1.1|llama-3-1-nemotron-nano-4b-v1-1|NVIDIA|8\nOlmo 3.1 32B Think|olmo-3-1-32b-think|Allen Institute for AI|8\nQwen3 8B|qwen3-8b|Alibaba|8\nQwen3 VL 4B|qwen3-vl-4b|Alibaba|8\nRing-flash-2.0|ring-flash-2-0|InclusionAI|8\nCommand A|command-a|Cohere|7\nGemma 3 27B|gemma-3-27b|Google|7\nMinistral 3 3B|ministral-3-3b|Mistral|7\nQwen3.5 2B|qwen3-5-2b|Alibaba|7\nGemma 3 12B|gemma-3-12b|Google|6\nGranite 4.1 8B|granite-4-1-8b|IBM|6\nMistral Saba|mistral-saba|Mistral|6\nOlmo 3 32B Think|olmo-3-32b-think|Allen Institute for AI|6\nOlmo 3.1 32B Instruct|olmo-3-1-32b-instruct|Allen Institute for AI|6\nR1|r1-1776|Perplexity|6\nSarvam 30B|sarvam-30b|Sarvam|6\nDeepHermes 3 - Mistral 24B|deephermes-3-mistral-24b|Nous Research|5\nGranite 4.0 H Small|granite-4-0-h-small|IBM|5\nJamba 1.6 Large|jamba-1-6-large|AI21 Labs|5\nJamba 1.7 Large|jamba-1-7-large|AI21 Labs|5\nLFM2 24B A2B|lfm2-24b-a2b|Liquid AI|5\nOLMo 2 32B|olmo-2-32b|Allen Institute for AI|5\nQwen3.5 0.8B|qwen3-5-0-8b|Alibaba|5\nGemma 3n E4B|gemma-3n-e4b|Google|4\nGranite 4.1 3B|granite-4-1-3b|IBM|4\nJamba Reasoning 3B|jamba-reasoning-3b|AI21 Labs|4\nMiniCPM-V 4.6 1.3B|minicpm-v-4-6-1-3b|OpenBMB|4\nOlmo 3 7B Think|olmo-3-7b-think|Allen Institute for AI|4\nPhi-4 Multimodal|phi-4-multimodal|Microsoft|4\nReka Flash 3|reka-flash-3|Reka AI|4\nExaone 4.0 1.2B|exaone-4-0-1-2b|LG AI Research|3\nLing-mini-2.0|ling-mini-2-0|InclusionAI|3\nSarvam M|sarvam-m|Sarvam|3\nApertus 70B Instruct|apertus-70b-instruct|Swiss AI Initiative|2\nGemma 3 270M|gemma-3-270m|Google|2\nGranite 4.0 1B|granite-4-0-1b|IBM|2\nGranite 4.0 H 1B|granite-4-0-h-1b|IBM|2\nGranite 4.0 Micro|granite-4-0-micro|IBM|2\nJamba 1.6 Mini|jamba-1-6-mini|AI21 Labs|2\nJamba 1.7 Mini|jamba-1-7-mini|AI21 Labs|2\nLFM2 2.6B|lfm2-2-6b|Liquid AI|2\nLFM2.5-1.2B-Instruct|lfm2-5-1-2b-instruct|Liquid AI|2\nLFM2.5-1.2B-Thinking|lfm2-5-1-2b-thinking|Liquid AI|2\nMolmo2-8B|molmo2-8b|Allen Institute for AI|2\nOlmo 3 7B|olmo-3-7b|Allen Institute for AI|2\nQwen3 1.7B|qwen3-1-7b|Alibaba|2\nApertus 8B Instruct|apertus-8b-instruct|Swiss AI Initiative|1\nGemma 3 1B|gemma-3-1b|Google|1\nGemma 3 4B|gemma-3-4b|Google|1\nGemma 3n E2B|gemma-3n-e2b|Google|1\nGranite 3.3 8B|granite-3-3-8b|IBM|1\nGranite 4.0 350M|granite-4-0-350m|IBM|1\nGranite 4.0 H 350M|granite-4-0-h-350m|IBM|1\nLFM2 1.2B|lfm2-1-2b|Liquid AI|1\nLFM2 8B A1B|lfm2-8b-a1b|Liquid AI|1\nLFM2.5-VL-1.6B|lfm2-5-vl-1-6b|Liquid AI|1\nQwen3 0.6B|qwen3-0-6b|Alibaba|1\nTiny Aya Global|tiny-aya-global|Cohere|1";
+let aaListCache: AAModel[] | undefined;
+function getAAModels(): AAModel[] {
+  if (!aaListCache) {
+    aaListCache = RAW.split("\n").map((l) => {
+      const [name, slug, provider, score] = l.split("|");
+      return { name, slug, provider, ...(score ? { score: Number(score) } : {}) };
+    });
+  }
+  return aaListCache;
+}
+export const AA_INTELLIGENCE: AAModel[] = getAAModels();
+const norm = (s: string): string => s.toLowerCase().replace(/[\s._:\-+()/]+/g, "");
 interface AAIndexEntry { entry: AAModel; key: string; tokens: string[] }
-const AA_INDEX: AAIndexEntry[] = [];
-for (const entry of AA_INTELLIGENCE) {
-  if (entry.slug) AA_INDEX.push({ entry, key: norm(entry.slug), tokens: tokenSet(entry.slug) });
-  AA_INDEX.push({ entry, key: norm(entry.name), tokens: tokenSet(entry.name) });
+let aaIndexCache: AAIndexEntry[] | undefined;
+function getAAIndex(): AAIndexEntry[] {
+  if (!aaIndexCache) {
+    aaIndexCache = [];
+    for (const entry of AA_INTELLIGENCE) {
+      if (entry.slug) aaIndexCache.push({ entry, key: norm(entry.slug), tokens: tokenSet(entry.slug) });
+      aaIndexCache.push({ entry, key: norm(entry.name), tokens: tokenSet(entry.name) });
+    }
+  }
+  return aaIndexCache;
 }
 function tokenSet(s: string): string[] {
   return s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
@@ -213,11 +42,12 @@ export interface AAMatch { entry: AAModel; confidence: number }
 export function matchIntelligence(modelId: string, label?: string): AAMatch | undefined {
   const id = norm(modelId);
   const labelNorm = label ? norm(label) : "";
+  const index = getAAIndex();
   for (const key of [id, labelNorm].filter(Boolean)) {
-    const exact = AA_INDEX.find((x) => x.key === key);
+    const exact = index.find((x) => x.key === key);
     if (exact) return { entry: exact.entry, confidence: 1 };
   }
-  for (const x of AA_INDEX) {
+  for (const x of index) {
     if (x.key.length >= 4 && (id.includes(x.key) || x.key.includes(id))) {
       return { entry: x.entry, confidence: Math.min(x.key.length / Math.max(id.length, x.key.length), 1) };
     }
@@ -227,7 +57,7 @@ export function matchIntelligence(modelId: string, label?: string): AAMatch | un
   let best: AAMatch | undefined;
   for (const tokens of [labelTokens, idTokens]) {
     if (!tokens.length) continue;
-    for (const x of AA_INDEX) {
+    for (const x of index) {
       const c = tokenOverlap(tokens, x.tokens);
       if (c > 0.5 && (!best || c > best.confidence)) best = { entry: x.entry, confidence: c };
     }
@@ -237,4 +67,4 @@ export function matchIntelligence(modelId: string, label?: string): AAMatch | un
 }
 export function lookupIntelligence(modelId: string, label?: string): AAModel | undefined {
   return matchIntelligence(modelId, label)?.entry;
-}
+}

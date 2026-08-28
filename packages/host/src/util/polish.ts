@@ -10,16 +10,6 @@ function polishSystemPrompt(level: Exclude<PolishLevel, "off">): string {
   }
   return "You are a prompt editor for an AI coding assistant. Improve the user's prompt: fix grammar and spelling, sharpen clarity and intent, organize jumbled instructions into a logical order, and make the goal explicit. Keep every technical detail (paths, commands, code, filenames, error strings) verbatim and preserve the original meaning exactly. Reply with ONLY the polished prompt — no quotes, no explanations, no prefix.";
 }
-export function pickPolishModel(registry: ModelRegistry, level: Exclude<PolishLevel, "off">): ModelDescriptor | undefined {
-  const tierPrefs = level === "basic" ? (["free", "light"] as ModelTier[]) : (["light"] as ModelTier[]);
-  for (const tier of tierPrefs) {
-    for (const m of registry.list()) {
-      if (m.tier !== tier) continue;
-      if (pickProvider(registry, m)) return m;
-    }
-  }
-  return registry.getCurrent();
-}
 export type PolishAttempt = { model: string; provider: string; error?: string };
 export type PolishOutcome =
   | { ok: true; polished: string; attempts: PolishAttempt[] }

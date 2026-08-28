@@ -2,7 +2,6 @@ import { execSync } from "node:child_process";
 import * as os from "node:os";
 const PLATFORM = os.platform();
 export type SandboxProfile = "off" | "read-only" | "workspace";
-let warnedMissing = false;
 export function getSandboxArgs(profile: SandboxProfile, workspaceRoot: string): string[] {
   if (profile === "off") return [];
   switch (PLATFORM) {
@@ -33,12 +32,6 @@ export function sandboxBinaryAvailable(profile: SandboxProfile): boolean {
   } catch {
     return false;
   }
-}
-export function warnSandboxUnavailable(profile: SandboxProfile): string | undefined {
-  if (profile === "off" || sandboxBinaryAvailable(profile)) return undefined;
-  if (warnedMissing) return undefined;
-  warnedMissing = true;
-  return `Sandbox profile '${profile}' is configured but the native sandbox binary was not found on this system. All shell commands will run unsandboxed.`;
 }
 function getSeatbeltArgs(profile: SandboxProfile, root: string): string[] {
   const escaped = root.replace(/\\/g, "\\\\").replace(/"/g, '\\"');

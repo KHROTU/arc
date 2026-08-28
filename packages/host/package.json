@@ -1,6 +1,6 @@
 {
   "name": "@arc/host",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "type": "commonjs",
   "main": "dist/index.js",
@@ -20,6 +20,11 @@
       "types": "./dist/providers/catalog.d.ts",
       "import": "./dist/providers/catalog.js",
       "require": "./dist/providers/catalog.cjs"
+    },
+    "./util": {
+      "types": "./dist/util/index.d.ts",
+      "import": "./dist/util/index.js",
+      "require": "./dist/util/index.js"
     }
   },
   "scripts": {

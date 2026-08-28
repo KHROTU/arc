@@ -57,15 +57,20 @@ export const ICON_SVGS: Record<string, { mode: "fill" | "stroke"; transform?: st
   "kwaikat": { mode: "fill", paths: [{"d":"M5.84 11.1V7.41c0-.23.18-.42.41-.42h11.5c.23 0 .41.19.41.42v3.67h2.03V7.42a2.45 2.45 0 0 0-2.44-2.45H6.25a2.45 2.45 0 0 0-2.44 2.45v3.67"},{"d":"M18.16 12.9v3.68a.4.4 0 0 1-.41.42H6.25a.4.4 0 0 1-.41-.42v-3.67H3.8v3.67a2.45 2.45 0 0 0 2.44 2.45h11.5a2.45 2.45 0 0 0 2.44-2.45v-3.67"},{"d":"M8.07 10.8 0 7.87v2.3L5.06 12 0 13.86v2.3l8.07-2.95"},{"d":"M15.93 10.8 24 7.87v2.3L18.94 12 24 13.86v2.3l-8.07-2.95"},{"d":"M13.65 10.15h-2.2l-1.1 3.63h2.2"}] },
   "generic": { mode: "stroke", paths: [{"d":"m9.3 16.79-1 3.5-1-3.5a5.5 5.5 0 0 0-3.81-3.8l-3.48-1 3.5-1a5.5 5.5 0 0 0 3.8-3.81l1-3.49.99 3.51a5.5 5.5 0 0 0 3.8 3.8l3.5 1-3.5 1a5.5 5.5 0 0 0-3.8 3.8m10.4-8.86-.32 1.26-.32-1.27a4.2 4.2 0 0 0-3.02-3.03l-1.28-.3 1.28-.33a4.2 4.2 0 0 0 3.02-3.02L19.38 0l.32 1.27a4.2 4.2 0 0 0 3 3.03l1.28.32-1.26.32a4.2 4.2 0 0 0-3.03 3.02M18 22.55 17.53 24l-.49-1.45a2.8 2.8 0 0 0-1.75-1.76l-1.45-.48 1.45-.5a2.8 2.8 0 0 0 1.76-1.74l.48-1.45.5 1.45a2.8 2.8 0 0 0 1.74 1.76l1.46.48-1.46.5a2.8 2.8 0 0 0-1.76 1.74","stroke":"currentColor"}] }
 }
+const COMPILED_PATTERNS = MODEL_ICONS.map((e) => ({
+  re: new RegExp("\\b" + e.pattern, "i"),
+  icon: e.icon ?? DEFAULT_ICON,
+  family: e.family,
+}));
 export function iconForModel(model: string): string {
-  for (const e of MODEL_ICONS) {
-    if (new RegExp("\\b" + e.pattern, "i").test(model)) return e.icon ?? DEFAULT_ICON
+  for (let i = 0; i < COMPILED_PATTERNS.length; i++) {
+    if (COMPILED_PATTERNS[i].re.test(model)) return COMPILED_PATTERNS[i].icon;
   }
-  return DEFAULT_ICON
+  return DEFAULT_ICON;
 }
 export function familyForModel(model: string): string | undefined {
-  for (const e of MODEL_ICONS) {
-    if (new RegExp("\\b" + e.pattern, "i").test(model)) return e.family
+  for (let i = 0; i < COMPILED_PATTERNS.length; i++) {
+    if (COMPILED_PATTERNS[i].re.test(model)) return COMPILED_PATTERNS[i].family;
   }
-  return undefined
+  return undefined;
 }

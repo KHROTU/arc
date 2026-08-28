@@ -13,10 +13,12 @@ export default function ConversationSearch({ client, onClose }: Props) {
   const [selectedIdx, setSelectedIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const latestQueryRef = useRef("");
   useEffect(() => {
     inputRef.current?.focus();
     const handler = (e: MessageEvent) => {
       if (e.data?.type === "chat/searchResults") {
+        if (e.data.query !== undefined && e.data.query !== latestQueryRef.current) return;
         setResults(e.data.results);
         setLoading(false);
       }
@@ -28,7 +30,8 @@ export default function ConversationSearch({ client, onClose }: Props) {
     const t = setTimeout(() => {
       if (!query.trim()) { setResults([]); return; }
       setLoading(true);
-      client.send({ type: "chat/search", query: query.trim() });
+      latestQueryRef.current = query.trim();
+      client.send({ type: "chat/search", query: latestQueryRef.current });
     }, 200);
     return () => clearTimeout(t);
   }, [query]);

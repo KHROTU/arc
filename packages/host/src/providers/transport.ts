@@ -1,6 +1,7 @@
 import type { ProviderKind } from "../protocol/protocol.js";
 import type { ChatMessage } from "../protocol/protocol.js";
 import { getProviderSpec } from "./catalog.js";
+import { hostWarn } from "../log/logger.js";
 export function sanitizeToolChains(messages: ChatMessage[]): ChatMessage[] {
   const out: ChatMessage[] = [];
   let dropped = 0;
@@ -52,7 +53,7 @@ export function sanitizeToolChains(messages: ChatMessage[]): ChatMessage[] {
     }
   }
   if (dropped > 0) {
-    console.warn(`[arc] sanitizeToolChains cleaned ${dropped} orphaned/duplicate/incomplete tool message(s) before sending to the provider`);
+    hostWarn(`[arc] sanitizeToolChains cleaned ${dropped} orphaned/duplicate/incomplete tool message(s) before sending to the provider`);
   }
   return out;
 }
@@ -90,6 +91,20 @@ export interface StreamHandle {
 export interface Transport {
   kind: ProviderKind;
   stream(req: StreamRequest): Promise<StreamHandle>;
+}
+export const MAX_STREAM_CONTENT_BYTES = 4 * 1024 * 1024;
+export interface StreamContentBudget {
+  bytes: number;
+}
+export class StreamContentLimitError extends Error {
+  constructor() {
+    super("Provider stream exceeded 4 MiB.");
+    this.name = "StreamContentLimitError";
+  }
+}
+export function chargeStreamContent(budget: StreamContentBudget, delta: string): void {
+  budget.bytes += Buffer.byteLength(delta);
+  if (budget.bytes > MAX_STREAM_CONTENT_BYTES) throw new StreamContentLimitError();
 }
 import { openAICompatibleTransport } from "./openai-compatible.js";
 import { anthropicTransport } from "./anthropic.js";

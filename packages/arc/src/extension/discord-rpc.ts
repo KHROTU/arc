@@ -8,16 +8,21 @@ let lastEditTime = 0;
 let cooldownTimer: ReturnType<typeof setTimeout> | undefined;
 let prevEditor: vscode.TextEditor | undefined;
 export function initDiscordRpcSpoof(context: vscode.ExtensionContext): void {
-  const cfg = vscode.workspace.getConfiguration();
-  enabled = cfg.get<boolean>("arc.discord.spoofRpc", false);
+  const sync = (): void => {
+    const next = vscode.workspace.getConfiguration().get<boolean>("arc.discord.spoofRpc", false);
+    if (next === enabled) return;
+    enabled = next;
+    if (enabled) register(context);
+    else if (textProvider) {
+      textProvider.dispose();
+      textProvider = undefined;
+    }
+  };
+  enabled = vscode.workspace.getConfiguration().get<boolean>("arc.discord.spoofRpc", false);
   if (enabled) register(context);
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("arc.discord.spoofRpc")) {
-        enabled = vscode.workspace.getConfiguration().get<boolean>("arc.discord.spoofRpc", false);
-      }
-    }),
-  );
+  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
+    if (e.affectsConfiguration("arc.discord.spoofRpc")) sync();
+  }));
 }
 function register(context: vscode.ExtensionContext): void {
   if (textProvider) return;

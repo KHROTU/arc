@@ -1,8 +1,9 @@
 import { AsyncEventQueue, readableToAsyncIterable } from "../util/stream.js";
 import { makeProxyDispatcher } from "../util/proxy.js";
-import { fromApiToolName, toApiToolName, sanitizeToolChains, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
+import { fromApiToolName, toApiToolName, sanitizeToolChains, chargeStreamContent, StreamContentLimitError, type StreamEvent, type StreamHandle, type StreamRequest, type StreamContentBudget, type Transport } from "./transport.js";
 import { readBodyLimited } from "../security/network.js";
 import { redactSecrets } from "../security/redact.js";
+import { safeParseJson } from "../util/json.js";
 export const ollamaTransport: Transport = {
   kind: "ollama",
   async stream(req: StreamRequest): Promise<StreamHandle> {
@@ -66,18 +67,22 @@ export const ollamaTransport: Transport = {
     const q = new AsyncEventQueue<StreamEvent>();
     let aborted = false;
     let buffer = "";
+    const contentBudget: StreamContentBudget = { bytes: 0 };
     const parseLine = (raw: string): boolean => {
       const t = raw.trim();
       if (!t) return false;
       try {
         const j = JSON.parse(t);
-        if (j.message?.content) q.push({ type: "text", delta: j.message.content });
+        if (j.message?.content) {
+          chargeStreamContent(contentBudget, j.message.content);
+          q.push({ type: "text", delta: j.message.content });
+        }
         if (j.message?.thinking) q.push({ type: "thinking", delta: j.message.thinking });
         if (j.message?.tool_calls?.length) {
           for (const tc of j.message.tool_calls) {
             if (tc.function?.name) {
               const args = typeof tc.function.arguments === "string"
-                ? safeParseArgs(tc.function.arguments)
+                ? safeParseJson<Record<string, unknown>>(tc.function.arguments)
                 : tc.function.arguments ?? {};
               q.push({
                 type: "tool_call",
@@ -98,17 +103,15 @@ export const ollamaTransport: Transport = {
           q.push({ type: "done" });
           return true;
         }
-      } catch {
+      } catch (e) {
+        if (e instanceof StreamContentLimitError) throw e;
       }
       return false;
     };
     (async () => {
-      let streamBytes = 0;
       try {
         for await (const chunk of readableToAsyncIterable(res.body as ReadableStream<Uint8Array>)) {
           if (aborted) break;
-          streamBytes += Buffer.byteLength(chunk);
-          if (streamBytes > 4 * 1024 * 1024) throw new Error("Provider stream exceeded 4 MiB.");
           buffer += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
           if (buffer.length > 1024 * 1024) throw new Error("Provider stream event exceeded 1 MiB.");
           let idx: number;
@@ -131,11 +134,3 @@ export const ollamaTransport: Transport = {
   };
   },
 };
-function safeParseArgs(s: string | undefined): Record<string, unknown> | undefined {
-  if (!s) return undefined;
-  try {
-    return JSON.parse(s);
-  } catch {
-    return undefined;
-  }
-}

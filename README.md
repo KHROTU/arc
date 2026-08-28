@@ -12,14 +12,14 @@ Arc is built for speed and precision. It combines a sophisticated multi-model or
 
 ## Efficiency
 
-| Extension | VSIX Size (as of August 12th, 2026) |
+| Extension | VSIX Size (as of August 28th, 2026) |
 | :--- | :--- |
-| **Arc** | **0.21 MB** |
-| Cline | 18.90 MB |
+| **Arc** | **0.22 MB** |
+| Cline | 19.17 MB |
 | BLACKBOXAI Agent | 20.15 MB |
 | Roo Code | 30.11 MB |
-| Kilo Code | 85.03 MB |
 | Continue | 111.48 MB |
+| Kilo Code | 115.77 MB |
 
 Arc aims to provide a top-of-the-line agentic experience with a minimal footprint. By optimizing our dependency tree and focusing on native VS Code APIs, we keep the extension fast and portable.
 
@@ -29,7 +29,7 @@ Arc aims to provide a top-of-the-line agentic experience with a minimal footprin
 
 - **Tiered model registry** (free/light/default/heavy). Start a chat with a default model, and watch it start subagents using free models for simple tasks, or hand off the entire chat to a heavy model for difficult tasks.
 - **Auto Mode (Beta)**. Auto mode automatically routes prompts to the cheapest model that can handle the task. Relying on an in-house fine-tuned model, Auto mode makes sub-10ms decisions at 0.757 AUC based on internal testing. Crucially, Auto mode isn't limited to a specific set of models, and instead adapts to your configuration.
-- **262+ built-in providers** with multi-provider failover, weighted load balancing, and BYOK support, allowing you to configure multiple providers for the same model and automatically switch between them when one is down, out of credits, or flaky.
+- **Provider-agnostic model aliases.** One model alias can be backed by multiple providers — 262+ built-ins plus BYOK — with automatic failover, weighted load balancing, and transparent switching when a provider is down, out of credits, or flaky.
 
 ### Tools
 
@@ -83,7 +83,7 @@ Arc aims to provide a top-of-the-line agentic experience with a minimal footprin
 Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=khrotu.arc-code) or directly via the VS Code CLI:
 
 ```bash
-code --install-extension packages/arc/arc-code-0.6.1.vsix
+code --install-extension packages/arc/arc-code-0.6.2.vsix
 ```
 
 ### Development

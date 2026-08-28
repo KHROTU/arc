@@ -1,8 +1,8 @@
 {
   "name": "arc-code",
   "displayName": "Arc",
-  "description": "0.21 MB provider-agnostic agentic harness. 262+ providers with tiered model routing, multi-provider failover, and multi-model subagents.",
-  "version": "0.6.1",
+  "description": "0.22 MB provider-agnostic agentic harness. 262+ providers with tiered model routing, multi-provider failover, and multi-model subagents.",
+  "version": "0.6.2",
   "publisher": "khrotu",
   "license": "Apache-2.0",
   "repository": {
@@ -509,15 +509,20 @@
           "default": "off",
           "description": "Polish prompts before sending. 'off' sends the prompt as typed. 'basic' fixes only grammar and spelling (prefers a free-tier model). 'polish' enhances clarity and structure (prefers a light-tier model). The polished prompt is shown in the composer for approval before it is sent."
         },
-        "arc.router.qualityBias": {
+        "arc.router.quality": {
           "type": "string",
           "enum": [
-            "off",
-            "prefer-cheap",
-            "prefer-powerful"
+            "balanced",
+            "economy",
+            "power"
           ],
-          "default": "off",
-          "description": "Quality/cost tradeoff when using the Auto model. 'off' balances cost and quality (default calibration). 'prefer-cheap' favors cheaper models that still clear the difficulty bar. 'prefer-powerful' favors stronger models even when a cheaper one would likely suffice."
+          "default": "balanced",
+          "description": "Auto-model routing quality. 'balanced' (recommended) calibrates the model to each task's difficulty. 'economy' prefers cheaper/faster models when they can handle the task. 'power' prefers stronger models even when a cheaper one might do, for maximum quality."
+        },
+        "arc.router.autoRoute": {
+          "type": "boolean",
+          "default": false,
+          "description": "When using the Auto model, skip the routed-model confirmation and send the message directly to the chosen model. Low-confidence routes (V2) still show the confirmation so you can veto a weak pick."
         },
         "arc.router.modelUrl": {
           "type": "string",
@@ -591,6 +596,50 @@
           ],
           "default": "auto",
           "description": "How tool call trees display. 'auto' expands the tree and last call (closes earlier calls) and closes when the chain ends. 'collapsed' keeps all trees collapsed."
+        },
+        "arc.appearance.toolGroupSummary": {
+          "type": "string",
+          "enum": [
+            "count",
+            "tools",
+            "ai"
+          ],
+          "default": "count",
+          "description": "How a finished tool-call chain is titled in the chat: 'count' shows the number of calls, 'top tools' names the most-used activities, 'summary' asks a free-tier model for a short summary (hard-capped at 50 characters). Titles generated for a chat are kept even if this setting changes later."
+        },
+        "arc.appearance.fontFamily": {
+          "type": "string",
+          "enum": [
+            "inter",
+            "atkinson",
+            "quicksand",
+            "geist-sans",
+            "custom"
+          ],
+          "default": "atkinson",
+          "description": "UI font for the chat interface. Fonts are self-hosted with the extension; 'custom' uses arc.appearance.customFontFamily."
+        },
+        "arc.appearance.monoFontFamily": {
+          "type": "string",
+          "enum": [
+            "jetbrains-mono",
+            "ibm-plex-mono",
+            "fira-code",
+            "geist-mono",
+            "custom"
+          ],
+          "default": "ibm-plex-mono",
+          "description": "Monospace font for code blocks and tool output. Fonts are self-hosted with the extension; 'custom' uses arc.appearance.customMonoFontFamily."
+        },
+        "arc.appearance.customFontFamily": {
+          "type": "string",
+          "default": "",
+          "description": "Font family name to use when arc.appearance.fontFamily is 'custom'. Add your own self-hosted @font-face or system font here."
+        },
+        "arc.appearance.customMonoFontFamily": {
+          "type": "string",
+          "default": "",
+          "description": "Font family name to use when arc.appearance.monoFontFamily is 'custom'. Add your own self-hosted @font-face or system font here."
         },
         "arc.diffView.autoOpen": {
           "type": "boolean",

@@ -5,6 +5,7 @@ export interface ChatMeta {
   createdAt: number;
   updatedAt: number;
   cost: number;
+  promptTokens?: number;
 }
 export interface ChatSnapshot {
   chats: ChatMeta[];
@@ -80,6 +81,10 @@ export class ChatHistory {
   bump(id: string, cost: number): void {
     const c = this.chats.find((x) => x.id === id);
     if (c) { c.updatedAt = Date.now(); c.cost += cost; }
+  }
+  bumpPromptTokens(id: string, promptTokens: number): void {
+    const c = this.chats.find((x) => x.id === id);
+    if (c && (!c.promptTokens || promptTokens > c.promptTokens)) c.promptTokens = promptTokens;
   }
   getMessages(id: string): unknown[] {
     return this.messages[id] ?? [];

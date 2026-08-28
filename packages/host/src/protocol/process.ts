@@ -52,4 +52,6 @@ export interface ProcessStep {
   options?: string[];
   children?: ProcessStep[];
   interrupted?: boolean;
+  groupTitle?: string;
+  groupTitleMode?: string;
 }

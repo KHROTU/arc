@@ -1,9 +1,11 @@
 import { AsyncEventQueue, readableToAsyncIterable } from "../util/stream.js";
 import { makeProxyDispatcher } from "../util/proxy.js";
-import { fromApiToolName, toApiToolName, sanitizeToolChains, type StreamEvent, type StreamHandle, type StreamRequest, type Transport } from "./transport.js";
+import { fromApiToolName, toApiToolName, sanitizeToolChains, chargeStreamContent, StreamContentLimitError, type StreamEvent, type StreamHandle, type StreamRequest, type StreamContentBudget, type Transport } from "./transport.js";
 import { withRetry, policyFor } from "./retry.js";
+import { attributionHeaders } from "./attribution.js";
 import { readBodyLimited } from "../security/network.js";
 import { redactSecrets } from "../security/redact.js";
+import { hostLog } from "../log/logger.js";
 const ANTHROPIC_EFFORT: Record<string, string | undefined> = {
   none: undefined,
   minimal: "low",
@@ -132,6 +134,7 @@ export const anthropicTransport: Transport = {
           "anthropic-version": "2023-06-01",
           "anthropic-beta": "prompt-caching-2024-07-31",
           "anthropic-dangerous-direct-browser-access": "true",
+          ...attributionHeaders(req.provider.kind),
         },
         body: JSON.stringify(cachedBody),
         signal: req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000),
@@ -147,13 +150,11 @@ export const anthropicTransport: Transport = {
     let aborted = false;
     void (async () => {
       let buffer = "";
-      let streamBytes = 0;
+      const contentBudget: StreamContentBudget = { bytes: 0 };
       const toolBlocks = new Map<number, { id: string; name: string; json: string }>();
       try {
         for await (const chunk of readableToAsyncIterable(res.body as ReadableStream<Uint8Array>)) {
           if (aborted) break;
-          streamBytes += Buffer.byteLength(chunk);
-          if (streamBytes > 4 * 1024 * 1024) throw new Error("Provider stream exceeded 4 MiB.");
           buffer += chunk;
           if (buffer.length > 1024 * 1024) throw new Error("Provider stream event exceeded 1 MiB.");
           let idx: number;
@@ -182,6 +183,7 @@ export const anthropicTransport: Transport = {
                 }
               } else if (j.type === "content_block_delta" && j.delta) {
                 if (j.delta.type === "text_delta" && j.delta.text) {
+                  chargeStreamContent(contentBudget, j.delta.text);
                   q.push({ type: "text", delta: j.delta.text });
                 } else if (j.delta.type === "thinking_delta" && j.delta.thinking) {
                   q.push({ type: "thinking", delta: j.delta.thinking });
@@ -196,7 +198,7 @@ export const anthropicTransport: Transport = {
                 const blk = toolBlocks.get(j.index);
                 if (blk) {
                   let args: Record<string, unknown> = {};
-try { args = blk.json ? JSON.parse(blk.json) : {}; } catch { console.debug("Anthropic stream: failed to parse tool args JSON", blk.json?.slice(0, 200)); }
+try { args = blk.json ? JSON.parse(blk.json) : {}; } catch { hostLog(`Anthropic stream: failed to parse tool args JSON: ${blk.json?.slice(0, 200)}`); }
                   q.push({ type: "tool_call", id: blk.id, name: fromApiToolName(blk.name), args });
                   toolBlocks.delete(j.index);
                 }
@@ -207,7 +209,10 @@ try { args = blk.json ? JSON.parse(blk.json) : {}; } catch { console.debug("Anth
                 q.close();
                 return;
               }
-} catch { console.debug("Anthropic stream: failed to parse event", payload.slice(0, 200)); }
+} catch (e) {
+  if (e instanceof StreamContentLimitError) throw e;
+  hostLog(`Anthropic stream: failed to parse event: ${payload.slice(0, 200)}`);
+}
           }
         }
       } catch (e) {
