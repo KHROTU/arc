@@ -1,4 +1,5 @@
 import type { DiffHunk, ProcessStep } from "./process.js";
+import type { ImportAgentSummaryPreview } from "../import/agent-import.js";
 export type Role = "system" | "user" | "assistant" | "tool" | "developer";
 export type ModelTier = "free" | "light" | "default" | "heavy";
 export interface ModelDescriptor {
@@ -17,6 +18,26 @@ export interface ProviderRef {
   remoteModel?: string;
   priority: number;
   weight?: number;
+  costPer1mIn?: number;
+  costPer1mOut?: number;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  imageInput?: boolean;
+}
+export interface CatalogProviderRef {
+  providerId: string;
+  slug: string;
+}
+export interface ModelCatalogEntry {
+  key: string;
+  label: string;
+  contextLength?: number;
+  maxOutputTokens?: number;
+  priceIn?: number;
+  priceOut?: number;
+  imageInput?: boolean;
+  providers: CatalogProviderRef[];
+  existingModelId?: string;
 }
 export type ProviderKind =
   | "302ai"
@@ -287,10 +308,12 @@ export interface ProviderConfig {
   label: string;
   baseUrl?: string;
   apiKey?: string;
+  apiKeys?: string[];
+  apiKeyCount?: number;
   startCommand?: string;
   enabled: boolean;
 }
-export type ProviderSummary = Omit<ProviderConfig, "apiKey"> & { hasApiKey: boolean };
+export type ProviderSummary = Omit<ProviderConfig, "apiKey" | "apiKeys"> & { hasApiKey: boolean; apiKeyCount: number; apiKeyPreviews?: string[] };
 export interface ChatMessage {
   id: string;
   role: Role;
@@ -328,6 +351,7 @@ export type ExecutionEvent =
   | { type: "context_compressed"; turnId: string; toolName: string; kind: string; saved: number; ts: number }
   | { type: "error"; turnId: string; message: string; ts: number }
   | { type: "retry"; turnId: string; toolName: string; attempt: number; reason: string; ts: number };
+export type AutoApproveMode = "off" | "safe" | "allowlist" | "all";
 export type HostMsg =
   | { type: "session/init"; sessionId: string; chatId?: string; models: ModelDescriptor[]; currentModelId: string; modes?: { slug: string; description: string }[]; currentMode?: string }
   | { type: "session/message"; message: ChatMessage; sessionId?: string }
@@ -350,31 +374,35 @@ export type HostMsg =
   | { type: "provider/list"; providers: ProviderSummary[] }
   | { type: "config/get"; value: unknown; inReplyTo: string }
   | { type: "config/changed"; key: string; value: unknown }
-  | { type: "mcp/list"; servers: { name: string; enabled: boolean; transport: "stdio" | "http"; toolCount: number }[] }
+  | { type: "mcp/list"; servers: { name: string; enabled: boolean; transport: "stdio" | "http" | "sse"; toolCount: number; status: string; oauth?: boolean }[] }
   | { type: "mcp/marketplaceResults"; results?: unknown[]; error?: string }
+  | { type: "model/catalogResult"; entries: ModelCatalogEntry[] }
   | { type: "mode/list"; modes: { slug: string; roleDefinition: string; allowedTools: string[]; writeGlob?: string; description: string; whenToUse: string; model?: string; source: "builtin" | "workspace" | "global" }[] }
   | { type: "chat/searchResults"; results: { id: string; title: string; matches: string[] }[]; query?: string }
   | { type: "ui/showSettings" }
   | { type: "ui/showSearch" }
   | { type: "ui/showUpdate"; version: string; url: string }
   | { type: "approval/request"; id: string; description: string; kind: "shell" | "destructive"; command?: string }
-  | { type: "autoApproveState"; active: boolean }
+  | { type: "autoApproveState"; active: boolean; mode?: AutoApproveMode }
   | { type: "search/indexProgress"; filesScanned: number; filesIndexed: number; chunksEmbedded: number; errors: number }
   | { type: "search/indexUpdated"; updated: string[]; removed: string[] }
   | { type: "mcp/testResult"; server?: string; output: string }
-  | { type: "mcp/traffic"; server: string; dir: string; msg: string }
+  | { type: "mcp/traffic"; line: string }
   | { type: "memory/list"; memories: { index: number; category: string; content: string; createdAt: string }[] }
-  | { type: "hooks/list"; hooks: { event: string; matcher: string; command: string; enabled: boolean; tools?: string[] }[] }
+  | { type: "hooks/list"; hooks: { event: string; command?: string; command_windows?: string; timeout_sec?: number; matchers?: { tool?: string; mode?: string; modelTier?: string } }[] }
   | { type: "session/replaceState"; messages: ChatMessage[]; steps: ProcessStep[]; loadComposer?: string }
   | { type: "session/guidance"; text: string }
   | { type: "error"; message: string; code?: "timeout" | "rate_limit" | "auth" | "provider" | "malformed" | "network" | "aborted"; inReplyTo?: string }
   | { type: "provider/internalSetupProgress"; phase: string; pct: number; error?: string }
-  | { type: "provider/serverState"; providerId: string; running: boolean; pid?: number }
+  | { type: "provider/serverState"; providerId: string; running: boolean; pid?: number; error?: string }
   | { type: "chat/polishResult"; original: string; polished: string }
   | { type: "chat/toolsSummary"; id: string; text: string }
   | { type: "chat/polishFailed"; original: string }
   | { type: "chat/routeResult"; original: string; modelId: string; modelLabel: string; aaScore: number; requiredScore: number; difficulty: number; domain?: string; confidence: number; tau?: number }
-  | { type: "chat/routeFailed"; original: string; reason?: "no-model" | "model-unavailable" | "error" };
+  | { type: "chat/routeFailed"; original: string; reason?: "no-model" | "model-unavailable" | "error" }
+  | { type: "import/scanResult"; agents: ImportAgentSummaryPreview[] }
+  | { type: "import/chatProgress"; agent: string; done: number; total: number }
+  | { type: "import/chatDone"; agent: string; chats: number; messages: number; error?: string };
 export type WebviewMsg =
   | { type: "chat/send"; text: string; attachments?: { uri: string; preview?: string }[]; images?: string[]; modelId?: string; autoRouted?: boolean }
   | { type: "chat/route"; text: string; attachments?: { uri: string; preview?: string }[]; images?: string[] }
@@ -389,18 +417,20 @@ export type WebviewMsg =
   | { type: "model/select"; modelId: string }
   | { type: "model/add"; model: ModelDescriptor }
   | { type: "model/remove"; modelId: string }
-  | { type: "provider/add"; provider: Omit<ProviderConfig, "apiKey">; apiKey?: string }
-  | { type: "provider/update"; providerId: string; changes: { label?: string; baseUrl?: string; kind?: ProviderKind; startCommand?: string }; apiKey?: string }
+  | { type: "provider/add"; provider: Omit<ProviderConfig, "apiKey" | "apiKeys">; apiKey?: string; apiKeys?: string[] }
+  | { type: "provider/update"; providerId: string; changes: { label?: string; baseUrl?: string; kind?: ProviderKind; startCommand?: string }; apiKey?: string; addApiKeys?: string[]; removeApiKeyIndices?: number[]; replaceApiKeys?: { index: number; key: string }[] }
   | { type: "provider/remove"; providerId: string }
   | { type: "provider/toggle"; providerId: string; enabled: boolean }
   | { type: "config/get"; key: string; id: string }
   | { type: "config/set"; key: string; value: unknown }
-  | { type: "mcp/addServer"; name: string; transport: { type: "stdio"; command: string; args?: string[] } | { type: "http"; url: string; headers?: Record<string, string> } }
+  | { type: "mcp/addServer"; name: string; transport: { type: "stdio"; command: string; args?: string[] } | { type: "http" | "sse"; url: string; headers?: Record<string, string>; auth?: "oauth" } }
   | { type: "mcp/removeServer"; name: string }
   | { type: "mcp/toggleServer"; name: string; enabled: boolean }
   | { type: "mcp/list" }
   | { type: "mcp/marketplaceSearch"; query: string }
   | { type: "mcp/testCall"; server: string; tool: string }
+  | { type: "mcp/authenticate"; server: string }
+  | { type: "model/catalog"; query: string }
   | { type: "ui/attachSelection" }
   | { type: "ui/attachFile" }
   | { type: "ui/attachProblems" }
@@ -419,6 +449,7 @@ export type WebviewMsg =
   | { type: "ui/openFileDiff"; path: string; hunks: DiffHunk[]; streamId?: string }
   | { type: "ui/openPrompt" }
   | { type: "ui/newTask" }
+  | { type: "attention/sound"; event: "done" | "approval" | "error" }
   | { type: "ready" }
   | { type: "chat/switch"; chatId: string }
   | { type: "chat/rename"; chatId: string; title: string }
@@ -427,12 +458,12 @@ export type WebviewMsg =
   | { type: "chat/compact" }
   | { type: "ui/openSidebar" }
   | { type: "search/reindex" }
-  | { type: "model/bindUpdate"; modelId: string; providerId: string; remoteModel?: string }
+  | { type: "model/bindUpdate"; modelId: string; providerId: string; remoteModel?: string; costPer1mIn?: number; costPer1mOut?: number; contextWindow?: number; maxOutputTokens?: number; imageInput?: boolean }
   | { type: "mode/select"; mode: string }
   | { type: "mode/list" }
   | { type: "mode/save"; mode: { slug: string; roleDefinition: string; allowedTools: string[]; writeGlob?: string; description: string; whenToUse: string; model?: string }; scope?: "workspace" | "global" }
   | { type: "mode/delete"; slug: string; scope?: "workspace" | "global" }
-  | { type: "autoApprove/toggle" }
+  | { type: "autoApprove/set"; mode: AutoApproveMode }
   | { type: "approval/response"; id: string; allowed: boolean; rememberCommand?: string; rememberPrefix?: string }
   | { type: "approval/setPreset"; preset: string }
   | { type: "chat/search"; query: string }
@@ -444,6 +475,10 @@ export type WebviewMsg =
   | { type: "hooks/list" }
   | { type: "diff/accept"; stepId: string; filePath: string }
   | { type: "diff/reject"; stepId: string; filePath: string; hunks: DiffHunk[] }
+  | { type: "provider/list" }
   | { type: "provider/setupInternal" }
   | { type: "provider/startServer"; providerId: string }
-  | { type: "provider/stopServer"; providerId: string };
+  | { type: "provider/stopServer"; providerId: string }
+  | { type: "import/scan" }
+  | { type: "import/credentials"; agent: string; keys: string[] }
+  | { type: "import/chats"; agent: string };

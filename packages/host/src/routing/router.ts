@@ -16,7 +16,18 @@ export type { StreamEvent, StreamHandle };
 export interface RoutingDecision {
   model: ModelDescriptor;
   provider: ProviderConfig;
+  ref: ProviderRef;
   attempt: number;
+}
+export function withProviderOverrides(model: ModelDescriptor, ref?: ProviderRef): ModelDescriptor {
+  if (!ref) return model;
+  return {
+    ...model,
+    contextWindow: ref.contextWindow ?? model.contextWindow,
+    maxOutputTokens: ref.maxOutputTokens ?? model.maxOutputTokens,
+    costPer1mIn: ref.costPer1mIn ?? model.costPer1mIn,
+    costPer1mOut: ref.costPer1mOut ?? model.costPer1mOut,
+  };
 }
 export function pickForTier(
   registry: ModelRegistry,
@@ -108,9 +119,11 @@ async function tryEach<T>(
     for (const ref of orderedRefs(registry, model, opts?.rerank)) {
       const prov = registry.resolveProvider(ref);
       if (!prov) continue;
+      const keys = prov.apiKeys?.length ? prov.apiKeys : prov.apiKey ? [prov.apiKey] : [];
+      const effProv = keys.length > 1 ? { ...prov, apiKey: keys[attempt % keys.length] } : prov;
       const t0 = Date.now();
       try {
-        const out = await fn(ref, prov, attempt++);
+        const out = await fn(ref, effProv, attempt++);
         perf.recordSuccess(ref.id, model.id, Date.now() - t0);
         return out;
       } catch (e) {
@@ -134,7 +147,7 @@ export async function routeWithFailover<T>(
   model: ModelDescriptor,
   invoke: (d: RoutingDecision) => Promise<T>,
 ): Promise<T> {
-  return tryEach(registry, model, (_r, p, n) => invoke({ model, provider: p, attempt: n }));
+  return tryEach(registry, model, (r, p, n) => invoke({ model, provider: p, ref: r, attempt: n }));
 }
 export interface ResilientOptions {
   stallMs?: number;
@@ -210,11 +223,13 @@ export async function routeStream(
   return tryEach(registry, model, async (ref, prov, n) => {
     const stallMs = timeoutFor(ref.id, model.id, opts?.stallMs, MIN_STALL_MS, MAX_STALL_MS, DEFAULT_STALL_MS);
     const fbMs = timeoutFor(ref.id, model.id, opts?.firstByteMs, MIN_FB_MS, MAX_FB_MS, DEFAULT_FB_MS);
-    const raw = await create({ model, provider: prov, attempt: n });
+    const raw = await create({ model, provider: prov, ref, attempt: n });
     return wrapStall(raw, ref.id, stallMs, fbMs);
   }, { rerank: opts?.rerank });
 }
-export function estimateCost(model: ModelDescriptor, usage: { prompt: number; completion: number; thinking?: number }): number {
+export function estimateCost(model: ModelDescriptor, usage: { prompt: number; completion: number; thinking?: number }, ref?: Pick<ProviderRef, "costPer1mIn" | "costPer1mOut">): number {
   const t = usage.thinking ?? 0;
-  return (usage.prompt / 1_000_000) * model.costPer1mIn + (usage.completion / 1_000_000) * model.costPer1mOut + (t / 1_000_000) * model.costPer1mOut;
+  const per1mIn = ref?.costPer1mIn ?? model.costPer1mIn;
+  const per1mOut = ref?.costPer1mOut ?? model.costPer1mOut;
+  return (usage.prompt / 1_000_000) * per1mIn + (usage.completion / 1_000_000) * per1mOut + (t / 1_000_000) * per1mOut;
 }

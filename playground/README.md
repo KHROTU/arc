@@ -6,15 +6,17 @@ A self-contained workspace for the Arc agent to read, explore, and exercise ever
 
 ```
 .arc/         Arc configuration directory
-  mcp.json    Single MCP server: context7
+  mcp.json    Reference MCP config (context7). MCP servers are NOT loaded
+              from the repo; hydrate ~/.arc/workspaces/<hash>/mcp.json with
+              it, or register the server in-session via mcp.create
   skills/     Skill definitions (skill.read, skill.use)
     demo-skill.md  Conventions for working in the playground
   rules/      Rule definitions (rule.read, rule.list)
     test-rule.md   No destructive commands policy
 src/          TypeScript source files with intentional issues for LSP tools
-  index.ts    Entry point — has a type mismatch and unused import (lsp.problems)
+  index.ts    Entry point - has a type mismatch and unused import (lsp.problems)
   config.json Configuration to read and modify (file.read, file.edit)
-  utils.ts    Helper with a "REPLACE_ME" sentinel (file.edit test)
+  utils.ts    Helper with a "REPLACE_ME" sentinel in slugify (file.edit test)
   style.css   CSS with a duplicated rule (lsp.problemsFor on style files)
 web/          Static HTML page for browser tools
   index.html       Page for browser.navigate / browser.readDom / browser.click / browser.screenshot
@@ -34,8 +36,6 @@ test/         Test files
   example.test.ts    Vitest test suite (test.run); has a REPLACE_ME test that fails until fixed
   checkpoint-compare-a.md  Initial state fixture for checkpoint.compare
   checkpoint-compare-b.md  Modified state fixture for checkpoint.compare
-package.json  Local Vitest test script for test.run
-tsconfig.json TypeScript project for LSP diagnostic coverage
 notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteCell/execute
 ```
 
@@ -44,7 +44,7 @@ notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteC
 ### File Tools
 
 | Tool | Action |
-|------|--------|
+| ------ | -------- |
 | file.read | Read `data/sample.json`, `data/todo.txt`, `src/config.json`; test offset/limit |
 | file.edit | Replace `REPLACE_ME` in `src/utils.ts`; test runAfter with `scripts/build.ps1` |
 | file.write | Write `data/output.txt`, `data/generated.txt`; test runAfter |
@@ -55,7 +55,7 @@ notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteC
 ### Shell Tools
 
 | Tool | Action |
-|------|--------|
+| ------ | -------- |
 | shell.run | Run `demo.ps1`; test timeout with `slow.ps1` (3s kill vs -1 complete) |
 | shell.backgroundRun | Background `slow.ps1`, `interactive.ps1` |
 | shell.check | Poll background process output and exit status |
@@ -81,7 +81,7 @@ notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteC
 ### Browser Tools
 
 | Tool | Action |
-|------|--------|
+| ------ | -------- |
 | browser.navigate | Navigate to `web/index.html` |
 | browser.readDom | Read accessibility tree of loaded page |
 | browser.readPage | Read page text content |
@@ -105,7 +105,7 @@ notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteC
 ### MCP Tools
 
 | Tool | Action |
-|------|--------|
+| ------ | -------- |
 | mcp.call | Call `context7/resolve` or `context7/query` on the context7 server |
 | mcp.create | Register a new MCP server |
 | mcp.remove | Remove an MCP server |
@@ -125,7 +125,7 @@ notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteC
 ### Checkpoint Tools
 
 | Tool | Action |
-|------|--------|
+| ------ | -------- |
 | checkpoint.revert | Revert file edits to checkpoint state |
 | checkpoint.list | List all saved checkpoints with indices |
 | checkpoint.compare | Compare two checkpoints by index or turnId |
@@ -133,11 +133,12 @@ notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteC
 ### Mode / Skill / Memory / Rule Tools
 
 | Tool | Action |
-|------|--------|
+| ------ | -------- |
 | mode.switch | Switch between plan/code/audit/debug modes |
 | skill.read | Read `.arc/skills/demo-skill.md` |
 | skill.use | Load skill into agent context |
 | memory.add | Add memory entry with category |
+| memory.note | Leave a session note for future sessions in this workspace |
 | memory.list | List all memory entries |
 | memory.edit | Edit memory by index |
 | memory.delete | Delete memory by index |
@@ -148,17 +149,40 @@ notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteC
 ### Git Tools
 
 | Tool | Action |
-|------|--------|
+| ------ | -------- |
 | git.changedFiles | List files changed since last commit |
 | git.diffUnstaged | Read unstaged diff |
 | git.diffStaged | Read staged diff |
 | git.branchDiff | Diff current branch vs base |
 | git.commitMessage | Generate commit message from diff |
+| git.stage | Stage a file (the file.edit demo creates changes to stage) |
+| git.commit | Commit staged changes (approval-gated) |
+| git.push | Push to a remote (approval-gated) |
+| git.branch | List / create / switch / delete branches |
+| git.pr | Create or view a PR via the gh CLI |
+
+### Wait Tools
+
+| Tool | Action |
+| ------ | -------- |
+| wait.for | Fixed delay between chained commands |
+| wait.until | Wait until a wall-clock time |
+| wait.forProcess | Wait for a background process to exit (pair with shell.backgroundRun on slow.ps1) |
+| wait.forCommand | Wait until a command succeeds (pair with scripts/check.ps1) |
+
+### Hooks Tools
+
+| Tool | Action |
+| ------ | -------- |
+| hooks.list | List hooks defined in the workspace hooks.json |
+| hooks.create | Create a hook (e.g. log on task completion) |
+| hooks.update | Update an existing hook |
+| hooks.delete | Delete a hook |
 
 ### Notebook Tools
 
 | Tool | Action |
-|------|--------|
+| ------ | -------- |
 | notebook.read | List cells / read specific cell by index |
 | notebook.editCell | Edit cell source (fix REPLACE_ME in cell 1) |
 | notebook.addCell | Add new code cell |
@@ -168,9 +192,10 @@ notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteC
 ### Other Tools
 
 | Tool | Action |
-|------|--------|
+| ------ | -------- |
 | todo.write | Set multi-step plans |
+| context.retrieve | Restore an oversized tool output that was compressed into a retrieval id |
 | test.run | Run `test/example.test.ts` (vitest) |
 | handoff | Escalate to a heavier model tier |
 | clarification.askUser | Ask whether to keep/delete a file |
-| session.exportTrace | Export full session execution trace as markdown + JSON |
+| session.exportTrace | After all tools are tested, export full session execution trace as markdown + JSON |

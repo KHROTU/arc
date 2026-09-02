@@ -60,7 +60,7 @@ export default function ConversationSearch({ client, onClose }: Props) {
               ref={inputRef}
               className="arc-input"
               type="text"
-              placeholder="Search past conversations…"
+              placeholder="Search past conversations..."
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={handleKey}
@@ -69,7 +69,7 @@ export default function ConversationSearch({ client, onClose }: Props) {
           <button className="arc-iconbtn" onClick={onClose}><X size={15} /></button>
         </header>
         <div className="arc-modal-body">
-          {loading && <div className="arc-search-loading">Searching…</div>}
+          {loading && <div className="arc-search-loading">Searching...</div>}
           {!loading && !query.trim() && (
             <div className="arc-empty" style={{ padding: 48 }}>
               <Search size={32} className="arc-empty-icon" style={{ opacity: 0.3 }} />
@@ -118,10 +118,10 @@ function highlight(text: string, q: string): JSX.Element {
   const idx = lower.indexOf(q.toLowerCase());
   if (idx === -1) return <span>{text}</span>;
   const start = Math.max(0, idx - 30);
-  const prefix = start > 0 ? "…" : "";
+  const prefix = start > 0 ? "..." : "";
   const before = text.slice(start, idx);
   const match = text.slice(idx, idx + q.length);
   const after = text.slice(idx + q.length, idx + q.length + 100);
-  const suffix = text.length > idx + q.length + 100 ? "…" : "";
+  const suffix = text.length > idx + q.length + 100 ? "..." : "";
   return <span>{prefix}{before}<span className="arc-search-highlight">{match}</span>{after}{suffix}</span>;
 }

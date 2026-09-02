@@ -3,8 +3,8 @@ import { resolveGit, runGit, setGitPath } from "../src/util/process";
 describe("git resolution", () => {
   it("resolves a git executable without throwing", async () => {
     const exe = await resolveGit();
-    expect(typeof exe).toBe("string");
-    expect(exe.length).toBeGreaterThan(0);
+    expect(exe).toBeDefined();
+    expect(exe!.length).toBeGreaterThan(0);
   });
   it("runGit runs git --version or fails gracefully without throwing", async () => {
     const r = await runGit(["--version"], { cwd: process.cwd(), timeoutMs: 10_000, maxOutputBytes: 4096 });

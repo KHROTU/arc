@@ -1,4 +1,4 @@
-import { McpClient, type McpServerConfig, type McpTransport, type McpClientStatus, type McpServerNotification } from "./client.js";
+import { McpClient, type McpServerConfig, type McpTransport, type McpClientStatus, type McpServerNotification, type McpTrafficEntry, type McpTokenProvider, type McpOAuthTokens } from "./client.js";
 export interface McpTool {
   server: string;
   name: string;
@@ -36,8 +36,14 @@ interface ServerEntry {
 }
 export type McpListener = () => void;
 export type McpPersistence = () => void | Promise<void>;
+export type McpTrafficListener = (entry: McpTrafficEntry & { server: string }) => void;
 export interface McpRoot { uri: string; name?: string }
 export type McpSamplingHandler = (serverName: string, params: unknown) => Promise<unknown>;
+export interface McpAuthDelegate {
+  tokenProvider: McpTokenProvider;
+  onAuthRequired: () => Promise<McpOAuthTokens | undefined>;
+  onTokenRefreshed?: (tokens: McpOAuthTokens) => void;
+}
 export class McpAggregator {
   private servers = new Map<string, ServerEntry>();
   private listeners = new Set<McpListener>();
@@ -45,7 +51,33 @@ export class McpAggregator {
   private roots: McpRoot[] = [];
   private samplingHandler?: McpSamplingHandler;
   private removeHandler?: (serverName: string) => void | Promise<void>;
+  private trafficListeners = new Set<McpTrafficListener>();
+  private authDelegate?: (serverName: string) => McpAuthDelegate | undefined;
   constructor(private clientOptions: import("./client.js").McpClientOptions = {}) {}
+  setAuthDelegate(delegate: (serverName: string) => McpAuthDelegate | undefined): void {
+    this.authDelegate = delegate;
+  }
+  onTraffic(fn: McpTrafficListener): () => void {
+    this.trafficListeners.add(fn);
+    return () => this.trafficListeners.delete(fn);
+  }
+  async authenticate(server: string): Promise<boolean> {
+    const entry = this.resolveServer(server);
+    if (!entry || !entry.client) return false;
+    const delegate = this.authDelegate?.(entry.config.name);
+    if (!delegate) return false;
+    const tokens = await delegate.onAuthRequired();
+    if (!tokens) return false;
+    delegate.onTokenRefreshed?.(tokens);
+    await entry.client.stop();
+    entry.client = undefined;
+    entry.tools = [];
+    entry.resources = [];
+    entry.prompts = [];
+    if (entry.config.enabled) await this.startServer(entry);
+    this.notify();
+    return true;
+  }
   setRoots(roots: McpRoot[]): void {
     this.roots = roots;
   }
@@ -141,6 +173,13 @@ export class McpAggregator {
       status: s.client?.getStatus() ?? "idle",
     }));
   }
+  private trafficSinkFor(name: string) {
+    return (entry: McpTrafficEntry) => {
+      for (const l of this.trafficListeners) {
+        try { l({ ...entry, server: name }); } catch {}
+      }
+    };
+  }
   listTools(): McpTool[] {
     const out: McpTool[] = [];
     for (const s of this.servers.values()) {
@@ -211,7 +250,18 @@ export class McpAggregator {
     for (const l of this.listeners) l();
   }
   private async startServer(entry: ServerEntry) {
-    const client = new McpClient(entry.config, this.clientOptions);
+    const delegate = this.authDelegate?.(entry.config.name);
+    const client = new McpClient(entry.config, {
+      ...this.clientOptions,
+      trafficSink: this.trafficSinkFor(entry.config.name),
+      tokenProvider: delegate?.tokenProvider,
+      onAuthRequired: delegate ? async () => {
+        const tokens = await delegate.onAuthRequired();
+        if (!tokens) return undefined;
+        delegate.onTokenRefreshed?.(tokens);
+        return tokens.accessToken;
+      } : undefined,
+    });
     client.on("notification", (n) => {
       void this.handleNotification(entry, n);
     });

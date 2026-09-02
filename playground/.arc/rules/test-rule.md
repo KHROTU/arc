@@ -1,4 +1,4 @@
-# Test Rule — No destructive commands in playground
+# Test Rule - No destructive commands in playground
 
 Always avoid destructive shell commands in the playground workspace:
 - Do not run `rm`, `del`, `rmdir`, or `Remove-Item` recursively

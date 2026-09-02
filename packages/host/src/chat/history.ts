@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { ChatMessage } from "../protocol/protocol.js";
 export interface ChatMeta {
   id: string;
   title: string;
@@ -18,9 +19,9 @@ export class ChatHistory {
   private currentId: string | undefined;
   private messages: Record<string, unknown[]> = {};
   private steps: Record<string, unknown[]> = {};
-  private maxMessages = 1000;
-  private maxSteps = 2000;
-  private maxSerializedBytes = 16 * 1024 * 1024;
+  private maxMessages = 100000;
+  private maxSteps = 200000;
+  private maxSerializedBytes = 512 * 1024 * 1024;
   load(input: { chats?: ChatMeta[]; currentId?: string; messages?: Record<string, unknown[]>; steps?: Record<string, unknown[]> }) {
     this.chats = input.chats ?? [];
     this.currentId = input.currentId;
@@ -71,6 +72,14 @@ export class ChatHistory {
     const c = this.chats.find((x) => x.id === id);
     if (c) { c.title = title.trim() || c.title; c.updatedAt = Date.now(); }
     return c;
+  }
+  importChat(meta: ChatMeta, messages: ChatMessage[], steps?: unknown[]): boolean {
+    if (this.chats.some((c) => c.id === meta.id)) return false;
+    this.chats.push(meta);
+    this.messages[meta.id] = messages;
+    this.steps[meta.id] = steps ?? [];
+    this.trimChat(meta.id);
+    return true;
   }
   remove(id: string): void {
     this.chats = this.chats.filter((c) => c.id !== id);

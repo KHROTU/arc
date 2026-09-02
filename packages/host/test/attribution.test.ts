@@ -3,7 +3,7 @@ import { attributionHeaders } from "../src/providers/attribution";
 describe("attribution headers", () => {
   it("sends the OpenRouter dialect for openrouter with its own title header", () => {
     const h = attributionHeaders("openrouter");
-    expect(h["http-referer"]).toBe("https://github.com/KHROTU/arc");
+    expect(h["http-referer"]).toBe("https://github.com/khrotu/arc");
     expect(h["x-openrouter-title"]).toBe("Arc");
     expect(h["x-openrouter-categories"]).toBe("ide-extension");
     expect(h["user-agent"]).toMatch(/^Arc\//);
@@ -11,13 +11,13 @@ describe("attribution headers", () => {
   it("sends HTTP-Referer + X-Title for OpenRouter-dialect routers", () => {
     for (const kind of ["poe", "zenmux", "requesty", "orcarouter", "fastrouter", "anyapi", "unorouter"] as const) {
       const h = attributionHeaders(kind);
-      expect(h["http-referer"]).toBe("https://github.com/KHROTU/arc");
+      expect(h["http-referer"]).toBe("https://github.com/khrotu/arc");
       expect(h["x-title"]).toBe("Arc");
     }
   });
   it("sends lowercase referer/title for Vercel", () => {
     const h = attributionHeaders("vercel");
-    expect(h["http-referer"]).toBe("https://github.com/KHROTU/arc");
+    expect(h["http-referer"]).toBe("https://github.com/khrotu/arc");
     expect(h["x-title"]).toBe("Arc");
   });
   it("adds X-Source for LLM Gateway", () => {
@@ -47,7 +47,7 @@ describe("attribution headers", () => {
   it("always includes a descriptive user-agent and the safe default set", () => {
     for (const kind of ["openai", "deepseek", "mistral", "groq", "xai", "anthropic"] as const) {
       const h = attributionHeaders(kind);
-      expect(h["user-agent"]).toMatch(/^Arc\/0\.6\.1 \(\+https:\/\/github\.com\/KHROTU\/arc\)$/);
+      expect(h["user-agent"]).toMatch(/^Arc\/0\.6\.1 \(\+https:\/\/github\.com\/khrotu\/arc\)$/);
     }
   });
 });

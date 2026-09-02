@@ -54,12 +54,12 @@ pnpm --filter @arc/host test   # engine tests only
 
 - Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`.
 - Keep subjects under 72 characters; put the *why* in the body when it isn't obvious.
-- Line endings are normalized via `.gitattributes` — keep files LF (`.ps1` may stay CRLF).
+- Line endings are normalized via `.gitattributes` - keep files LF (`.ps1` may stay CRLF).
 
 ## Pull request checklist
 
 - [ ] `pnpm test` passes (engine + extension suites)
 - [ ] `pnpm build:ext` completes without errors
-- [ ] Follows the existing code style (no linter is configured — keep new code consistent with surrounding files)
+- [ ] Follows the existing code style (no linter is configured - keep new code consistent with surrounding files)
 - [ ] New behavior has a test where practical
 - [ ] No version-field or version-reference changes (maintainers handle version bumps)

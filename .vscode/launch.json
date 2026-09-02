@@ -2,6 +2,21 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Run Arc Extension (no preLaunch)",
+      "type": "extensionHost",
+      "request": "launch",
+      "folder": "${workspaceFolder}/playground",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/packages/arc"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/packages/arc/dist/**/*.js"
+      ],
+      "presentation": {
+        "reveal": "auto"
+      }
+    },
+    {
       "name": "Run Arc Extension",
       "type": "extensionHost",
       "request": "launch",
@@ -12,7 +27,7 @@
       "outFiles": [
         "${workspaceFolder}/packages/arc/dist/**/*.js"
       ],
-      "preLaunchTask": "build:ext",
+      "preLaunchTask": "build:ext (process)",
       "presentation": {
         "reveal": "auto"
       }
@@ -28,7 +43,7 @@
       "outFiles": [
         "${workspaceFolder}/packages/arc/dist/**/*.js"
       ],
-      "preLaunchTask": "build:ext",
+      "preLaunchTask": "build:ext (process)",
       "presentation": {
         "reveal": "auto"
       }
@@ -75,7 +90,7 @@
   "compounds": [
     {
       "name": "Arc: Build + Launch",
-      "preLaunchTask": "build:ext",
+      "preLaunchTask": "build:ext (process)",
       "configurations": ["Run Arc Extension"]
     }
   ]

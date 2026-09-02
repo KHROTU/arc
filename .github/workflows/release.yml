@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10 (reads packageManager from package.json)
+      - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -36,7 +36,7 @@ jobs:
         run: |
           pnpm build:ext
           pnpm test
-          pnpm --filter arc-code package # vsce directly — scripts/ is untracked
+          node scripts/package-ext.mjs
 
       - name: Resolve version and VSIX
         id: meta
@@ -46,12 +46,16 @@ jobs:
           TAG="v${VERSION}"
           if [ ! -f "$VSIX" ]; then echo "VSIX not found after clean build: $VSIX"; exit 1; fi
           sha256sum "$VSIX" > "${VSIX}.sha256"
+          SIZE_BYTES=$(stat -c%s "$VSIX")
+          SIZE_MB=$(awk "BEGIN { printf \"%.2f\", ${SIZE_BYTES}/1024000 }")
+          echo "VSIX size: ${SIZE_BYTES} bytes (${SIZE_MB} MB)"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "vsix=$VSIX" >> $GITHUB_OUTPUT
           echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "size_mb=$SIZE_MB" >> $GITHUB_OUTPUT
 
       - name: Generate SBOM
-        uses: anchore/sbom-action@65f438523a6c695224053b36fa18a54cb7026ea3 # v0.24.1
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           artifact-name: arc-code-${{ steps.meta.outputs.version }}.spdx.json
           output-file: arc-code-${{ steps.meta.outputs.version }}.spdx.json
@@ -62,7 +66,7 @@ jobs:
           subject-path: ${{ steps.meta.outputs.vsix }}
 
       - name: Create Release
-        uses: softprops/action-gh-release@fe965f7af51af5f2602596916f38a38df2e33de0 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           name: v${{ steps.meta.outputs.version }}
           tag_name: ${{ steps.meta.outputs.tag }}

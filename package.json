@@ -1,8 +1,8 @@
 {
   "name": "arc-workspace",
   "private": true,
-  "version": "0.6.2",
-  "description": "Arc — agentic coding VS Code extension (monorepo root).",
+  "version": "0.7.0",
+  "description": "Arc monorepo root",
   "packageManager": "pnpm@11.22.0",
   "engines": {
     "node": ">=18.18.0"
@@ -22,6 +22,7 @@
     "prod:ver": "node scripts/change-ver.mjs"
   },
   "devDependencies": {
+    "@gfx/zopfli": "^1.0.15",
     "@resvg/resvg-js": "^2.6.2",
     "@types/node": "22.18.0",
     "@types/vscode": "1.95.0",

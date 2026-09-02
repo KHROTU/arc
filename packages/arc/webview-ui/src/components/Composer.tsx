@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useLayoutEffect } from "react";
+import { useState, useRef, useEffect, useCallback, useLayoutEffect, type ReactNode } from "react";
 import { ArrowUp, Paperclip, Square, X, ChevronDown } from "./icons";
 import ModelPicker from "./ModelPicker";
 import ModePicker from "./ModePicker";
@@ -6,6 +6,29 @@ import EffortPicker, { type Effort } from "./EffortPicker";
 import { TodoList, type TodoItemUI } from "./TodoList";
 import type { ModelDescriptor } from "@arc/host/protocol";
 type Attachment = { uri: string; preview?: string };
+function AttachParent({ label, children }: { label: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const [flip, setFlip] = useState(false);
+  const parentRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (!open) {
+      setFlip(false);
+      return;
+    }
+    const el = parentRef.current?.querySelector<HTMLElement>(".arc-attach-submenu");
+    if (!el) return;
+    const vw = document.documentElement.clientWidth;
+    const r = el.getBoundingClientRect();
+    if (!flip && r.right > vw - 8) setFlip(true);
+    else if (flip && r.left < 8) setFlip(false);
+  }, [open, flip]);
+  return (
+    <div className="arc-attach-parent" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <button className="arc-attach-item arc-attach-has-sub" onClick={() => setOpen(false)}>{label}</button>
+      {open && <div className={`arc-attach-submenu ${flip ? "is-flipped" : ""}`}>{children}</div>}
+    </div>
+  );
+}
 type Props = {
   onSend: (text: string, attachments?: Attachment[], images?: string[]) => void;
   onStop?: () => void;
@@ -19,6 +42,7 @@ type Props = {
   queuedText?: string | null;
   onCancelQueue?: () => void;
   prefillText?: string | null;
+  prefillSeq?: number;
   todos?: TodoItemUI[] | null;
   todosOpen?: boolean;
   onToggleTodos?: () => void;
@@ -43,7 +67,7 @@ type Props = {
   onSelectEffort: (effort: Effort) => void;
 };
 export default function Composer({
-  onSend, onStop, onGuidance, streaming, disabled, pendingAttachment, onAttach, placeholder, autoFocus = true, queuedText, onCancelQueue, prefillText,
+  onSend, onStop, onGuidance, streaming, disabled, pendingAttachment, onAttach, placeholder, autoFocus = true, queuedText, onCancelQueue, prefillText, prefillSeq,
   todos, todosOpen, onToggleTodos, polishing, polishPending, onRejectPolished, polishLevel, onPolish,
   autoMode, routing, routePending, onAcceptRouted, onRejectRouted,
   variant, models, currentModelId, onSelectModel, modes, currentMode, onSelectMode, effort, onSelectEffort,
@@ -61,7 +85,7 @@ export default function Composer({
       setText(prefillText);
       ref.current?.focus();
     }
-  }, [prefillText]);
+  }, [prefillText, prefillSeq]);
   useLayoutEffect(() => {
     if (polishPending) setText(polishPending.polished);
   }, [polishPending]);
@@ -146,11 +170,24 @@ export default function Composer({
   };
   const [attachOpen, setAttachOpen] = useState(false);
   const attachRef = useRef<HTMLDivElement>(null);
+  const [dropdownFlip, setDropdownFlip] = useState(false);
   useEffect(() => {
     const h = (e: MouseEvent) => { if (attachRef.current && !attachRef.current.contains(e.target as Node)) setAttachOpen(false); };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, []);
+  useLayoutEffect(() => {
+    if (!attachOpen) {
+      setDropdownFlip(false);
+      return;
+    }
+    const el = attachRef.current?.querySelector<HTMLElement>(".arc-attach-dropdown");
+    if (!el) return;
+    const vw = document.documentElement.clientWidth;
+    const r = el.getBoundingClientRect();
+    if (!dropdownFlip && r.right > vw - 8) setDropdownFlip(true);
+    else if (dropdownFlip && r.left < 8) setDropdownFlip(false);
+  }, [attachOpen, dropdownFlip]);
   const todoCount = todos
     ? (() => {
         let done = 0, all = 0;
@@ -307,7 +344,7 @@ export default function Composer({
         }}
         rows={1}
         disabled={disabled || !!polishing || routeActive}
-        placeholder={placeholder ?? "Ask Arc anything…"}
+        placeholder={placeholder ?? "Ask Arc anything..."}
       />
       <div className="arc-composer-bar">
         <div className="arc-composer-pickers">
@@ -323,38 +360,26 @@ export default function Composer({
             <Paperclip size={14} />
           </button>
           {attachOpen && (
-            <div className="arc-attach-dropdown">
+            <div className={`arc-attach-dropdown ${dropdownFlip ? "is-flipped" : ""}`}>
               <button className="arc-attach-item" onClick={() => { attach(); setAttachOpen(false); }}>Attach selection</button>
-              <div className="arc-attach-parent">
-                <button className="arc-attach-item arc-attach-has-sub" onClick={() => setAttachOpen(false)}>Attach file</button>
-                <div className="arc-attach-submenu">
-                  <button className="arc-attach-item" onClick={() => { attachCurrentFile(); setAttachOpen(false); }}>Current file</button>
-                  <button className="arc-attach-item" onClick={() => { attachFile(); setAttachOpen(false); }}>Select…</button>
-                </div>
-              </div>
-              <div className="arc-attach-parent">
-                <button className="arc-attach-item arc-attach-has-sub" onClick={() => setAttachOpen(false)}>Attach problems</button>
-                <div className="arc-attach-submenu">
-                  <button className="arc-attach-item" onClick={() => { attachProblems(); setAttachOpen(false); }}>Current file</button>
-                  <button className="arc-attach-item" onClick={() => { attachAllProblems(); setAttachOpen(false); }}>All files</button>
-                  <button className="arc-attach-item" onClick={() => { attachFileProblems(); setAttachOpen(false); }}>Select…</button>
-                </div>
-              </div>
-              <div className="arc-attach-parent">
-                <button className="arc-attach-item arc-attach-has-sub" onClick={() => setAttachOpen(false)}>Attach from Git</button>
-                <div className="arc-attach-submenu">
-                  <button className="arc-attach-item" onClick={() => { attachGitDiff(); setAttachOpen(false); }}>Unstaged diff</button>
-                  <button className="arc-attach-item" onClick={() => { attachGitStaged(); setAttachOpen(false); }}>Staged diff</button>
-                  <button className="arc-attach-item" onClick={() => { attachChangedFiles(); setAttachOpen(false); }}>Changed files</button>
-                  <div className="arc-attach-sep" />
-                  <div className="arc-attach-parent">
-                    <button className="arc-attach-item arc-attach-has-sub" onClick={() => setAttachOpen(false)}>Pull request</button>
-                    <div className="arc-attach-submenu">
-                      <button className="arc-attach-item" onClick={() => { attachPullRequest(); setAttachOpen(false); }}>Current branch</button>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <AttachParent label="Attach file">
+                <button className="arc-attach-item" onClick={() => { attachCurrentFile(); setAttachOpen(false); }}>Current file</button>
+                <button className="arc-attach-item" onClick={() => { attachFile(); setAttachOpen(false); }}>Select...</button>
+              </AttachParent>
+              <AttachParent label="Attach problems">
+                <button className="arc-attach-item" onClick={() => { attachProblems(); setAttachOpen(false); }}>Current file</button>
+                <button className="arc-attach-item" onClick={() => { attachAllProblems(); setAttachOpen(false); }}>All files</button>
+                <button className="arc-attach-item" onClick={() => { attachFileProblems(); setAttachOpen(false); }}>Select...</button>
+              </AttachParent>
+              <AttachParent label="Attach from Git">
+                <button className="arc-attach-item" onClick={() => { attachGitDiff(); setAttachOpen(false); }}>Unstaged diff</button>
+                <button className="arc-attach-item" onClick={() => { attachGitStaged(); setAttachOpen(false); }}>Staged diff</button>
+                <button className="arc-attach-item" onClick={() => { attachChangedFiles(); setAttachOpen(false); }}>Changed files</button>
+                <div className="arc-attach-sep" />
+                <AttachParent label="Pull request">
+                  <button className="arc-attach-item" onClick={() => { attachPullRequest(); setAttachOpen(false); }}>Current branch</button>
+                </AttachParent>
+              </AttachParent>
             </div>
           )}
         </div>

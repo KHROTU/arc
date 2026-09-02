@@ -6,6 +6,7 @@ import { Agent, type AgentEventSink } from "../src/agent/agent";
 import { ModelRegistry } from "../src/routing/registry";
 import { CheckpointStore } from "../src/checkpoint/store";
 import { ModeRegistry } from "../src/modes/index";
+import { initSession } from "../src/approvals/engine";
 import type { ChatMessage } from "../src/protocol/protocol";
 function makeSink() {
   const messages: ChatMessage[] = [];
@@ -20,6 +21,8 @@ function makeSink() {
     clarification: () => {},
     done: () => {},
     error: () => {},
+    guidance: () => {},
+    compaction: () => {},
   };
   return { sink, messages };
 }
@@ -81,6 +84,7 @@ describe("Agent context compression", () => {
         workspaceRoot: tmp,
         mode: "code",
         modeRegistry: new ModeRegistry(),
+        initialSessionApprovals: { ...initSession(), autoApproveMode: "all" },
         toolContext: {
           problems: async () => [],
           problemsFor: async () => [],

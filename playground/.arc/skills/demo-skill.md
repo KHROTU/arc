@@ -1,4 +1,4 @@
-# Demo Skill — Arc Playground Conventions
+# Demo Skill - Arc Playground Conventions
 
 This skill teaches conventions for working in the Arc Agent Playground.
 

@@ -7,12 +7,25 @@ import { spawnBounded, terminateProcessTree } from "../util/process.js";
 import type { SandboxProfile } from "../sandbox/sandbox.js";
 export type McpTransport =
   | { type: "stdio"; command: string; args?: string[]; env?: Record<string, string> }
-  | { type: "http"; url: string; headers?: Record<string, string> };
+  | { type: "http"; url: string; headers?: Record<string, string>; auth?: "oauth" }
+  | { type: "sse"; url: string; headers?: Record<string, string>; auth?: "oauth" };
 export interface McpServerConfig {
   name: string;
   enabled: boolean;
   transport: McpTransport;
 }
+export interface McpTrafficEntry {
+  ts: number;
+  dir: "in" | "out";
+  info: string;
+}
+export type McpTrafficSink = (entry: McpTrafficEntry) => void;
+export interface McpOAuthTokens {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt?: number;
+}
+export type McpTokenProvider = () => Promise<string | undefined>;
 interface JsonRpcRequest {
   jsonrpc: "2.0";
   id: number | string;
@@ -39,6 +52,9 @@ export interface McpClientOptions {
   healthTimeoutMs?: number;
   workspaceRoot?: string;
   sandboxProfile?: SandboxProfile;
+  trafficSink?: McpTrafficSink;
+  tokenProvider?: McpTokenProvider;
+  onAuthRequired?: (wwwAuthenticate?: string) => Promise<string | undefined>;
 }
 export class McpClient extends EventEmitter {
   private id = 0;
@@ -59,6 +75,10 @@ export class McpClient extends EventEmitter {
   private httpAllowPrivate = false;
   private workspaceRoot?: string;
   private sandboxProfile?: SandboxProfile;
+  private trafficSink?: McpTrafficSink;
+  private tokenProvider?: McpTokenProvider;
+  private onAuthRequired?: (wwwAuthenticate?: string) => Promise<string | undefined>;
+  private oauthPrompted = false;
   constructor(public config: McpServerConfig, options: McpClientOptions = {}) {
     super();
     this.opts = {
@@ -69,6 +89,15 @@ export class McpClient extends EventEmitter {
     };
     this.workspaceRoot = options.workspaceRoot;
     this.sandboxProfile = options.sandboxProfile;
+    this.trafficSink = options.trafficSink;
+    this.tokenProvider = options.tokenProvider;
+    this.onAuthRequired = options.onAuthRequired;
+  }
+  private traffic(dir: "in" | "out", info: string): void {
+    if (!this.trafficSink) return;
+    try {
+      this.trafficSink({ ts: Date.now(), dir, info: info.slice(0, 200) });
+    } catch {}
   }
   getServerName(): string {
     return this.config.name;
@@ -86,6 +115,7 @@ export class McpClient extends EventEmitter {
   }
   async start() {
     this.shouldRun = true;
+    this.oauthPrompted = false;
     this.setStatus("starting");
     if (this.config.transport.type === "stdio") {
       await this.startStdio();
@@ -170,6 +200,7 @@ export class McpClient extends EventEmitter {
         this.pending.delete(id);
         throw new Error("MCP stdio process is not running");
       }
+      this.traffic("out", describeJsonRpc(full));
       this.proc.stdin.write(JSON.stringify(full) + "\n");
     } else {
       if (!this.httpReady || !this.httpEndpoint) {
@@ -186,22 +217,55 @@ export class McpClient extends EventEmitter {
     }
     return promise;
   }
-  private async sendHttp(req: JsonRpcRequest): Promise<void> {
-    if (!this.httpEndpoint) throw new Error("MCP HTTP endpoint not set");
-    if (this.config.transport.type !== "http") throw new Error("MCP transport is not HTTP");
-    const endpoint = this.httpEndpoint;
+  private async authHeaders(): Promise<Record<string, string>> {
+    const t = this.config.transport;
     const headers: Record<string, string> = {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
-      ...this.config.transport.headers,
+      ...(t.type === "stdio" ? {} : t.headers),
     };
+    if (t.type !== "stdio") {
+      let token = this.tokenProvider ? await this.tokenProvider() : undefined;
+      if (!token && t.auth === "oauth" && this.onAuthRequired) {
+        token = await this.challengeAuth(undefined);
+      }
+      if (token) headers.authorization = `Bearer ${token}`;
+    }
+    return headers;
+  }
+  private async challengeAuth(wwwAuthenticate?: string): Promise<string | undefined> {
+    const t = this.config.transport;
+    if (t.type === "stdio" || t.auth !== "oauth") return undefined;
+    if (!this.onAuthRequired || this.oauthPrompted) return undefined;
+    this.oauthPrompted = true;
+    this.traffic("out", "oauth authorization required");
+    try {
+      return await this.onAuthRequired(wwwAuthenticate);
+    } catch (e) {
+      this.traffic("in", `oauth failed: ${(e as Error).message}`);
+      return undefined;
+    }
+  }
+  private async sendHttp(req: JsonRpcRequest): Promise<void> {
+    if (!this.httpEndpoint) throw new Error("MCP HTTP endpoint not set");
+    const t = this.config.transport;
+    if (t.type !== "http" && t.type !== "sse") throw new Error("MCP transport is not HTTP-based");
+    const endpoint = this.httpEndpoint;
+    const headers = await this.authHeaders();
     if (this.httpSessionId) headers["mcp-session-id"] = this.httpSessionId;
+    this.traffic("out", describeJsonRpc(req));
     const res = await safeFetch(endpoint, {
       method: "POST",
       headers,
       body: JSON.stringify(req),
       signal: this.httpAbort?.signal,
-    }, { allowPrivate: this.httpAllowPrivate, allowHttpLoopback: true, sameOrigin: this.config.transport.url });
+    }, { allowPrivate: this.httpAllowPrivate, allowHttpLoopback: true, sameOrigin: t.url });
+    if (res.status === 401) {
+      res.body?.cancel();
+      const token = await this.challengeAuth(res.headers.get("www-authenticate") ?? undefined);
+      if (!token) throw new Error("MCP server requires authorization and no token is available. Use Tools > MCP > Authenticate.");
+      return this.sendHttp(req);
+    }
     if (!res.ok) {
       throw new Error(`MCP HTTP error ${res.status}: ${await readBodyLimited(res)}`);
     }
@@ -213,6 +277,7 @@ export class McpClient extends EventEmitter {
       return;
     }
     const json = JSON.parse(await readBodyLimited(res)) as JsonRpcResponse;
+    this.traffic("in", describeJsonRpc(json));
     if (json.error) throw new Error(json.error.message);
     const p = this.pending.get(req.id);
     if (p) {
@@ -239,6 +304,7 @@ export class McpClient extends EventEmitter {
         for (const data of parsed) {
           const msg = safeJsonParse(data);
           if (!msg) continue;
+          this.traffic("in", describeJsonRpc(msg));
           if ("id" in msg && msg.id !== undefined && msg.id !== null) {
             const id = msg.id as number | string;
             if (id === expectedId) {
@@ -261,6 +327,7 @@ export class McpClient extends EventEmitter {
   }
   private sendNotification(method: string, params?: unknown) {
     const msg: JsonRpcNotification = { jsonrpc: "2.0", method, params };
+    this.traffic("out", describeJsonRpc(msg));
     if (this.config.transport.type === "stdio") {
       this.proc?.stdin.write(JSON.stringify(msg) + "\n");
     } else {
@@ -268,25 +335,27 @@ export class McpClient extends EventEmitter {
     }
   }
   private postHttp(msg: unknown) {
-    if (!this.httpReady || !this.httpEndpoint || this.config.transport.type !== "http") return;
+    if (!this.httpReady || !this.httpEndpoint) return;
+    const t = this.config.transport;
+    if (t.type !== "http" && t.type !== "sse") return;
     const endpoint = this.httpEndpoint;
-    const headers: Record<string, string> = {
-      "content-type": "application/json",
-      accept: "application/json, text/event-stream",
-      ...this.config.transport.headers,
-    };
-    if (this.httpSessionId) headers["mcp-session-id"] = this.httpSessionId;
-    void safeFetch(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(msg),
-      signal: this.httpAbort?.signal,
-    }, { allowPrivate: this.httpAllowPrivate, allowHttpLoopback: true, sameOrigin: this.config.transport.url }).then(async (res) => {
-      try { await res.body?.cancel(); } catch {}
+    this.traffic("out", describeJsonRpc(msg));
+    void this.authHeaders().then((headers) => {
+      if (this.httpSessionId) headers["mcp-session-id"] = this.httpSessionId;
+      return safeFetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(msg),
+        signal: this.httpAbort?.signal,
+      }, { allowPrivate: this.httpAllowPrivate, allowHttpLoopback: true, sameOrigin: t.url }).then(async (res) => {
+        if (res.status === 401) await this.challengeAuth(res.headers.get("www-authenticate") ?? undefined);
+        try { await res.body?.cancel(); } catch {}
+      });
     }).catch(() => {});
   }
   private sendResponse(id: number | string, result?: unknown, error?: { code: number; message: string }) {
     const msg: JsonRpcResponse = { jsonrpc: "2.0", id, ...(error ? { error } : { result }) };
+    this.traffic("out", describeJsonRpc(msg));
     if (this.config.transport.type === "stdio") {
       this.proc?.stdin.write(JSON.stringify(msg) + "\n");
     } else {
@@ -350,7 +419,11 @@ export class McpClient extends EventEmitter {
         const line = stdoutBuffer.slice(0, newline).trim();
         stdoutBuffer = stdoutBuffer.slice(newline + 1);
         if (!line) continue;
-        try { this.handleMessage(JSON.parse(line) as JsonRpcMessage); } catch {}
+        try {
+          const msg = JSON.parse(line) as JsonRpcMessage;
+          this.traffic("in", describeJsonRpc(msg));
+          this.handleMessage(msg);
+        } catch {}
       }
     });
     this.proc.stderr.on("data", (_d: Buffer) => {});
@@ -364,18 +437,15 @@ export class McpClient extends EventEmitter {
       if (this.shouldRun) this.scheduleReconnect();
     });
   }
-  private async startHttp() {
+  private async startHttp(): Promise<void> {
     const t = this.config.transport;
-    if (t.type !== "http") return;
+    if (t.type !== "http" && t.type !== "sse") return;
     this.httpAbort = new AbortController();
     const parsedUrl = new URL(t.url);
     const hostname = parsedUrl.hostname.replace(/^\[|\]$/g, "");
     this.httpAllowPrivate = hostname === "localhost" || (net.isIP(hostname) > 0 && isPrivateAddress(hostname));
     const url = await assertSafeUrl(parsedUrl, { allowPrivate: this.httpAllowPrivate, allowHttpLoopback: true });
-    const headers: Record<string, string> = {
-      accept: "text/event-stream, application/json",
-      ...t.headers,
-    };
+    const headers = await this.authHeaders();
     let res: Response;
     try {
       const timeoutId = setTimeout(() => this.httpAbort?.abort(), 10_000);
@@ -385,15 +455,24 @@ export class McpClient extends EventEmitter {
       if (this.shouldRun) this.scheduleReconnect();
       throw new Error(`Failed to open MCP SSE stream: ${(e as Error).message}`);
     }
+    if (res.status === 401) {
+      res.body?.cancel();
+      const token = await this.challengeAuth(res.headers.get("www-authenticate") ?? undefined);
+      if (token) return this.startHttp();
+      throw new Error("MCP server requires authorization and the OAuth flow failed or was cancelled.");
+    }
     const sid = res.headers.get("mcp-session-id");
     if (sid) this.httpSessionId = sid;
     const ct = res.headers.get("content-type") ?? "";
     if (!res.ok || !res.body || !ct.includes("text/event-stream")) {
       res.body?.cancel();
+      if (t.type === "sse") throw new Error(`MCP SSE endpoint did not return an event stream (HTTP ${res.status}).`);
+      this.traffic("in", `http ${res.status} (stateless post mode)`);
       this.httpEndpoint = t.url;
       this.httpReady = true;
       return;
     }
+    this.traffic("in", `sse stream open ${t.url}`);
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -409,18 +488,20 @@ export class McpClient extends EventEmitter {
           buffer = buffer.slice(idx + 2);
           const parsed = parseSseBlock(block);
           if (!parsed) continue;
-          for (const data of parsed) {
-            const text = data;
-            if (text.startsWith("http")) {
-              const endpoint = await assertSafeUrl(text.trim(), { allowPrivate: this.httpAllowPrivate, allowHttpLoopback: true, sameOrigin: t.url });
-              this.httpEndpoint = endpoint.toString();
-              this.httpReady = true;
-              continue;
-            }
-            const msg = safeJsonParse(text);
-            if (!msg) continue;
-            this.handleMessage(msg);
+        for (const data of parsed) {
+          const text = data;
+          if (text.startsWith("http")) {
+            const endpoint = await assertSafeUrl(text.trim(), { allowPrivate: this.httpAllowPrivate, allowHttpLoopback: true, sameOrigin: t.url });
+            this.httpEndpoint = endpoint.toString();
+            this.httpReady = true;
+            this.traffic("in", `endpoint ${this.httpEndpoint}`);
+            continue;
           }
+          const msg = safeJsonParse(text);
+          if (!msg) continue;
+          this.traffic("in", describeJsonRpc(msg));
+          this.handleMessage(msg);
+        }
         }
       }
     };
@@ -522,6 +603,28 @@ interface JsonRpcResponse {
   id?: number | string;
   result?: unknown;
   error?: { code: number; message: string; data?: unknown };
+}
+function describeJsonRpc(msg: unknown): string {
+  if (!msg || typeof msg !== "object") return "message";
+  const m = msg as Record<string, unknown>;
+  if (typeof m.method !== "string") {
+    if (m.error) return `response ${JSON.stringify(m.id)} error: ${String((m.error as { message?: unknown }).message ?? "")}`;
+    if ("result" in m) {
+      let size = 0;
+      try { size = JSON.stringify(m.result ?? null)?.length ?? 0; } catch {}
+      return `response ${JSON.stringify(m.id)} ok (~${size}B)`;
+    }
+    return `message ${JSON.stringify(m.id ?? "")}`;
+  }  let detail = "";
+  const params = m.params as Record<string, unknown> | undefined;
+  if (params && typeof params === "object") {
+    if (typeof params.name === "string") detail = ` ${params.name}`;
+    else if (typeof params.uri === "string") detail = ` ${params.uri}`;
+    else if (m.method === "tools/call" && typeof params.arguments === "object" && params.arguments !== null) {
+      try { detail = ` ${JSON.stringify(params.arguments).slice(0, 80)}`; } catch {}
+    }
+  }
+  return `${m.method}${detail}`;
 }
 function safeJsonParse(s: string): JsonRpcResponse | JsonRpcNotification | null {
   try {

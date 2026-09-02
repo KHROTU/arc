@@ -56,6 +56,15 @@ const TOOL_PHRASES: Record<string, ToolPhrase> = {
   "rule.read": ["Read", "rules"],
   "rule.create": ["Created", "rules"],
   "session.exportTrace": ["Exported", "trace"],
+  "hooks.list": ["Listed", "hooks"],
+  "hooks.create": ["Created", "hooks"],
+  "hooks.update": ["Updated", "hooks"],
+  "hooks.delete": ["Deleted", "hooks"],
+  "git.stage": ["Staged", "changes"],
+  "git.commit": ["Committed", "changes"],
+  "git.push": ["Pushed", "commits"],
+  "git.branch": ["Managed", "branches"],
+  "git.pr": ["Managed", "pull requests"],
 };
 const TOOL_PREFIX_PHRASES: [string, ToolPhrase][] = [
   ["browser.", ["Used", "the browser"]],
@@ -120,7 +129,7 @@ export function groupSummaryFor(steps: ProcessStep[], mode: GroupSummaryMode, fa
   const ranked = rankToolPairs(steps);
   if (!ranked.length) return fallback;
   const label = joinToolPhrases(ranked[0], ranked[1]);
-  return label.length > GROUP_SUMMARY_MAX_CHARS ? `${label.slice(0, GROUP_SUMMARY_MAX_CHARS - 1)}…` : label;
+  return label.length > GROUP_SUMMARY_MAX_CHARS ? `${label.slice(0, GROUP_SUMMARY_MAX_CHARS - 1)}...` : label;
 }
 export async function llmGroupSummary(
   registry: ModelRegistry,
@@ -165,7 +174,7 @@ export async function llmGroupSummary(
         }
         const text = out.trim().replace(/^["'\s]+|["'\s.]+$/g, "").split("\n")[0].trim();
         if (!text) continue;
-        return text.length > GROUP_SUMMARY_MAX_CHARS ? `${text.slice(0, GROUP_SUMMARY_MAX_CHARS - 1)}…` : text;
+        return text.length > GROUP_SUMMARY_MAX_CHARS ? `${text.slice(0, GROUP_SUMMARY_MAX_CHARS - 1)}...` : text;
       } finally {
         clearTimeout(timer);
       }

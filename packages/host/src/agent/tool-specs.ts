@@ -22,7 +22,7 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
     }, ["path"]),
   },
   "file.edit": {
-    description: "Apply an edit to an existing file. PREFER the SEARCH/REPLACE block format in `search` over plain text — it expresses intent unambiguously and survives whitespace drift:\n\npath/to/file.ts\n<<<<<<< SEARCH\nexact text to find (include enough surrounding lines to be unique)\n=======\nreplacement text\n>>>>>>> REPLACE\n\nFall back to plain `search` + `replace` strings only for trivial one-line tweaks. If you must pass plain text, include enough surrounding lines to make the match unique.",
+    description: "Apply an edit to an existing file. PREFER the SEARCH/REPLACE block format in `search` over plain text - it expresses intent unambiguously and survives whitespace drift:\n\npath/to/file.ts\n<<<<<<< SEARCH\nexact text to find (include enough surrounding lines to be unique)\n=======\nreplacement text\n>>>>>>> REPLACE\n\nFall back to plain `search` + `replace` strings only for trivial one-line tweaks. If you must pass plain text, include enough surrounding lines to make the match unique.",
     parameters: obj({
       path: str("Workspace-relative file path."),
       search: str("SEARCH/REPLACE block (preferred) or exact text to find. For SEARCH/REPLACE: include a header line, then '<<<<<<< SEARCH' / search content / '=======' / replace content / '>>>>>>> REPLACE'."),
@@ -57,7 +57,7 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
     parameters: obj({
       command: str("The command line to run."),
       cwd: str("Optional working directory (defaults to the workspace root)."),
-      timeout: str("Optional timeout in seconds. Use -1 for no limit (default)."),
+      timeout: str("Optional timeout in seconds. Use -1 for no limit (default). On timeout the process is moved to the background instead of killed: the result returns partial output plus a background id for shell.check."),
     }),
   },
   "shell.backgroundRun": {
@@ -294,13 +294,16 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
   "checkpoint.revert": {
     description: "Revert files modified during a turn. Args: { index } (1=most recent) or { turnId } (exact UUID). Use checkpoint.list first to find available turns.",
     parameters: obj({
-      index: num("1-based index of the checkpoint to revert to (1 is most recent). Use this OR turnId — not both."),
-      turnId: str("Exact turn UUID from checkpoint.list. Use this OR index — not both."),
+      index: num("1-based index of the checkpoint to revert to (1 is most recent). Use this OR turnId - not both."),
+      turnId: str("Exact turn UUID from checkpoint.list. Use this OR index - not both."),
     }),
   },
   "checkpoint.list": {
-    description: "List all available checkpoint snapshots for the current workspace. Returns turn IDs, timestamps, and affected files — most recent first.",
-    parameters: obj({}),
+    description: "List checkpoint snapshots for the current workspace. Returns turn IDs, timestamps, and affected files, most recent last. Output is capped - pass limit to widen or since (ISO date) to filter by time.",
+    parameters: obj({
+      limit: num("Max checkpoints to return (default 25, max 200). The most recent N are returned."),
+      since: str("Only include checkpoints at or after this ISO timestamp (e.g. 2026-08-31 or 2026-08-31T12:00:00Z)."),
+    }),
   },
   "checkpoint.compare": {
     description: "Compare two checkpoints and show which files changed between them. Args: { indexA, indexB } (1-based indices from checkpoint.list) or { turnIdA, turnIdB } (exact UUIDs).",
@@ -360,9 +363,9 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
     }, ["question"]),
   },
   "mode.switch": {
-    description: "Switch the active agent mode at runtime. Use to transition between plan, code, ask, and debug modes as the task evolves.",
-    parameters: obj({
-      slug: str("The mode slug to switch to (plan, code, ask, debug, or a user-defined mode)."),
+      description: "Switch the active agent mode at runtime. Use to transition between plan, code, debug, and audit modes as the task evolves.",
+      parameters: obj({
+        slug: str("The mode slug to switch to (plan, code, debug, audit, or a user-defined mode)."),
     }, ["slug"]),
   },
   "skill.read": {
@@ -437,6 +440,81 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
   "git.commitMessage": {
     description: "Supply a diff to compose a conventional commit message, or call without arguments to fetch the current staged diff.",
     parameters: obj({ diff: str("Optional diff text to base the commit message on.") }),
+  },
+  "git.stage": {
+    description: "Stage changes for commit.",
+    parameters: obj({
+      paths: { type: "array", items: { type: "string" }, description: "Paths to stage." },
+      all: bool("Stage every change including untracked files."),
+      update: bool("Stage modifications of tracked files only."),
+    }),
+  },
+  "git.commit": {
+    description: "Commit the staged changes.",
+    parameters: obj({
+      message: str("Commit message."),
+      all: bool("Also stage modifications of tracked files before committing."),
+    }, ["message"]),
+  },
+  "git.push": {
+    description: "Push commits to a remote.",
+    parameters: obj({
+      remote: str("Remote name. Defaults to the push default."),
+      branch: str("Branch to push. Defaults to the current branch."),
+      setUpstream: bool("Set upstream tracking for the branch."),
+      force: bool("Use --force-with-lease (safer forced push)."),
+    }),
+  },
+  "git.branch": {
+    description: "Branch operations.",
+    parameters: obj({
+      action: enumStr(["list", "create", "switch", "delete"], "Operation to perform."),
+      name: str("Branch name for create/switch/delete."),
+      force: bool("switch reuses an existing branch (-C); delete uses -D."),
+    }, ["action"]),
+  },
+  "hooks.list": {
+    description: "List the workspace lifecycle hooks.",
+    parameters: obj({}),
+  },
+  "hooks.create": {
+    description: "Create a lifecycle hook that runs a shell command when the event fires. Persists to the workspace hooks file; applies to new sessions.",
+    parameters: obj({
+      event: enumStr(["session.start", "user.submit", "pre.tool", "post.tool", "pre.compact", "post.compact", "pre.handoff", "notification", "stop", "subagent.spawn", "instructions.loaded"], "Event when the hook fires."),
+      command: str("Shell command to run."),
+      command_windows: str("Windows-only command variant."),
+      tool: str("Matcher: only fire for this tool name (pre.tool/post.tool)."),
+      mode: str("Matcher: only fire in this mode."),
+      tier: enumStr(["heavy", "default", "light", "free"], "Matcher: only fire for this model tier."),
+      timeout: num("Timeout in seconds (default 10)."),
+    }, ["event", "command"]),
+  },
+  "hooks.update": {
+    description: "Update a lifecycle hook by index. Omitted fields keep their current values.",
+    parameters: obj({
+      index: num("Index from hooks.list."),
+      event: enumStr(["session.start", "user.submit", "pre.tool", "post.tool", "pre.compact", "post.compact", "pre.handoff", "notification", "stop", "subagent.spawn", "instructions.loaded"], "Event when the hook fires."),
+      command: str("Shell command to run."),
+      command_windows: str("Windows-only command variant."),
+      tool: str("Matcher: only fire for this tool name."),
+      mode: str("Matcher: only fire in this mode."),
+      tier: enumStr(["heavy", "default", "light", "free"], "Matcher: only fire for this model tier."),
+      timeout: num("Timeout in seconds."),
+    }, ["index"]),
+  },
+  "hooks.delete": {
+    description: "Delete a lifecycle hook by index.",
+    parameters: obj({ index: num("Index from hooks.list.") }, ["index"]),
+  },
+  "git.pr": {
+    description: "GitHub pull request operations via the gh CLI.",
+    parameters: obj({
+      action: enumStr(["create", "view", "list"], "Operation to perform (default create)."),
+      title: str("PR title for create."),
+      body: str("PR body for create."),
+      base: str("Base branch for create."),
+      draft: bool("Create as a draft PR."),
+    }),
   },
   "browser.hover": {
     description: "Hover over an element matching a CSS selector.",
@@ -624,4 +702,4 @@ export function parseMcpToolSpec(name: string): { server: string; tool: string }
   const idx = rest.indexOf("__");
   if (idx <= 0) return undefined;
   return { server: rest.slice(0, idx), tool: rest.slice(idx + 2) };
-}
+}

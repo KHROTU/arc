@@ -14,3 +14,7 @@ export function formatResult(ok: boolean, message: string): string {
 export function getVersion(): string {
   return "v0.1.0";
 }
+
+export function slugify(input: string): string {
+  return "REPLACE_ME";
+}

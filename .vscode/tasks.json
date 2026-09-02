@@ -20,6 +20,16 @@
       "problemMatcher": ["$tsc"]
     },
     {
+      "label": "build:ext (process)",
+      "type": "process",
+      "command": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      "args": ["-NoProfile", "-Command", "pnpm build:ext"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "presentation": { "reveal": "silent", "panel": "dedicated" },
+      "problemMatcher": ["$tsc"]
+    },
+    {
       "label": "build:webview",
       "type": "shell",
       "command": "pnpm",

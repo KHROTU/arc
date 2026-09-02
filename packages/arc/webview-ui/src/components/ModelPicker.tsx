@@ -100,7 +100,7 @@ export default function ModelPicker({ models, currentModelId, onSelect, compact 
     return (
       <div className="arc-model">
         <button className="arc-model-trigger arc-model-trigger-empty">
-          <span className="arc-model-trigger-label">no models — open settings</span>
+          <span className="arc-model-trigger-label">no models - open settings</span>
         </button>
       </div>
     );
@@ -134,7 +134,7 @@ export default function ModelPicker({ models, currentModelId, onSelect, compact 
             <input
               ref={inputRef}
               className="arc-model-dropdown-search-input"
-              placeholder="Search models…"
+              placeholder="Search models..."
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={handleKey}

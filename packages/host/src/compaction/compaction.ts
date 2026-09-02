@@ -207,12 +207,12 @@ export function renderForSummary(msgs: ChatMessage[]): string {
       continue;
     }
     if (m.thinking) line += `\n[thinking] ${m.thinking}`;
-    if (line.length > SUMMARY_MSG_CAP) line = `${line.slice(0, SUMMARY_MSG_CAP)} …`;
+    if (line.length > SUMMARY_MSG_CAP) line = `${line.slice(0, SUMMARY_MSG_CAP)} ...`;
     lines.push(line);
   }
   const total = lines.reduce((s, l) => s + l.length + 1, 0);
   if (total <= SUMMARY_TOTAL_BUDGET) return lines.join("\n");
-  const OMISSION_MARK = "…(transcript omitted for length — sections above cover the oldest turns and sections below the newest turns)…";
+  const OMISSION_MARK = "...(transcript omitted for length - sections above cover the oldest turns and sections below the newest turns)...";
   const headBudget = Math.floor(SUMMARY_TOTAL_BUDGET * 0.2);
   let used = 0;
   let headEnd = 0;

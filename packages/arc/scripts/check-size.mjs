@@ -14,7 +14,7 @@ try {
   const info = statSync(vsixPath);
   const kb = info.size / 1024;
   const mb = (kb / 1024).toFixed(3);
-  console.log(`VSIX: ${kb.toFixed(1)} KB (${mb} MB) — ${files[0]}`);
+  console.log(`VSIX: ${kb.toFixed(1)} KB (${mb} MB) - ${files[0]}`);
   if (kb > MAX_KB) {
     console.error(`ERROR: VSIX exceeds ${MAX_KB} KB budget (${kb.toFixed(1)} KB)`);
     process.exit(1);

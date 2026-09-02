@@ -57,8 +57,8 @@ describe("listCells", () => {
   it("truncates long previews", () => {
     const doc: NotebookDocument = { cells: [{ cell_type: "code", source: "x".repeat(200) }] };
     const cells = listCells(doc);
-    expect(cells[0].preview.length).toBe(120);
-    expect(cells[0].preview.endsWith("…")).toBe(true);
+    expect(cells[0].preview.length).toBe(122);
+    expect(cells[0].preview.endsWith("...")).toBe(true);
   });
 });
 describe("readCell", () => {

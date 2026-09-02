@@ -1,4 +1,4 @@
-# Checkpoint B — After edit
+# Checkpoint B - After edit
 # This file represents the state AFTER an edit.
 # checkpoint.compare(1, 2) should show the diff between A and B.
 

@@ -65,7 +65,7 @@ export function serializeNotebook(doc: NotebookDocument): string {
 export function listCells(doc: NotebookDocument): CellSummary[] {
   return doc.cells.map((c, i) => {
     const src = joinSource(c.source);
-    const preview = src.length > 120 ? src.slice(0, 119) + "…" : src;
+    const preview = src.length > 120 ? src.slice(0, 119) + "..." : src;
     return { index: i, cellType: c.cell_type, preview, hasOutput: !!(c.outputs && c.outputs.length) };
   });
 }

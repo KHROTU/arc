@@ -26,7 +26,7 @@ const SYM: Record<string, string> = {
   forall: "∀", exists: "∃", nexists: "∄", nabla: "∇", partial: "∂", infty: "∞", infinity: "∞",
   to: "→", rightarrow: "→", leftarrow: "←", leftrightarrow: "↔", uparrow: "↑", downarrow: "↓",
   updownarrow: "↕", Rightarrow: "⇒", Leftarrow: "⇐", mapsto: "↦", rightleftharpoons: "⇌",
-  cdots: "⋯", ldots: "…", dots: "…", vdots: "⋮", ddots: "⋱",
+  cdots: "⋯", ldots: "...", dots: "...", vdots: "⋮", ddots: "⋱",
   prime: "′", degree: "°", angle: "∠", perp: "⊥", parallel: "∥", therefore: "∴", because: "∵",
   emptyset: "∅", aleph: "ℵ", hbar: "ℏ", ell: "ℓ", Re: "ℜ", Im: "ℑ",
   langle: "⟨", rangle: "⟩", mid: "|", vert: "|", Vert: "‖", ast: "∗", star: "∗",

@@ -76,7 +76,7 @@ export function formatDepGraph(nodes: DepNode[], workspaceRoot: string): string 
   if (hubs.length > 0) {
     lines.push("### High-connectivity modules (imported by 3+ files)");
     for (const n of hubs) {
-      lines.push(`- \`${n.file}\` — imported by ${n.importedBy.length} file${n.importedBy.length === 1 ? "" : "s"}, imports ${n.imports.length}`);
+      lines.push(`- \`${n.file}\` - imported by ${n.importedBy.length} file${n.importedBy.length === 1 ? "" : "s"}, imports ${n.imports.length}`);
     }
     lines.push("");
   }
@@ -93,8 +93,8 @@ export function formatDepGraph(nodes: DepNode[], workspaceRoot: string): string 
   lines.push("| File | Imports | Imported by |");
   lines.push("| :--- | :--- | :--- |");
   for (const n of nodes.slice(0, 200)) {
-    const imps = n.imports.length ? n.imports.map((i) => `\`${i}\``).join(", ") : "—";
-    const by = n.importedBy.length ? n.importedBy.length + "" : "—";
+    const imps = n.imports.length ? n.imports.map((i) => `\`${i}\``).join(", ") : "-";
+    const by = n.importedBy.length ? n.importedBy.length + "" : "-";
     lines.push(`| \`${n.file}\` | ${imps} | ${by} |`);
   }
   if (nodes.length > 200) lines.push(`| ... | +${nodes.length - 200} more files | |`);

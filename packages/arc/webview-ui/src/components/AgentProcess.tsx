@@ -167,7 +167,7 @@ const ClarificationBlock = memo(({ question, options }: { question?: string; opt
       </div>
     )}
     <div className="arc-proc-clar-input">
-      <input type="text" placeholder="Type an answer…" />
+      <input type="text" placeholder="Type an answer..." />
       <button type="button" aria-label="Submit answer"><CornerDownLeft size={13} /></button>
     </div>
   </div>
@@ -304,7 +304,7 @@ const GroupNode = memo(({ step, onOpenFile, onOpenFullscreenDiff, toolTreeMode, 
     const titles = [...new Set((step.children ?? []).flatMap((c) => [c.title, ...(c.children ?? []).map((g) => g.title)]).filter(Boolean) as string[])].slice(0, 60);
     requestAISummary(step.id, titles).then((t) => {
       if (cancelled || !t) return;
-      const text = t.length > GROUP_SUMMARY_CAP ? `${t.slice(0, GROUP_SUMMARY_CAP - 1)}…` : t;
+      const text = t.length > GROUP_SUMMARY_CAP ? `${t.slice(0, GROUP_SUMMARY_CAP - 1)}...` : t;
       setAiTitle(text);
       saveGroupTitle?.(lastChildId, text, "ai");
     }).catch(() => {});
@@ -432,7 +432,7 @@ const ProcessNode = memo(({ step, isActive, onToggle, onOpenFile, onOpenFullscre
               )}
               {step.command && (
                 <div className="arc-proc-block">
-                  <span className="arc-proc-block-label">Command</span>
+                  <span className="arc-proc-block-label">{step.toolName === "browser.runCode" || step.toolName === "browser.evaluate" ? "Code" : "Command"}</span>
                   <div className="arc-code"><Code text={step.command} /></div>
                 </div>
               )}

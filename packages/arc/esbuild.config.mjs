@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const watch = process.argv.includes("--watch");
 const isProd = !watch && process.env.NODE_ENV !== "development";
+const wantMetafile = !!process.env.ARC_METAFILE;
 const hostSrc = resolve(__dirname, "../host/src");
 if (!watch) {
   await rm(resolve(__dirname, "dist"), { recursive: true, force: true });
@@ -14,9 +15,10 @@ await mkdir(resolve(__dirname, "dist"), { recursive: true });
 const host = {
   entryPoints: [resolve(__dirname, "src/extension/host-entry.ts")],
   bundle: true,
+  metafile: wantMetafile,
   format: "cjs",
   platform: "node",
-  target: "node18.18",
+  target: "node20",
   outfile: resolve(__dirname, "dist/extension.js"),
   external: ["vscode", "playwright", "playwright-core", "playwright-firefox", "undici", "@img/*", "canvas"],
   charset: "utf8",
@@ -54,9 +56,10 @@ const host = {
 const webview = {
   entryPoints: [resolve(__dirname, "webview-ui/src/entry.tsx")],
   bundle: true,
+  metafile: wantMetafile,
   format: "esm",
   platform: "browser",
-  target: "es2020",
+  target: "es2022",
   outfile: resolve(__dirname, "dist/webview.js"),
   jsx: "automatic",
   charset: "utf8",
@@ -118,8 +121,29 @@ if (watch) {
   });
   console.log("[arc] watching...");
 } else {
-  await ctx1.rebuild();
-  await ctx2.rebuild();
+  const r1 = await ctx1.rebuild();
+  const r2 = await ctx2.rebuild();
+  if (wantMetafile) {
+    await writeFile(resolve(__dirname, "dist/meta.json"), JSON.stringify(r1.metafile));
+    await writeFile(resolve(__dirname, "dist/meta-webview.json"), JSON.stringify(r2.metafile));
+  }
+  if (isProd && !process.env.ARC_NO_TERSER) {
+    try {
+      const { minify } = await import("terser");
+      for (const name of ["extension.js", "webview.js"]) {
+        const out = resolve(__dirname, "dist", name);
+        const res = await minify(await readFile(out, "utf-8"), {
+          compress: { passes: 3, ecma: 2022 },
+          mangle: { toplevel: true },
+          format: { ecma: 2022 },
+        });
+        if (res.code) await writeFile(out, res.code);
+      }
+      console.log("[arc] terser post-pass done");
+    } catch (e) {
+      console.warn(`[arc] terser post-pass skipped: ${e.message}`);
+    }
+  }
   await ctx1.dispose();
   await ctx2.dispose();
 }

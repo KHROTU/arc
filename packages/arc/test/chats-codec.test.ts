@@ -19,7 +19,7 @@ function sampleSnapshot(): ChatSnapshot {
         },
         { id: "m3", role: "tool", content: "ok", toolCallId: "t1", ts: 1700000000300 },
         {
-          id: "m4", role: "assistant", content: "Found it — image attached.", ts: 1700000000400,
+          id: "m4", role: "assistant", content: "Found it - image attached.", ts: 1700000000400,
           images: [{ type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } }],
           noCompact: true,
         },

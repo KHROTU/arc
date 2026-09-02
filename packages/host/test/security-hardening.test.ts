@@ -34,14 +34,28 @@ describe("security hardening", () => {
     await expect(new FileEditor(root, true).read("\\\\attacker\\share\\secret.txt")).rejects.toThrow("not allowed");
     await expect(new FileEditor(root, true).read("file.txt::$DATA")).rejects.toThrow("not allowed");
   });
-  it("forces approval for external reads and code execution", () => {
+  it("auto-approve policy matrix: off always asks, safelist/allowlist/hail mary unlock their tiers", () => {
     const root = path.join(os.tmpdir(), "arc-approval-root");
-    const session = initSession();
-    session.autoApproveAll = true;
-    expect(resolveApproval(DEFAULT_APPROVALS, session, "read", { filePath: path.join(os.tmpdir(), "outside.txt"), workspaceRoot: root })).toBe("ask");
-    expect(resolveApproval(DEFAULT_APPROVALS, session, "code.execute")).toBe("ask");
-    expect(resolveApproval(DEFAULT_APPROVALS, session, "mcp.configure")).toBe("ask");
-    expect(resolveApproval(DEFAULT_APPROVALS, session, "subagent")).toBe("ask");
+    const outside = path.join(os.tmpdir(), "outside.txt");
+    const mk = (mode: "off" | "safe" | "allowlist" | "all") => { const s = initSession(); s.autoApproveMode = mode; return s; };
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("off"), "read", { toolName: "file.read", filePath: "src/a.ts", workspaceRoot: root })).toBe("ask");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("off"), "shell.safe")).toBe("ask");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("safe"), "read", { toolName: "file.read", filePath: "src/a.ts", workspaceRoot: root })).toBe("auto");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("safe"), "shell.safe", { toolName: "shell.run", command: "git status", workspaceRoot: root })).toBe("auto");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("safe"), "browser")).toBe("auto");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("safe"), "code.execute")).toBe("ask");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("safe"), "subagent")).toBe("ask");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("safe"), "mcp.configure")).toBe("ask");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("allowlist"), "read.external", { toolName: "file.read", filePath: outside, workspaceRoot: root })).toBe("auto");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("allowlist"), "shell.other", { toolName: "git.commit", command: "git commit -m x", workspaceRoot: root })).toBe("auto");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("allowlist"), "code.execute")).toBe("ask");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("allowlist"), "mcp.configure")).toBe("ask");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("all"), "code.execute")).toBe("ask");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("all"), "mcp.configure")).toBe("ask");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("all"), "subagent")).toBe("ask");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("all"), "write.local-protected", { toolName: "file.edit", filePath: path.join(root, ".vscode", "settings.json"), workspaceRoot: root })).toBe("auto");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("allowlist"), "write.local-protected", { toolName: "file.edit", filePath: path.join(root, ".vscode", "settings.json"), workspaceRoot: root })).toBe("ask");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("all"), "none")).toBe("ask");
   });
   it("blocks built-in secret patterns without hook configuration", async () => {
     const result = await runPreWriteHooks("config.ts", 'const token = "sk-proj-abcdefghijklmnopqrstuvwxyz123456";');

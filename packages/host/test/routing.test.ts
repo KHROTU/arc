@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { ModelRegistry } from "../src/routing/registry";
-import { pickProvider, routeWithFailover, routeStream, recordFailure, recordSuccess, resetFailures, StallError } from "../src/routing/router";
+import { pickProvider, routeWithFailover, routeStream, recordFailure, recordSuccess, resetFailures, StallError, withProviderOverrides, estimateCost } from "../src/routing/router";
 import { perf } from "../src/routing/performance";
 import { AsyncEventQueue } from "../src/util/stream";
 import type { ModelDescriptor, ProviderConfig } from "../src/protocol/protocol";
@@ -227,4 +227,25 @@ describe("PerformanceTracker", () => {
     expect(perf.score("p1", "m1")).toBeGreaterThan(badScore + 30);
   });
   it("reset clears", () => { perf.recordFailure("p1", "m1"); perf.resetAll(); expect(perf.score("p1", "m1")).toBe(90); });
+});describe("withProviderOverrides / estimateCost", () => {
+  it("applies per-provider overrides on top of the model", () => {
+    const model = makeModel({ contextWindow: 8000, maxOutputTokens: 1000, costPer1mIn: 1, costPer1mOut: 2 });
+    const ref = model.providers[0];
+    expect(withProviderOverrides(model, undefined)).toBe(model);
+    const overridden = withProviderOverrides(model, { ...ref, contextWindow: 200000, maxOutputTokens: 8192, costPer1mIn: 3, costPer1mOut: 15 });
+    expect(overridden.contextWindow).toBe(200000);
+    expect(overridden.maxOutputTokens).toBe(8192);
+    expect(overridden.costPer1mIn).toBe(3);
+    expect(overridden.costPer1mOut).toBe(15);
+    const partial = withProviderOverrides(model, { ...ref, costPer1mIn: 5 });
+    expect(partial.costPer1mIn).toBe(5);
+    expect(partial.costPer1mOut).toBe(2);
+    expect(partial.contextWindow).toBe(8000);
+  });
+  it("estimateCost prefers provider overrides", () => {
+    const model = makeModel({ costPer1mIn: 1, costPer1mOut: 2 });
+    expect(estimateCost(model, { prompt: 1_000_000, completion: 1_000_000 })).toBeCloseTo(3);
+    expect(estimateCost(model, { prompt: 1_000_000, completion: 1_000_000 }, { costPer1mIn: 10, costPer1mOut: 0 })).toBeCloseTo(10);
+    expect(estimateCost(model, { prompt: 1_000_000, completion: 1_000_000, thinking: 500_000 }, { costPer1mIn: 0, costPer1mOut: 4 })).toBeCloseTo(6);
+  });
 });

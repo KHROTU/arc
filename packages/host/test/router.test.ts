@@ -1,11 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { loadDifficultyModel, estimateDifficulty } from "../src/router/tfidf.js";
 import { routePrompt, tierFallbackScore, qualityForPreset, ROUTER_QUALITY_PRESETS } from "../src/router/route.js";
 import { loadCalibrationModel, loadCapabilityModel, requiredScore } from "../src/router/calibration.js";
 import { loadDomainModel, classifyDomain, domainScores } from "../src/router/domain.js";
-import { lookupIntelligence, matchIntelligence, AA_INTELLIGENCE } from "../src/router/aa.js";
+import { lookupIntelligence, matchIntelligence, setAAList, getAAList, consolidateOpenRouterModels, ensureAAList, type AAModel } from "../src/router/aa.js";
 import type { DifficultyModel } from "../src/router/tfidf.js";
 import type { CalibrationModel, CapabilityModel } from "../src/router/calibration.js";
 import type { DomainModel, DomainModelJson } from "../src/router/domain.js";
@@ -195,16 +196,22 @@ describe("router v2 calibration", () => {
   });
 });
 describe("router aa list", () => {
+  const SEED: AAModel[] = [
+    { name: "Claude Opus 5", slug: "claude-opus-5", provider: "anthropic", score: 63 },
+    { name: "Claude Sonnet 5", slug: "claude-sonnet-5", provider: "anthropic", score: 55 },
+    { name: "GLM 5.2", slug: "glm-5-2", provider: "z-ai", score: 53 },
+    { name: "DeepSeek V4 Flash", slug: "deepseek-v4-flash", provider: "deepseek", score: 52 },
+    { name: "Gemma 4 31B", slug: "gemma-4-31b", provider: "google", score: 30 },
+    { name: "Nemotron 3 Nano", slug: "nemotron-3-nano", provider: "nvidia", score: 15 },
+  ];
+  beforeAll(() => {
+    setAAList(SEED);
+  });
   it("matches configured model ids and labels", () => {
     expect(lookupIntelligence("glm-5-2")?.score).toBe(53);
     expect(lookupIntelligence("deepseek-v4-flash")?.score).toBe(52);
     expect(lookupIntelligence("whatever", "Claude Opus 5")?.score).toBe(63);
     expect(lookupIntelligence("unknown-model")).toBeUndefined();
-  });
-  it("consolidates versioned releases into the base slug", () => {
-    expect(lookupIntelligence("deepseek-v4-flash-0731")?.slug).toBe("deepseek-v4-flash");
-    expect(lookupIntelligence("deepseek-v4-flash-0731")?.score).toBe(52);
-    expect(AA_INTELLIGENCE.some((e) => e.slug === "deepseek-v4-flash-0731")).toBe(false);
   });
   it("fuzzy-matches suffixed ids and approximate labels", () => {
     expect(matchIntelligence("gemma-4-31b-mr204qvj", "Gemma 4 31B")?.confidence).toBe(1);
@@ -214,10 +221,117 @@ describe("router aa list", () => {
     const sonnet = matchIntelligence("claude-sonnet-4-5", "Claude Sonnet 4.5");
     expect(sonnet?.confidence).toBeGreaterThan(0.5);
   });
-  it("covers the full AA leaderboard scale", () => {
-    expect(AA_INTELLIGENCE.length).toBeGreaterThan(150);
-    const scored = AA_INTELLIGENCE.filter((e) => e.score !== undefined);
-    expect(scored.length).toBeGreaterThan(150);
-    expect(Math.max(...(scored.map((e) => e.score) as number[]))).toBe(63);
+});
+describe("openrouter consolidation", () => {
+  const model = (id: string, name: string, aa: Record<string, number | null> | null) =>
+    ({ id, name, created: 1788000000, ...(aa ? { benchmarks: { artificial_analysis: aa } } : {}) });
+  const payload = (models: unknown[]) => JSON.stringify({ data: models });
+  const FULL = { intelligence_index: 60, coding_index: 50, agentic_index: 40 };
+  it("strips vendor prefixes, composes the weighted score, and sorts by score", () => {
+    const rows = consolidateOpenRouterModels(payload([
+      model("anthropic/claude-fable-5.1", "Anthropic: Claude Fable 5.1", FULL),
+      model("z-ai/glm-5.3", "Z.ai: GLM 5.3", { intelligence_index: 59.5, coding_index: 55, agentic_index: 45 }),
+      model("qwen/qwen3.8-27b", "Qwen: Qwen3.8 27B", { intelligence_index: 52 }),
+    ]));
+    expect(rows.map((r) => ({ name: r.name, slug: r.slug, provider: r.provider, score: r.score }))).toEqual([
+      { name: "GLM 5.3", slug: "glm-5.3", provider: "z-ai", score: 54.3 },
+      { name: "Claude Fable 5.1", slug: "claude-fable-5.1", provider: "anthropic", score: 52 },
+      { name: "Qwen3.8 27B", slug: "qwen3.8-27b", provider: "qwen", score: 52 },
+    ]);
+    expect(rows[0].aa).toEqual({ intelligence: 59.5, coding: 55, agentic: 45 });
+  });
+  it("agentic outweighs coding at equal intelligence", () => {
+    const rows = consolidateOpenRouterModels(payload([
+      model("a/coder", "A: Coder", { intelligence_index: 60, coding_index: 70, agentic_index: 30 }),
+      model("b/agent", "B: Agent", { intelligence_index: 60, coding_index: 30, agentic_index: 70 }),
+    ]));
+    const agent = rows.find((r) => r.slug === "agent");
+    const coder = rows.find((r) => r.slug === "coder");
+    expect(agent!.score!).toBeGreaterThan(coder!.score!);
+  });
+  it("renormalizes when component indexes are missing", () => {
+    const rows = consolidateOpenRouterModels(payload([
+      model("a/intel-only", "A: Intel Only", { intelligence_index: 50 }),
+      model("b/partial", "B: Partial", { intelligence_index: 50, coding_index: 40 }),
+    ]));
+    expect(rows.find((r) => r.slug === "intel-only")!.score).toBe(50);
+    expect(rows.find((r) => r.slug === "partial")!.score).toBe(47.1);
+  });
+  it("skips batch and free variants, unscored models, and malformed rows", () => {
+    const rows = consolidateOpenRouterModels(payload([
+      model("z-ai/glm-5.3:batch", "Z.ai: GLM 5.3 (batch)", FULL),
+      model("z-ai/glm-5.3:free", "Z.ai: GLM 5.3 (free)", FULL),
+      model("z-ai/glm-5.3", "Z.ai: GLM 5.3", FULL),
+      model("x/unscored", "X: Unscored", null),
+      model("x/noindexes", "X: No Indexes", { design_arena: 1 }),
+      model("nopercent", "No Slash", FULL),
+      { id: "x/no-name", benchmarks: { artificial_analysis: { intelligence_index: 50 } } },
+    ]));
+    expect(rows.map((r) => r.slug)).toEqual(["glm-5.3", "no-name"]);
+  });
+  it("keeps the highest score when names collide", () => {
+    const rows = consolidateOpenRouterModels(payload([
+      model("a/alpha", "A: Alpha", { intelligence_index: 40 }),
+      model("b/alpha-2", "B: Alpha", { intelligence_index: 44.5 }),
+    ]));
+    expect(rows.map((r) => ({ slug: r.slug, provider: r.provider, score: r.score }))).toEqual([
+      { slug: "alpha-2", provider: "b", score: 44.5 },
+    ]);
+  });
+  it("rejects non-array payloads", () => {
+    expect(() => consolidateOpenRouterModels(JSON.stringify({ data: "nope" }))).toThrow();
+  });
+});
+describe("aa live loader", () => {
+  const dir = () => fs.mkdtempSync(path.join(os.tmpdir(), "arc-aa-"));
+  const SEED_MODELS: AAModel[] = [{ name: "Claude Opus 5", slug: "claude-opus-5", provider: "anthropic", score: 63 }];
+  const FILLER = Array.from({ length: 60 }, (_, i) => ({ id: `v${i}/m${i}`, name: `V: M${i}`, created: 1788000000, benchmarks: { artificial_analysis: { intelligence_index: 10 + i / 10 } } }));
+  const FIXTURE = JSON.stringify({ data: [...FILLER, { id: "anthropic/claude-opus-5", name: "Anthropic: Claude Opus 5", created: 1788000000, benchmarks: { artificial_analysis: { intelligence_index: 63 } } }] });
+  const fetchOk = (body: string): typeof fetch =>
+    (async () => new Response(body, { status: 200 })) as unknown as typeof fetch;
+  it("fetches and caches the model list", async () => {
+    const d = dir();
+    let calls = 0;
+    const impl = (async () => { calls++; return new Response(FIXTURE, { status: 200 }); }) as unknown as typeof fetch;
+    expect(await ensureAAList({ fetchImpl: impl, dir: d })).toBe(true);
+    expect(calls).toBe(1);
+    expect(lookupIntelligence("claude-opus-5")?.score).toBe(63);
+    const cache = JSON.parse(fs.readFileSync(path.join(d, "aa-scores.json"), "utf8")) as { models: AAModel[]; fetched: number };
+    expect(cache.models.length).toBeGreaterThan(50);
+  });
+  it("serves a fresh cache without refetching", async () => {
+    const d = dir();
+    fs.writeFileSync(path.join(d, "aa-scores.json"), JSON.stringify({ fetched: Date.now(), models: SEED_MODELS }));
+    expect(await ensureAAList({ fetchImpl: fetchOk(FIXTURE), dir: d })).toBe(false);
+    expect(lookupIntelligence("claude-opus-5")?.score).toBe(63);
+  });
+  it("refreshes a stale cache and keeps data on fetch failure", async () => {
+    const d = dir();
+    fs.writeFileSync(path.join(d, "aa-scores.json"), JSON.stringify({ fetched: Date.now() - 8 * 24 * 60 * 60 * 1000, models: SEED_MODELS }));
+    const fail = (async () => new Response("", { status: 500 })) as unknown as typeof fetch;
+    expect(await ensureAAList({ fetchImpl: fail, dir: d })).toBe(false);
+    expect(lookupIntelligence("claude-opus-5")?.score).toBe(63);
+    expect(await ensureAAList({ fetchImpl: fetchOk(FIXTURE), dir: d })).toBe(true);
+    expect(lookupIntelligence("claude-opus-5")?.score).toBe(63);
+  });
+  it("starts empty and stays empty when nothing ever loads", async () => {
+    setAAList([]);
+    const d = dir();
+    expect(await ensureAAList({ fetchImpl: fetchOk("{}"), dir: d })).toBe(false);
+    expect(getAAList()).toEqual([]);
+    expect(lookupIntelligence("claude-opus-5")).toBeUndefined();
+  });
+  it("dedupes concurrent refreshes", async () => {
+    const d = dir();
+    let resolveFetch: (v: Response) => void;
+    const gate = new Promise<Response>((r) => { resolveFetch = r as (v: Response) => void; });
+    let calls = 0;
+    const impl = (async () => { calls++; return gate; }) as unknown as typeof fetch;
+    const a = ensureAAList({ fetchImpl: impl, dir: d });
+    const b = ensureAAList({ fetchImpl: impl, dir: d });
+    resolveFetch!(new Response(FIXTURE, { status: 200 }));
+    expect(await a).toBe(true);
+    expect(await b).toBe(true);
+    expect(calls).toBe(1);
   });
 });

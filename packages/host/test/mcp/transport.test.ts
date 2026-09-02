@@ -185,4 +185,65 @@ describe("McpClient HTTP/SSE reconnection", () => {
     await client.stop();
     await state.close();
   });
+});describe("McpClient SSE transport type and traffic capture", () => {
+  it("connects with an explicit sse transport and emits traffic entries", async () => {
+    const state = await startFakeMcp();
+    const traffic: { dir: string; info: string }[] = [];
+    const client = new McpClient(
+      { name: "fake", enabled: true, transport: { type: "sse", url: state.url } },
+      { reconnectInitialMs: 100_000, reconnectMaxMs: 100_000, healthIntervalMs: 0, trafficSink: (e) => traffic.push({ dir: e.dir, info: e.info }) },
+    );
+    try {
+      await client.start();
+      expect(client.getStatus()).toBe("ready");
+      const tools = await client.listTools();
+      expect(tools.map((t) => t.name)).toEqual(["echo"]);
+      const dirs = traffic.map((t) => t.dir);
+      expect(dirs).toContain("out");
+      expect(dirs).toContain("in");
+      expect(traffic.some((t) => t.info.includes("initialize"))).toBe(true);
+      expect(traffic.some((t) => t.info.includes("tools/list"))).toBe(true);
+    } finally {
+      await client.stop();
+      await state.close();
+    }
+  });
+  it("passes bearer tokens from the token provider", async () => {
+    let sawAuth = false;
+    const server = http.createServer((req, res) => {
+      if (req.method === "GET" && req.headers.accept?.includes("text/event-stream")) {
+        if (req.headers.authorization === "Bearer test-token-123") sawAuth = true;
+        const port = (server.address() as AddressInfo).port;
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(`event: endpoint\ndata: http://127.0.0.1:${port}/msg\n\n`);
+        req.on("close", () => res.end());
+        return;
+      }
+      let body = "";
+      req.on("data", (c: Buffer) => (body += c.toString()));
+      req.on("end", () => {
+        const reqJson = JSON.parse(body);
+        if (req.headers.authorization !== "Bearer test-token-123") {
+          res.writeHead(401).end(JSON.stringify({ jsonrpc: "2.0", id: reqJson.id, error: { code: -32001, message: "Unauthorized" } }));
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: reqJson.id, result: {} }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as AddressInfo).port;
+    const client = new McpClient(
+      { name: "authy", enabled: true, transport: { type: "sse", url: `http://127.0.0.1:${port}/sse`, auth: "oauth" } },
+      { reconnectInitialMs: 100_000, healthIntervalMs: 0, tokenProvider: async () => "test-token-123" },
+    );
+    try {
+      await client.start();
+      expect(client.getStatus()).toBe("ready");
+      expect(sawAuth).toBe(true);
+    } finally {
+      await client.stop();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
 });

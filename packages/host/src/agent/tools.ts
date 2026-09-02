@@ -2,9 +2,9 @@ import type { ChildProcess } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { FileEditor } from "../edit/editor.js";
-import { getSkillsDir } from "../arc-dir.js";
+import { getSkillsDir, getWorkspaceArcDir } from "../arc-dir.js";
 import { runPreWriteHooks, runPostEditHooks } from "../hooks/hooks.js";
-import { minimalEnvironment, PROCESS_OUTPUT_LIMIT, proxyEnvironment, runGit, runProcess, runShellCommand, shellCommand, spawnBounded, terminateProcessTree } from "../util/process.js";
+import { findOnPath, minimalEnvironment, PROCESS_OUTPUT_LIMIT, proxyEnvironment, runGit, runProcess, runShellCommand, shellCommand, spawnBounded, terminateProcessTree } from "../util/process.js";
 import { readBodyLimited, safeFetch } from "../security/network.js";
 import { makeProxyDispatcher } from "../util/proxy.js";
 import { parseNotebook, serializeNotebook, listCells, readCell, editCellSource, addCell, deleteCell } from "../notebook/notebook.js";
@@ -53,6 +53,71 @@ async function streamDiffHunks(
     onDiff(hunks.slice(0, i + 1), filePath);
     await new Promise((r) => setTimeout(r, 40));
   }
+}
+function adoptBackgroundProcess(proc: ChildProcess, command: string, stdout: string, stderr: string, onChunk?: (stream: "stdout" | "stderr", text: string) => void): string {
+  const bg: BgProcess = { proc, command, stdout: stripAnsi(stdout).slice(-PROCESS_OUTPUT_LIMIT), stderr: stripAnsi(stderr).slice(-PROCESS_OUTPUT_LIMIT), exited: false, exitCode: undefined };
+  const id = String(bgIds++);
+  bgProcesses.set(id, bg);
+  proc.stdout?.on("data", (d: Buffer) => {
+    const s = stripAnsi(d.toString());
+    bg.stdout = (bg.stdout + s).slice(-PROCESS_OUTPUT_LIMIT);
+    onChunk?.("stdout", s);
+  });
+  proc.stderr?.on("data", (d: Buffer) => {
+    const s = stripAnsi(d.toString());
+    bg.stderr = (bg.stderr + s).slice(-PROCESS_OUTPUT_LIMIT);
+    onChunk?.("stderr", s);
+  });
+  proc.on("exit", (code) => { bg.exited = true; bg.exitCode = code ?? undefined; activeProcesses.delete(proc); setTimeout(() => { bgProcesses.delete(id); }, 60_000); });
+  proc.on("error", (err) => { bg.exited = true; bg.stderr += `\n[spawn error] ${err.message}`; activeProcesses.delete(proc); setTimeout(() => { bgProcesses.delete(id); }, 60_000); });
+  return id;
+}
+const HOOK_EVENTS = ["session.start", "user.submit", "pre.tool", "post.tool", "pre.compact", "post.compact", "pre.handoff", "notification", "stop", "subagent.spawn", "instructions.loaded"];
+type HookFile = { cfg: Record<string, unknown>; hooks: Record<string, unknown>[]; p: string };
+async function readHooksFile(root: string): Promise<HookFile> {
+  const p = path.join(getWorkspaceArcDir(root), "hooks.json");
+  let cfg: Record<string, unknown> = {};
+  try { cfg = JSON.parse(await fs.readFile(p, "utf-8")) as Record<string, unknown>; } catch { }
+  const hooks = Array.isArray(cfg.hooks) ? (cfg.hooks as Record<string, unknown>[]) : [];
+  return { cfg, hooks, p };
+}
+async function writeHooksFile(file: HookFile): Promise<void> {
+  file.cfg.hooks = file.hooks;
+  await fs.mkdir(path.dirname(file.p), { recursive: true });
+  await fs.writeFile(file.p, JSON.stringify(file.cfg, null, 2), "utf-8");
+}
+function describeHook(h: Record<string, unknown>, i: number): string {
+  const m = h.matchers as Record<string, string> | undefined;
+  const matchers = [m?.tool, m?.mode, m?.modelTier].filter(Boolean).join(", ");
+  return `${i}: [${h.event}]${matchers ? ` (matcher: ${matchers})` : ""} ${String(h.command)}${h.timeout_sec ? ` (timeout: ${h.timeout_sec}s)` : ""}`;
+}
+function normalizeHook(args: Record<string, unknown>, base?: Record<string, unknown>): { hook?: Record<string, unknown>; error?: string } {
+  const event = String(args.event ?? base?.event ?? "").trim();
+  if (!HOOK_EVENTS.includes(event)) return { error: `Unknown event '${event}'. Valid: ${HOOK_EVENTS.join(", ")}` };
+  const command = String(args.command ?? base?.command ?? "").trim();
+  if (!command) return { error: "command is required." };
+  const hook: Record<string, unknown> = { event, command };
+  const commandWindows = String(args.command_windows ?? base?.command_windows ?? "").trim();
+  if (commandWindows) hook.command_windows = commandWindows;
+  const baseMatchers = base?.matchers as Record<string, string> | undefined;
+  const tool = String(args.tool ?? baseMatchers?.tool ?? "").trim();
+  const mode = String(args.mode ?? baseMatchers?.mode ?? "").trim();
+  const tier = String(args.tier ?? baseMatchers?.modelTier ?? "").trim();
+  const matchers: Record<string, string> = {};
+  if (tool) matchers.tool = tool;
+  if (mode) matchers.mode = mode;
+  if (tier) {
+    if (!["heavy", "default", "light", "free"].includes(tier)) return { error: "tier must be one of: heavy, default, light, free." };
+    matchers.modelTier = tier;
+  }
+  if (Object.keys(matchers).length) hook.matchers = matchers;
+  const timeout = args.timeout ?? base?.timeout_sec;
+  if (timeout !== undefined && timeout !== "") {
+    const n = Number(timeout);
+    if (!Number.isFinite(n) || n <= 0) return { error: "timeout must be a positive number of seconds." };
+    hook.timeout_sec = n;
+  }
+  return { hook };
 }
 async function runAfterCmd(cmd: string | undefined, cwd: string, ctx: ToolContext): Promise<{ command: string; output: string } | undefined> {
   if (!cmd) return undefined;
@@ -110,6 +175,8 @@ export interface ToolContext {
   skillRegistry?: SkillRegistry;
   ruleRegistry?: RuleRegistry;
   sandboxProfile?: SandboxProfile;
+  shellSurface?: "arc-handled" | "integrated";
+  runInVsCodeTerminal?: (command: string, cwd: string) => Promise<{ ok: boolean; output: string }>;
   problems?: () => Promise<import("../lsp/bridge.js").DiagnosticLite[]>;
   problemsFor?: (file: string) => Promise<import("../lsp/bridge.js").DiagnosticLite[]>;
   summaryForFiles?: (files: string[]) => Promise<{ hasErrors: boolean; hasWarnings: boolean; text: string }>;
@@ -163,6 +230,33 @@ export function checkWriteGlob(filePath: string, glob: string): { allowed: boole
     return { allowed: re.test(filePath.replace(/\\/g, "/")) };
   } catch {
     return { allowed: false };
+  }
+}
+async function startBackgroundProcess(cmd: string, cwd: string, ctx: ToolContext): Promise<ToolResult> {
+  try {
+    const proxyEnv = proxyEnvironment(ctx.proxyShell || ctx.proxyUrl);
+    const shell = await shellCommand(cmd);
+    const proc = spawnBounded(shell.executable, shell.args, { cwd, env: minimalEnvironment(proxyEnv), sandboxProfile: ctx.sandboxProfile, workspaceRoot: ctx.workspacePath });
+    activeProcesses.add(proc);
+    const bg: BgProcess = { proc, command: cmd, stdout: "", stderr: "", exited: false, exitCode: undefined };
+    const id = String(bgIds++);
+    bgProcesses.set(id, bg);
+    const onChunk = ctx.onChunk;
+    proc.stdout?.on("data", (d: Buffer) => {
+      const s = stripAnsi(d.toString());
+      bg.stdout = (bg.stdout + s).slice(-PROCESS_OUTPUT_LIMIT);
+      onChunk?.("stdout", s);
+    });
+    proc.stderr?.on("data", (d: Buffer) => {
+      const s = stripAnsi(d.toString());
+      bg.stderr = (bg.stderr + s).slice(-PROCESS_OUTPUT_LIMIT);
+      onChunk?.("stderr", s);
+    });
+    proc.on("exit", (code) => { bg.exited = true; bg.exitCode = code ?? undefined; activeProcesses.delete(proc); setTimeout(() => { bgProcesses.delete(id); }, 60_000); });
+    proc.on("error", (err) => { bg.exited = true; bg.stderr += `\n[spawn error] ${err.message}`; activeProcesses.delete(proc); setTimeout(() => { bgProcesses.delete(id); }, 60_000); });
+    return { ok: true, output: `Background process started (id: ${id}). Use shell.check to poll output.` };
+  } catch (e: unknown) {
+    return { ok: false, output: `Failed to start background process: ${(e as Error).message}` };
   }
 }
 export const tools: Record<string, { description: string; fn: ToolFn }> = {
@@ -301,11 +395,17 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     description: "Run a shell command in the workspace (subject to approval).",
     fn: async (args, ctx) => {
       const cmd = String(args.command);
-      const timeoutSec = args.timeout ? Number(args.timeout) : -1;
       const cwd = (args.cwd ? String(args.cwd) : ctx.root) || ctx.root;
+      const surface = ctx.shellSurface ?? "arc-handled";
+      if (surface === "integrated") {
+        if (!ctx.runInVsCodeTerminal) return { ok: false, output: "Shell surface 'integrated' is not available in this environment (requires the Arc VS Code extension)." };
+        return await ctx.runInVsCodeTerminal(cmd, cwd);
+      }
+      const timeoutSec = args.timeout ? Number(args.timeout) : -1;
       const onChunk = ctx.onChunk;
       const proxyEnv = proxyEnvironment(ctx.proxyShell || ctx.proxyUrl);
       let spawned: ChildProcess | undefined;
+      let adoptedId: string | undefined;
       const result = await runShellCommand(cmd, {
         cwd,
         env: minimalEnvironment(proxyEnv),
@@ -315,8 +415,18 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
         workspaceRoot: ctx.workspacePath,
         onChunk: (stream, text) => onChunk?.(stream, stripAnsi(text)),
         onSpawn: (proc) => { spawned = proc; activeProcesses.add(proc); },
+        timeoutAdopt: timeoutSec > 0 ? (proc, out, err) => {
+          adoptedId = adoptBackgroundProcess(proc, cmd, out, err, onChunk);
+          return true;
+        } : undefined,
       });
-      if (spawned) activeProcesses.delete(spawned);
+      if (spawned && adoptedId === undefined) activeProcesses.delete(spawned);
+      if (adoptedId !== undefined) {
+        const output = stripAnsi(result.stdout)
+          + (result.stderr ? `\n[stderr]\n${stripAnsi(result.stderr)}` : "")
+          + `\n[timed out after ${timeoutSec}s] Still running in the background (id: ${adoptedId}). Partial output above; do not restart the command. Poll with shell.check (id: ${adoptedId}), send stdin with shell.write, or wait for exit with wait.forProcess.`;
+        return { ok: false, output };
+      }
       const output = stripAnsi(result.stdout) + (result.stderr ? `\n[stderr]\n${stripAnsi(result.stderr)}` : "") + (result.truncated ? "\n[output limit exceeded]" : "");
       return { ok: result.ok, output };
     },
@@ -326,31 +436,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     fn: async (args, ctx) => {
       const cmd = String(args.command);
       const cwd = (args.cwd ? String(args.cwd) : ctx.root) || ctx.root;
-      try {
-        const proxyEnv = proxyEnvironment(ctx.proxyShell || ctx.proxyUrl);
-        const shell = shellCommand(cmd);
-        const proc = spawnBounded(shell.executable, shell.args, { cwd, env: minimalEnvironment(proxyEnv), sandboxProfile: ctx.sandboxProfile, workspaceRoot: ctx.workspacePath });
-        activeProcesses.add(proc);
-        const bg: BgProcess = { proc, command: cmd, stdout: "", stderr: "", exited: false, exitCode: undefined };
-        const id = String(bgIds++);
-        bgProcesses.set(id, bg);
-        const onChunk = ctx.onChunk;
-        proc.stdout?.on("data", (d: Buffer) => {
-          const s = stripAnsi(d.toString());
-          bg.stdout = (bg.stdout + s).slice(-PROCESS_OUTPUT_LIMIT);
-          onChunk?.("stdout", s);
-        });
-        proc.stderr?.on("data", (d: Buffer) => {
-          const s = stripAnsi(d.toString());
-          bg.stderr = (bg.stderr + s).slice(-PROCESS_OUTPUT_LIMIT);
-          onChunk?.("stderr", s);
-        });
-        proc.on("exit", (code) => { bg.exited = true; bg.exitCode = code ?? undefined; activeProcesses.delete(proc); setTimeout(() => { bgProcesses.delete(id); }, 60_000); });
-        proc.on("error", (err) => { bg.exited = true; bg.stderr += `\n[spawn error] ${err.message}`; activeProcesses.delete(proc); setTimeout(() => { bgProcesses.delete(id); }, 60_000); });
-        return { ok: true, output: `Background process started (id: ${id}). Use shell.check to poll output.` };
-      } catch (e: unknown) {
-        return { ok: false, output: `Failed to start background process: ${(e as Error).message}` };
-      }
+      return startBackgroundProcess(cmd, cwd, ctx);
     },
   },
   "shell.check": {
@@ -629,7 +715,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       try {
         await ctx.mcp.addServer({ name, enabled, transport: normalized });
         const srv = ctx.mcp.listServers().find((s) => s.name === name);
-        const toolList = (srv?.tools ?? []).map((t) => `${t.name}${t.description ? ` — ${t.description}` : ""}`).join("\n");
+        const toolList = (srv?.tools ?? []).map((t) => `${t.name}${t.description ? ` - ${t.description}` : ""}`).join("\n");
         return {
           ok: true,
           output: `Registered MCP server '${name}' (${normalized.type}). Tools:\n${toolList || "(none discovered yet)"}`,
@@ -665,7 +751,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const server = String(a.server ?? "");
       const list = ctx.mcp.listResources().filter((r) => r.server === server);
       if (list.length === 0) return { ok: true, output: `No resources on server '${server}'.` };
-      return { ok: true, output: list.map((r) => `${r.uri}${r.name ? ` — ${r.name}` : ""}${r.mimeType ? ` (${r.mimeType})` : ""}`).join("\n") };
+      return { ok: true, output: list.map((r) => `${r.uri}${r.name ? ` - ${r.name}` : ""}${r.mimeType ? ` (${r.mimeType})` : ""}`).join("\n") };
     },
   },
   "mcp.resources/read": {
@@ -683,7 +769,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const server = String(a.server ?? "");
       const list = ctx.mcp.listPrompts().filter((p) => p.server === server);
       if (list.length === 0) return { ok: true, output: `No prompts on server '${server}'.` };
-      return { ok: true, output: list.map((p) => `${p.name}${p.description ? ` — ${p.description}` : ""}`).join("\n") };
+      return { ok: true, output: list.map((p) => `${p.name}${p.description ? ` - ${p.description}` : ""}`).join("\n") };
     },
   },
   "mcp.prompts/get": {
@@ -845,6 +931,173 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
         }
       }
       return { ok: true, output: `Diff provided (${diff.length} chars). Use this to compose a conventional commit message:\n${diff}` };
+    },
+  },
+  "git.stage": {
+    description: "Stage changes for commit. Args: { paths?: string[] | string, all?: boolean, update?: boolean }. all stages every change including untracked files; update stages tracked modifications only. For hunk-level staging use shell.run.",
+    fn: async (args, ctx) => {
+      try {
+        const gitArgs = ["add"];
+        if (args.all) gitArgs.push("--all");
+        else if (args.update) gitArgs.push("--update");
+        const raw = args.paths;
+        const paths = (Array.isArray(raw) ? raw : raw !== undefined ? [raw] : []).map((p) => String(p).trim()).filter(Boolean);
+        if (!args.all && !args.update && paths.length === 0) return { ok: false, output: "Provide paths, or all:true, or update:true." };
+        for (const p of paths) {
+          if (p.startsWith("-") || p.includes("..")) return { ok: false, output: `Refusing to stage suspicious path: ${p}` };
+        }
+        if (paths.length) gitArgs.push("--", ...paths);
+        const r = await runGit(gitArgs, { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
+        if (!r.ok) return { ok: false, output: stripAnsi(r.stderr) || "git add failed" };
+        const what = args.all ? "all changes" : args.update ? "tracked modifications" : `${paths.length} path(s)`;
+        return { ok: true, output: `Staged ${what}.` };
+      } catch (e: unknown) {
+        return { ok: false, output: `git stage failed: ${(e as Error).message}` };
+      }
+    },
+  },
+  "git.commit": {
+    description: "Commit the staged changes. Args: { message, all?: boolean } also stages tracked modifications first when all is true. For rebases, merges, or fixup workflows use shell.run.",
+    fn: async (args, ctx) => {
+      try {
+        const message = String(args.message ?? "").trim();
+        if (!message) return { ok: false, output: "Commit message required." };
+        if (message.length > 4000) return { ok: false, output: "Commit message too long (max 4000 chars)." };
+        const r = await runGit(["commit", ...(args.all ? ["-a"] : []), "-m", message], { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
+        if (!r.ok) return { ok: false, output: stripAnsi(r.stderr) || "git commit failed" };
+        const head = await runGit(["log", "-1", "--format=%h %s"], { cwd: ctx.workspacePath, maxOutputBytes: 4096 });
+        return { ok: true, output: `Committed: ${stripAnsi(head.ok ? head.stdout : "").trim() || message.split("\n")[0]}` };
+      } catch (e: unknown) {
+        return { ok: false, output: `git commit failed: ${(e as Error).message}` };
+      }
+    },
+  },
+  "git.push": {
+    description: "Push commits to a remote. Args: { remote?, branch?, setUpstream?: boolean, force?: boolean } uses --force-with-lease when force is true. For tags, mirrors, or remote deletion use shell.run.",
+    fn: async (args, ctx) => {
+      try {
+        const refRe = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+        const remote = args.remote ? String(args.remote) : "";
+        const branch = args.branch ? String(args.branch) : "";
+        for (const [label, ref] of [["remote", remote], ["branch", branch]] as const) {
+          if (ref && (!refRe.test(ref) || ref.includes("..") || ref.includes("@{"))) return { ok: false, output: `Invalid git ${label} ref: ${ref}` };
+        }
+        const gitArgs = ["push"];
+        if (args.force) gitArgs.push("--force-with-lease");
+        if (args.setUpstream) gitArgs.push("--set-upstream");
+        if (remote) gitArgs.push(remote);
+        if (branch) gitArgs.push(branch);
+        const r = await runGit(gitArgs, { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT, timeoutMs: 120_000, env: minimalEnvironment({ GIT_TERMINAL_PROMPT: "0" }) });
+        const out = stripAnsi(r.stdout) + (r.stderr ? `\n${stripAnsi(r.stderr)}` : "");
+        return { ok: r.ok, output: out.trim() || (r.ok ? "Pushed." : "git push failed") };
+      } catch (e: unknown) {
+        return { ok: false, output: `git push failed: ${(e as Error).message}` };
+      }
+    },
+  },
+  "git.branch": {
+    description: "Branch operations. Args: { action: 'list' | 'create' | 'switch' | 'delete', name?, force? }. create makes a branch without checking it out; switch checks it out (force reuses an existing branch); delete refuses safe checks unless force. For rebases and merges use shell.run.",
+    fn: async (args, ctx) => {
+      try {
+        const action = String(args.action ?? "list");
+        const name = args.name ? String(args.name).trim() : "";
+        const refRe = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+        const valid = !!name && refRe.test(name) && !name.includes("..") && !name.includes("@{") && !name.endsWith(".lock") && !name.includes("//");
+        let gitArgs: string[];
+        if (action === "list") {
+          gitArgs = ["branch", "--all", "--no-color"];
+        } else {
+          if (!valid) return { ok: false, output: `Invalid branch name: ${name || "(empty)"}` };
+          if (action === "create") gitArgs = ["branch", name];
+          else if (action === "switch") gitArgs = ["switch", ...(args.force ? ["-C"] : []), name];
+          else if (action === "delete") gitArgs = ["branch", ...(args.force ? ["-D"] : ["-d"]), name];
+          else return { ok: false, output: `Unknown branch action '${action}'. Use list, create, switch, or delete.` };
+        }
+        const r = await runGit(gitArgs, { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT });
+        const out = stripAnsi(r.stdout) + (r.stderr ? `\n${stripAnsi(r.stderr)}` : "");
+        if (!r.ok) return { ok: false, output: out.trim() || "git branch failed" };
+        if (action === "list") return { ok: true, output: out.trim() || "(no branches)" };
+        return { ok: true, output: action === "create" ? `Created branch ${name}.` : action === "switch" ? `Switched to ${name}.` : `Deleted ${name}.` };
+      } catch (e: unknown) {
+        return { ok: false, output: `git branch failed: ${(e as Error).message}` };
+      }
+    },
+  },
+  "hooks.list": {
+    description: "List the workspace lifecycle hooks (shell commands Arc runs automatically on agent events, from the workspace Arc hooks.json). Args: {}",
+    fn: async (_args, ctx) => {
+      const f = await readHooksFile(ctx.workspacePath);
+      if (!f.hooks.length) return { ok: true, output: "No hooks configured in the workspace hooks file." };
+      return { ok: true, output: f.hooks.map((h, i) => describeHook(h, i)).join("\n") };
+    },
+  },
+  "hooks.create": {
+    description: "Create a lifecycle hook that runs a shell command when the event fires. Args: { event, command, command_windows?, tool?, mode?, tier?, timeout? }. Persists to the workspace hooks file; applies to new sessions. For complex logic prefer a short command that calls a script.",
+    fn: async (args, ctx) => {
+      const check = normalizeHook(args);
+      if (check.error) return { ok: false, output: check.error };
+      const f = await readHooksFile(ctx.workspacePath);
+      f.hooks.push(check.hook!);
+      await writeHooksFile(f);
+      return { ok: true, output: `Hook created (index ${f.hooks.length - 1}). It applies to new sessions.` };
+    },
+  },
+  "hooks.update": {
+    description: "Update a lifecycle hook by index (from hooks.list). Args: { index, event?, command?, command_windows?, tool?, mode?, tier?, timeout? }. Omitted fields keep their current values.",
+    fn: async (args, ctx) => {
+      const f = await readHooksFile(ctx.workspacePath);
+      const index = Number(args.index);
+      if (!Number.isInteger(index) || index < 0 || index >= f.hooks.length) return { ok: false, output: `Invalid index ${args.index}. Use hooks.list to see valid entries.` };
+      const check = normalizeHook(args, f.hooks[index]);
+      if (check.error) return { ok: false, output: check.error };
+      f.hooks[index] = check.hook!;
+      await writeHooksFile(f);
+      return { ok: true, output: `Hook ${index} updated. It applies to new sessions.` };
+    },
+  },
+  "hooks.delete": {
+    description: "Delete a lifecycle hook by index (from hooks.list). Args: { index }",
+    fn: async (args, ctx) => {
+      const f = await readHooksFile(ctx.workspacePath);
+      const index = Number(args.index);
+      if (!Number.isInteger(index) || index < 0 || index >= f.hooks.length) return { ok: false, output: `Invalid index ${args.index}. Use hooks.list to see valid entries.` };
+      const [removed] = f.hooks.splice(index, 1);
+      await writeHooksFile(f);
+      return { ok: true, output: `Deleted hook ${index} (${String((removed as { event?: string }).event ?? "unknown")}).` };
+    },
+  },
+  "git.pr": {
+    description: "GitHub pull request operations via the gh CLI. Args: { action?: 'create' | 'view' | 'list', title?, body?, base?, draft? }. create requires the branch to be pushed first; for review threads and complex flows use shell.run with gh.",
+    fn: async (args, ctx) => {
+      const gh = findOnPath(process.platform === "win32" ? "gh.exe" : "gh");
+      if (!gh) return { ok: false, output: "gh CLI not found on PATH. Install the GitHub CLI (https://cli.github.com) or run gh via shell.run." };
+      try {
+        const action = String(args.action ?? "create");
+        let ghArgs: string[];
+        if (action === "create") {
+          const title = String(args.title ?? "").trim();
+          if (!title) return { ok: false, output: "PR title required." };
+          if (title.length > 400 || String(args.body ?? "").length > 8000) return { ok: false, output: "PR title/body too long." };
+          ghArgs = ["pr", "create", "--title", title, "--body", String(args.body ?? "")];
+          const base = args.base ? String(args.base) : "";
+          if (base) {
+            if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(base) || base.includes("..")) return { ok: false, output: `Invalid base ref: ${base}` };
+            ghArgs.push("--base", base);
+          }
+          if (args.draft) ghArgs.push("--draft");
+        } else if (action === "view") {
+          ghArgs = ["pr", "view"];
+        } else if (action === "list") {
+          ghArgs = ["pr", "list", "--limit", "10"];
+        } else {
+          return { ok: false, output: "Unknown pr action. Use create, view, or list." };
+        }
+        const r = await runProcess(gh, ghArgs, { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT, timeoutMs: 60_000, env: minimalEnvironment({ GIT_TERMINAL_PROMPT: "0" }) });
+        const out = stripAnsi(r.stdout) + (r.stderr ? `\n${stripAnsi(r.stderr)}` : "");
+        return { ok: r.ok, output: out.trim() || (r.ok ? "Done." : "gh failed") };
+      } catch (e: unknown) {
+        return { ok: false, output: `git pr failed: ${(e as Error).message}` };
+      }
     },
   },
   "browser.hover": {
@@ -1150,7 +1403,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     },
   },
   "context.retrieve": {
-    description: "Restore the full original content of a compressed tool output. Args: { id } — the id shown in the compressed output marker.",
+    description: "Restore the full original content of a compressed tool output. Args: { id } - the id shown in the compressed output marker.",
     fn: async (args, ctx) => {
       const { loadBlob } = await import("../compress/store.js");
       const id = String(args.id ?? "").trim();

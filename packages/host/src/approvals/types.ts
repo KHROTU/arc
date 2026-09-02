@@ -18,8 +18,9 @@ export interface ApprovalsConfig {
     perServer: Record<string, ApprovalLevel>;
   };
 }
+export type AutoApproveLevel = "safe" | "allowlist" | "all";
 export interface SessionApprovals {
-  autoApproveAll: boolean;
+  autoApproveMode: "off" | AutoApproveLevel;
   sessionCommandAllowlist: string[];
   commandPrefixMemory: { prefix: string; createdAt: string }[];
   taskOverride?: ApprovalsConfig;

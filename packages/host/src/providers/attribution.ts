@@ -6,7 +6,7 @@ export interface AppIdentity {
   categories?: string[];
 }
 export const APP: AppIdentity = {
-  url: "https://github.com/KHROTU/arc",
+  url: "https://github.com/khrotu/arc",
   title: "Arc",
   version: "0.6.1",
   categories: ["ide-extension"],
