@@ -50,12 +50,12 @@ describe("security hardening", () => {
     expect(resolveApproval(DEFAULT_APPROVALS, mk("allowlist"), "shell.other", { toolName: "git.commit", command: "git commit -m x", workspaceRoot: root })).toBe("auto");
     expect(resolveApproval(DEFAULT_APPROVALS, mk("allowlist"), "code.execute")).toBe("ask");
     expect(resolveApproval(DEFAULT_APPROVALS, mk("allowlist"), "mcp.configure")).toBe("ask");
-    expect(resolveApproval(DEFAULT_APPROVALS, mk("all"), "code.execute")).toBe("ask");
-    expect(resolveApproval(DEFAULT_APPROVALS, mk("all"), "mcp.configure")).toBe("ask");
-    expect(resolveApproval(DEFAULT_APPROVALS, mk("all"), "subagent")).toBe("ask");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("all"), "code.execute")).toBe("auto");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("all"), "mcp.configure")).toBe("auto");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("all"), "subagent")).toBe("auto");
     expect(resolveApproval(DEFAULT_APPROVALS, mk("all"), "write.local-protected", { toolName: "file.edit", filePath: path.join(root, ".vscode", "settings.json"), workspaceRoot: root })).toBe("auto");
     expect(resolveApproval(DEFAULT_APPROVALS, mk("allowlist"), "write.local-protected", { toolName: "file.edit", filePath: path.join(root, ".vscode", "settings.json"), workspaceRoot: root })).toBe("ask");
-    expect(resolveApproval(DEFAULT_APPROVALS, mk("all"), "none")).toBe("ask");
+    expect(resolveApproval(DEFAULT_APPROVALS, mk("all"), "none")).toBe("auto");
   });
   it("blocks built-in secret patterns without hook configuration", async () => {
     const result = await runPreWriteHooks("config.ts", 'const token = "sk-proj-abcdefghijklmnopqrstuvwxyz123456";');

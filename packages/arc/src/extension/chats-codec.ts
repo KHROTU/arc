@@ -4,7 +4,7 @@ import type { ChatMeta, ChatSnapshot, ChatMessage, Role, ModelTier } from "@arc/
 export const CHATS_FILE_NAME = "arc.chats.arcx";
 export const LEGACY_CHATS_FILE_NAME = "arc.chats.json";
 const MAGIC = Buffer.from("ARCX1", "ascii");
-const FORMAT_VERSION = 2;
+const FORMAT_VERSION = 3;
 const ROLE_INDEX: Record<Role, number> = { system: 0, user: 1, assistant: 2, tool: 3, developer: 4 };
 const ROLE_NAMES: Role[] = ["system", "user", "assistant", "tool", "developer"];
 const TIER_INDEX: Record<ModelTier, number> = { heavy: 0, default: 1, light: 2, free: 3 };
@@ -130,6 +130,13 @@ function encodeSnapshot(snap: ChatSnapshot): Buffer {
     w.varint(c.updatedAt);
     w.f64(c.cost);
     w.f64(c.promptTokens ?? 0);
+    w.f64(c.inputTokens ?? 0);
+    w.f64(c.completionTokens ?? 0);
+    w.f64(c.cacheRead ?? 0);
+    w.f64(c.cacheWrite ?? 0);
+    w.f64(c.cacheReadCost ?? 0);
+    w.f64(c.costIn ?? 0);
+    w.f64(c.costOut ?? 0);
   }
   const msgEntries = Object.entries(snap.messages ?? {});
   w.varint(msgEntries.length);
@@ -160,6 +167,22 @@ function decodeSnapshot(buf: Buffer): ChatSnapshot {
     if (version >= 2) {
       const pt = r.f64();
       if (pt > 0) c.promptTokens = pt;
+    }
+    if (version >= 3) {
+      const it = r.f64();
+      if (it > 0) c.inputTokens = it;
+      const ct = r.f64();
+      if (ct > 0) c.completionTokens = ct;
+      const cr = r.f64();
+      if (cr > 0) c.cacheRead = cr;
+      const cw = r.f64();
+      if (cw > 0) c.cacheWrite = cw;
+      const crc = r.f64();
+      if (crc > 0) c.cacheReadCost = crc;
+      const ci = r.f64();
+      if (ci > 0) c.costIn = ci;
+      const co = r.f64();
+      if (co > 0) c.costOut = co;
     }
     snap.chats.push(c);
   }

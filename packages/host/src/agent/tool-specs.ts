@@ -89,7 +89,7 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
     }, ["name", "commands"]),
   },
   "shell.editCustomRun": {
-    description: "Update a previously-defined custom run by its id.",
+    description: "Update a previously-defined custom run by its id. Renaming also renames the id used by shell.runCustomRun.",
     parameters: obj({
       id: str("The custom run id (returned when it was created)."),
       commands: { type: "array", items: { type: "string" }, description: "New ordered list of shell commands." },
@@ -97,9 +97,9 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
     }, ["id"]),
   },
   "shell.runCustomRun": {
-    description: "Execute a previously-defined custom run by its id. Runs each command sequentially and reports per-command results.",
+    description: "Execute a previously-defined custom run by its id or display name. Runs each command sequentially and reports per-command results.",
     parameters: obj({
-      id: str("The custom run id to execute."),
+      id: str("The custom run id or display name to execute."),
       cwd: str("Optional working directory (defaults to workspace root)."),
     }, ["id"]),
   },
@@ -288,8 +288,10 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
     }, ["server", "name"]),
   },
   "session.exportTrace": {
-    description: "Export the session execution timeline as markdown and JSON. Shows all model calls, tool invocations, handoffs, compactions, approvals, and subagent spawns with timing and usage data.",
-    parameters: obj({}),
+    description: "Export the session execution timeline as markdown and JSON. Shows all model calls, tool invocations, handoffs, compactions, approvals, and subagent spawns with timing and usage data. The complete trace is archived for context.retrieve; pass path to also write it to a workspace-relative file.",
+    parameters: obj({
+      path: str("Optional workspace-relative file path to write the full trace to (e.g. 'trace.md'). Subject to the usual file-write approval."),
+    }),
   },
   "checkpoint.revert": {
     description: "Revert files modified during a turn. Args: { index } (1=most recent) or { turnId } (exact UUID). Use checkpoint.list first to find available turns.",
@@ -299,7 +301,7 @@ export const TOOL_PARAM_SPECS: Record<string, { description: string; parameters:
     }),
   },
   "checkpoint.list": {
-    description: "List checkpoint snapshots for the current workspace. Returns turn IDs, timestamps, and affected files, most recent last. Output is capped - pass limit to widen or since (ISO date) to filter by time.",
+    description: "List checkpoint snapshots for the current workspace, most recent first. Index 1 is the newest turn and matches the indices used by checkpoint.revert/compare. Output is capped - pass limit to widen or since (ISO date) to filter by time.",
     parameters: obj({
       limit: num("Max checkpoints to return (default 25, max 200). The most recent N are returned."),
       since: str("Only include checkpoints at or after this ISO timestamp (e.g. 2026-08-31 or 2026-08-31T12:00:00Z)."),

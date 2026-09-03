@@ -24,7 +24,7 @@ export default function ModelIcon({ modelId, size = 14, className, title }: Prop
       height: size,
       className,
       title,
-      fill: svg.mode === "fill" ? "currentColor" : "none",
+      fill: svg.mode === "stroke" ? "none" : "currentColor",
       stroke: svg.mode === "stroke" ? "currentColor" : undefined,
       strokeWidth: svg.mode === "stroke" ? 1.5 : undefined,
       strokeLinecap: svg.mode === "stroke" ? ("round" as const) : undefined,

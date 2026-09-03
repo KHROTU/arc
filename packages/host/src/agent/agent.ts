@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getWorkspaceArcDir } from "../arc-dir.js";
 import { ModelRegistry } from "../routing/registry.js";
-import { pickProvider, routeStream, recordSuccess, estimateCost, withProviderOverrides } from "../routing/router.js";
+import { pickProvider, routeStream, recordSuccess, costBreakdown, withProviderOverrides } from "../routing/router.js";
 import { transportFor, sanitizeToolChains } from "../providers/transport.js";
 export { sanitizeToolChains } from "../providers/transport.js";
 import { CheckpointStore } from "../checkpoint/store.js";
@@ -80,6 +80,7 @@ export interface AgentOptions {
   getBackgroundProcesses?: () => { id: string; command: string }[];
   restoreBrowserTabs?: (tabs: { url: string }[]) => Promise<void>;
   autoSessionNotes?: boolean;
+  conversationId?: string;
 }
 export class Agent {
   private messages: ChatMessage[] = [];
@@ -99,6 +100,7 @@ export class Agent {
   }
   private currentMode: string;
   private userRequestedMode: string | undefined;
+  private readonly conversationId: string;
   private sessionApprovals: SessionApprovals;
   private sessionStarted = false;
   private turnCount = 0;
@@ -173,6 +175,7 @@ export class Agent {
     private opts: AgentOptions,
   ) {
     this.subagentRunner = new SubagentRunner(registry, store, opts.modeRegistry);
+    this.conversationId = opts.conversationId ?? randomUUID();
     this.currentMode = opts.modeRegistry.resolveDefault(opts.mode);
     this.userRequestedMode = opts.userRequestedMode;
     this.sessionApprovals = opts.initialSessionApprovals
@@ -567,7 +570,10 @@ export class Agent {
               }
               this.lastPromptTokens = estimateTokens(afterArr, toolSpecs);
               const summaryNew = afterArr.find((m) => !beforeArr.includes(m) && typeof m.content === "string" && m.content.startsWith("## Compaction summary of"));
-              if (summaryNew) this.sink.message(summaryNew);
+              if (summaryNew) {
+                this.tracker.noteSummary(current.id, Math.ceil(summaryNew.content.length / 4));
+                this.sink.message(summaryNew);
+              }
               this.sink.compaction(before, afterArr.length, dec.reason);
               this.pushTimeline({ type: "compaction", turnId, before, after: afterArr.length, reason: dec.reason, ts: Date.now() });
             } else {
@@ -588,6 +594,10 @@ export class Agent {
       this.messages = sanitizeToolChains(this.messages);
       let usedProvider: import("../providers/transport.js").StreamRequest["provider"] | undefined;
       let usedRef: import("../protocol/protocol.js").ProviderRef | undefined;
+      let lastUserTokens = 0;
+      for (let i = this.messages.length - 1; i >= 0; i--) {
+        if (this.messages[i].role === "user") { lastUserTokens = Math.ceil(this.messages[i].content.length / 4); break; }
+      }
       const stream = await routeStream(this.registry, model, (decision) => {
         usedProvider = decision.provider;
         usedRef = decision.ref;
@@ -600,6 +610,7 @@ export class Agent {
           signal: this.abortController!.signal,
           proxyUrl: this.resolveProviderProxy(),
           reasoningEffort: this.opts.reasoningEffort,
+          conversationId: this.conversationId,
         });
       }, { rerank: true, ...(this.opts.reasoningEffort !== "none" ? { stallMs: 180_000, firstByteMs: 180_000 } : {}) });
       let text = "";
@@ -683,13 +694,14 @@ export class Agent {
             break;
           }
           case "usage": {
-            this.tracker.observe(model.id, ev.usage);
-            const turnCost = estimateCost(model, ev.usage, usedRef);
-            this.usageByModel[model.id] = addUsage(this.usageByModel[model.id], { ...ev.usage, cost: turnCost });
+            this.tracker.observe(model.id, ev.usage, lastUserTokens);
+            const bd = costBreakdown(model, ev.usage, usedRef);
+            const turnUsage: TurnUsage = { ...ev.usage, cost: bd.total, cacheReadCost: bd.cacheRead, costIn: bd.cacheRead + bd.cacheWrite + bd.plainInput, costOut: bd.output };
+            this.usageByModel[model.id] = addUsage(this.usageByModel[model.id], turnUsage);
             if (typeof ev.usage.prompt === "number" && ev.usage.prompt > 0) {
               this.lastPromptTokens = Math.max(this.lastPromptTokens, ev.usage.prompt);
             }
-            this.sink.usage({ ...ev.usage, cost: turnCost }, this.usageByModel);
+            this.sink.usage(turnUsage, this.usageByModel);
             recordSuccess(model.id, usedProvider!.id);
             break;
           }
@@ -951,6 +963,7 @@ export class Agent {
           requestApproval: this.opts.approveShell,
           approvalsConfig: this.opts.approvalsConfig,
           sessionApprovals: this.getSessionApprovals(),
+          conversationId: this.conversationId,
         }, (question: string, options: string[]) => this.askFromSubagent(question, options, parent));
         const outputs = results.map((r, i) =>
           r.ok ? `[${specs[i].name}] ${r.output}` : `[${specs[i].name}] FAILED: ${r.output}`,
@@ -1012,6 +1025,7 @@ export class Agent {
         requestApproval: this.opts.approveShell,
         approvalsConfig: this.opts.approvalsConfig,
         sessionApprovals: this.getSessionApprovals(),
+        conversationId: this.conversationId,
       }, (question: string, options: string[]) => this.askFromSubagent(question, options, parent), (steps) => {
         this.appendStepChildren(tc.id, steps);
       });
@@ -1099,7 +1113,10 @@ export class Agent {
         return;
       }
       const approvalHandler = this.opts.approveShell ?? this.opts.toolContext.requestApproval;
-      if (!approvalHandler || !await approvalHandler(`Restore workspace files from checkpoint '${resolvedId}'?`)) {
+      const restoreApproved = this.sessionApprovals.autoApproveMode === "all"
+        ? true
+        : (!!approvalHandler && await approvalHandler(`Restore workspace files from checkpoint '${resolvedId}'?`));
+      if (!restoreApproved) {
         this.appendToolOutput(tc.id, "Checkpoint restore denied by user.", false);
         return;
       }
@@ -1111,7 +1128,12 @@ export class Agent {
       }
       const { restored, conflicts } = await this.retract(resolvedId, true);
       const conflictNote = conflicts.length ? ` (note: ${conflicts.length} file(s) had uncommitted changes since snapshot: ${conflicts.map((f) => `\`${f}\``).join(", ")})` : "";
-      const output = `Reverted to checkpoint ${resolvedId}. Restored ${restored.length} file(s).${conflictNote}`;
+      const snapFileCount = Object.keys(snap.files ?? {}).length;
+      const output = restored.length
+        ? `Reverted to checkpoint ${resolvedId}. Restored ${restored.length} file(s).${conflictNote}`
+        : (snapFileCount === 0
+          ? `Reverted to checkpoint ${resolvedId}. The snapshot recorded no file changes, so there was nothing to restore.${conflictNote}`
+          : `Reverted to checkpoint ${resolvedId}. No files needed restoring (working tree already matches the snapshot).${conflictNote}`);
       this.appendToolOutput(tc.id, output, true);
       this.messages.push({ id: randomUUID(), role: "tool", content: output, toolCallId: tc.id, ts: Date.now() });
       return;
@@ -1133,7 +1155,7 @@ export class Agent {
         if (!Number.isNaN(sinceMs) && snap.ts < sinceMs) continue;
         entries.push({ turnId: turn, ts: snap.ts, files: Object.keys(snap.files).join(", ") || "(none)", label: snap.label ?? "" });
       }
-      entries = entries.slice(-limit);
+      entries = entries.slice(0, limit);
       const lines = entries.map((e, i) => `${i + 1}. turnId=${e.turnId}  ts=${new Date(e.ts).toISOString()}  files=${e.files}${e.label ? `  label="${e.label}"` : ""}`);
       const totalNote = `(${turns.length} checkpoint(s) total${Number.isNaN(sinceMs) ? `, showing latest ${entries.length} - pass limit or since (ISO date) to widen` : `, showing ${entries.length} since ${sinceRaw}`})`;
       const output = lines.length ? `${totalNote}\n${lines.join("\n")}` : "No checkpoints match the given filter.";
@@ -1251,7 +1273,36 @@ export class Agent {
       }
       const md = mdLines.join("\n");
       const json = JSON.stringify(events, null, 2);
-      const output = `## Session Trace (${events.length} events)\n\n${md}\n\n## JSON\n\n\`\`\`json\n${json.slice(0, 4000)}\n\`\`\``;
+      const fullPayload = `# Session Execution Trace\n\nExported: ${new Date().toISOString()}\n\n${md}\n\n## JSON\n\n\`\`\`json\n${json}\n\`\`\``;
+      let retrievalNote = "";
+      try {
+        const blobId = await saveBlob(this.opts.workspaceRoot, "session.exportTrace", fullPayload);
+        retrievalNote = `\n\nFull trace (${events.length} events, Markdown + complete JSON) archived: call \`context.retrieve\` with id "${blobId}" to re-read it in full.`;
+      } catch {}
+      let fileNote = "";
+      const reqPath = String(tc.args.path ?? "").trim();
+      if (reqPath) {
+        const abs = path.resolve(this.opts.workspaceRoot, reqPath);
+        if (classifyWorkspacePath(this.opts.workspaceRoot, abs).external) {
+          fileNote = `\n\nDid not write file: path '${reqPath}' escapes the workspace.`;
+        } else {
+          const level = resolveApproval(this.opts.approvalsConfig ?? DEFAULT_APPROVALS, this.sessionApprovals, "write.local", { toolName: "session.exportTrace", filePath: abs, workspaceRoot: this.opts.workspaceRoot });
+          const handler = this.opts.approveShell ?? this.opts.toolContext.requestApproval;
+          const okWrite = level === "auto" || (!!handler && await handler(`Write session trace export to ${reqPath}?`));
+          if (okWrite) {
+            try {
+              await fs.mkdir(path.dirname(abs), { recursive: true });
+              await fs.writeFile(abs, fullPayload, { encoding: "utf-8", mode: 0o600 });
+              fileNote = `\n\nFull trace written to ${reqPath}.`;
+            } catch (e) {
+              fileNote = `\n\nFailed to write trace file: ${(e as Error)?.message ?? e}`;
+            }
+          } else {
+            fileNote = `\n\nTrace file not written (denied by user).`;
+          }
+        }
+      }
+      const output = `## Session Trace (${events.length} events)\n\n${md}\n\n## JSON (first 4000 chars inline; use the archived copy for the complete JSON)\n\n\`\`\`json\n${json.slice(0, 4000)}\n\`\`\`${retrievalNote}${fileNote}`;
       this.appendToolOutput(tc.id, `Exported ${events.length} event(s).`, true);
       this.messages.push({ id: randomUUID(), role: "tool", content: output, toolCallId: tc.id, ts: Date.now() });
       return;
@@ -1542,6 +1593,7 @@ export class Agent {
           messages: prompt,
           signal: AbortSignal.timeout(10_000),
           proxyUrl: this.resolveProviderProxy(),
+          conversationId: this.conversationId,
         });
       let text = "";
       for await (const ev of stream.events) {
@@ -1620,6 +1672,7 @@ Rules: terse bullets; no pleasantries; never invent facts; preserve exact identi
         messages: prompt,
         signal: AbortSignal.timeout(60_000),
         proxyUrl: this.resolveProviderProxy(),
+        conversationId: this.conversationId,
       });
       let text = "";
       for await (const ev of stream.events) {
@@ -1757,6 +1810,10 @@ Rules: terse bullets; no pleasantries; never invent facts; preserve exact identi
     return remote ? wrapUntrusted(text, toolName) : text;
   }
   private async truncateToolOutput(output: string, toolName: string): Promise<string> {
+    // context.retrieve explicitly restores full archived content; re-compressing
+    // it here regenerates the identical content-hashed stub id and traps the
+    // agent in an endless retrieve loop. The tool itself caps at 512 KiB.
+    if (toolName === "context.retrieve") return output;
     if (output.length <= TOOL_OUTPUT_MAX_CHARS) return output;
     const { compressForContext } = await import("../compress/compress.js");
     try {
@@ -1828,6 +1885,11 @@ function addUsage(a: TurnUsage | undefined, b: TurnUsage): TurnUsage {
     completion: (a?.completion ?? 0) + b.completion,
     thinking: (a?.thinking ?? 0) + b.thinking,
     cost: (a?.cost ?? 0) + b.cost,
+    cacheRead: (a?.cacheRead ?? 0) + (b.cacheRead ?? 0),
+    cacheWrite: (a?.cacheWrite ?? 0) + (b.cacheWrite ?? 0),
+    cacheReadCost: (a?.cacheReadCost ?? 0) + (b.cacheReadCost ?? 0),
+    costIn: (a?.costIn ?? 0) + (b.costIn ?? 0),
+    costOut: (a?.costOut ?? 0) + (b.costOut ?? 0),
   };
 }
 function streamDiffContent(before: string, after: string): import("../protocol/process.js").DiffHunk[] {

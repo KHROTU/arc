@@ -119,9 +119,26 @@ function normalizeHook(args: Record<string, unknown>, base?: Record<string, unkn
   }
   return { hook };
 }
+export function parseTimeoutSec(raw: unknown): number {
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string") {
+    const m = raw.trim().match(/^(-?\d+(?:\.\d+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes)?$/i);
+    if (m) {
+      const n = Number(m[1]);
+      const unit = (m[2] ?? "s").toLowerCase();
+      if (unit === "ms") return n / 1000;
+      if (unit.startsWith("m")) return n * 60;
+      return n;
+    }
+  }
+  return -1;
+}
+function hailMary(ctx: ToolContext): boolean {
+  return ctx.sessionApprovals?.autoApproveMode === "all";
+}
 async function runAfterCmd(cmd: string | undefined, cwd: string, ctx: ToolContext): Promise<{ command: string; output: string } | undefined> {
   if (!cmd) return undefined;
-  const approved = await ctx.requestApproval?.(`Run post-write command?\n\n${cmd}`, { command: cmd });
+  const approved = hailMary(ctx) ? true : await ctx.requestApproval?.(`Run post-write command?\n\n${cmd}`, { command: cmd });
   if (!approved) return { command: cmd, output: "[runAfter denied by user]" };
   const proxyEnv = proxyEnvironment(ctx.proxyShell || ctx.proxyUrl);
   const result = await runShellCommand(cmd, {
@@ -259,6 +276,42 @@ async function startBackgroundProcess(cmd: string, cwd: string, ctx: ToolContext
     return { ok: false, output: `Failed to start background process: ${(e as Error).message}` };
   }
 }
+async function defaultGitRemote(cwd: string): Promise<string> {
+  try {
+    const r = await runGit(["remote"], { cwd, maxOutputBytes: 4096, timeoutMs: 15_000, env: minimalEnvironment({ GIT_TERMINAL_PROMPT: "0" }) });
+    if (!r.ok) return "";
+    const names = r.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    return names.includes("origin") ? "origin" : (names[0] ?? "");
+  } catch {
+    return "";
+  }
+}
+async function findCustomRun(dir: string, idOrName: string): Promise<{ id: string; name: string; commands: string[] } | undefined> {
+  if (/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(idOrName)) {
+    try {
+      return JSON.parse(await fs.readFile(path.join(dir, `${idOrName}.json`), "utf-8"));
+    } catch {}
+  }
+  try {
+    const files = await fs.readdir(dir);
+    for (const f of files) {
+      if (!f.endsWith(".json")) continue;
+      try {
+        const skill = JSON.parse(await fs.readFile(path.join(dir, f), "utf-8"));
+        if (typeof skill?.name === "string" && skill.name === idOrName && Array.isArray(skill.commands)) return skill;
+      } catch {}
+    }
+  } catch {}
+  return undefined;
+}
+async function listCustomRunIds(dir: string): Promise<string[]> {
+  try {
+    const files = await fs.readdir(dir);
+    return files.filter((f) => f.endsWith(".json")).map((f) => f.replace(/\.json$/, ""));
+  } catch {
+    return [];
+  }
+}
 export const tools: Record<string, { description: string; fn: ToolFn }> = {
   "file.read": {
     description: "Read a file. Images are included inline for vision. Args: { path, offset?, limit? }",
@@ -306,6 +359,9 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     fn: async (args, ctx) => {
       if (typeof args.path !== "string") return { ok: false, output: "file.edit requires a string `path` argument." };
       if (typeof args.search !== "string") return { ok: false, output: "file.edit requires a string `search` argument." };
+      if ((args.replace === undefined || args.replace === "") && !/<<<<<<< SEARCH\s*(?:\r\n|\r|\n)/.test(args.search)) {
+        return { ok: false, output: "file.edit requires a non-empty `replace` argument for plain-text search. To delete a block, pass an explicit SEARCH/REPLACE block with an empty REPLACE section." };
+      }
       const ed = new FileEditor(ctx.root, !!ctx.allowExternalPath);
       const filePath = args.path;
       const replace = String(args.replace);
@@ -401,7 +457,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
         if (!ctx.runInVsCodeTerminal) return { ok: false, output: "Shell surface 'integrated' is not available in this environment (requires the Arc VS Code extension)." };
         return await ctx.runInVsCodeTerminal(cmd, cwd);
       }
-      const timeoutSec = args.timeout ? Number(args.timeout) : -1;
+      const timeoutSec = parseTimeoutSec(args.timeout);
       const onChunk = ctx.onChunk;
       const proxyEnv = proxyEnvironment(ctx.proxyShell || ctx.proxyUrl);
       let spawned: ChildProcess | undefined;
@@ -458,9 +514,11 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       const bg = bgProcesses.get(id);
       if (!bg) return { ok: false, output: `No background process with id '${id}'.` };
       if (bg.exited) return { ok: false, output: `Process ${id} has already exited.` };
+      const text = input.endsWith("\n") ? input : `${input}\n`;
       try {
-        bg.proc.stdin?.write(input);
-        return { ok: true, output: `Sent ${input.length} bytes to process ${id}.` };
+        const flushed = bg.proc.stdin?.write(text) ?? false;
+        if (!flushed) return { ok: false, output: `Process ${id} is not accepting stdin.` };
+        return { ok: true, output: `Sent ${text.length} bytes to process ${id}.` };
       } catch (e: unknown) {
         return { ok: false, output: `Failed to write to process ${id}: ${(e as Error).message}` };
       }
@@ -504,31 +562,47 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       } catch {
         return { ok: false, output: `No custom run found with id '${id}'.` };
       }
-      if (args.name !== undefined) skill.name = String(args.name).trim() || skill.name;
+      let effectiveId = id;
+      let effectivePath = filePath;
+      if (args.name !== undefined) {
+        const newName = String(args.name).trim() || skill.name;
+        const newSafeId = newName.replace(/[^a-zA-Z0-9_.-]/g, "_");
+        if (newSafeId !== id) {
+          if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(newSafeId) || !newSafeId) return { ok: false, output: `New name produces an unsafe id ('${newSafeId}').` };
+          try {
+            await fs.access(path.join(dir, `${newSafeId}.json`));
+            return { ok: false, output: `A custom run with id '${newSafeId}' already exists.` };
+          } catch {}
+          skill.name = newName;
+          skill.id = newSafeId;
+          effectiveId = newSafeId;
+          effectivePath = path.join(dir, `${newSafeId}.json`);
+        } else {
+          skill.name = newName;
+        }
+      }
       if (args.commands !== undefined) {
         const cmds = Array.isArray(args.commands) ? (args.commands as string[]).map(String) : [];
         if (cmds.length === 0) return { ok: false, output: "commands must be a non-empty array." };
         skill.commands = cmds;
       }
       skill.updatedAt = Date.now();
-      await fs.writeFile(filePath, JSON.stringify(skill, null, 2), "utf-8");
+      await fs.writeFile(effectivePath, JSON.stringify(skill, null, 2), "utf-8");
+      if (effectivePath !== filePath) await fs.unlink(filePath).catch(() => undefined);
       const cmdList = skill.commands.map((c, i) => `  ${i + 1}. ${c}`).join("\n");
-      return { ok: true, output: `Updated custom run '${skill.name}' (id: ${id}) with ${skill.commands.length} command(s):\n${cmdList}` };
+      return { ok: true, output: `Updated custom run '${skill.name}' (id: ${effectiveId}) with ${skill.commands.length} command(s):\n${cmdList}` };
     },
   },
   "shell.runCustomRun": {
     description: "Execute a previously-defined custom run by id or name. Executes each command sequentially in the workspace. Args: { id, cwd? }",
     fn: async (args, ctx) => {
       const id = String(args.id ?? "").trim();
-      if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(id)) return { ok: false, output: "runCustomRun requires a safe id." };
+      if (!id) return { ok: false, output: "runCustomRun requires an id or name." };
       const dir = getSkillsDir();
-      const filePath = path.join(dir, `${id}.json`);
-      let skill: { name: string; commands: string[] };
-      try {
-        const raw = await fs.readFile(filePath, "utf-8");
-        skill = JSON.parse(raw);
-      } catch {
-        return { ok: false, output: `No custom run found with id '${id}'.` };
+      const skill = await findCustomRun(dir, id);
+      if (!skill) {
+        const available = await listCustomRunIds(dir);
+        return { ok: false, output: `No custom run found with id or name '${id}'.${available.length ? ` Available: ${available.join(", ")}` : ""}` };
       }
       if (!skill.commands || skill.commands.length === 0) {
         return { ok: false, output: `Custom run '${skill.name}' has no commands.` };
@@ -540,7 +614,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       for (let i = 0; i < skill.commands.length; i++) {
         const cmd = skill.commands[i];
         const label = `[${i + 1}/${skill.commands.length}] ${cmd}`;
-        const approved = await ctx.requestApproval?.(`Run custom command?\n\n${cmd}`, { command: cmd });
+        const approved = hailMary(ctx) ? true : await ctx.requestApproval?.(`Run custom command?\n\n${cmd}`, { command: cmd });
         if (!approved) { results.push(`${label}\nDENIED`); allOk = false; continue; }
         const result = await runSingleCommand(cmd, cwd, ctx, onChunk);
         const entry = result.ok ? `${label}\n${result.output}` : `${label}\nFAILED: ${result.output}`;
@@ -578,7 +652,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
       if (scope === "file" && testPath) commandArgs.push("--", testPath);
       else if (scope === "failed" && (commandArgs.includes("vitest") || commandArgs.includes("jest"))) commandArgs.push("--last-failed");
       const displayCommand = [executable, ...commandArgs.map((arg) => JSON.stringify(arg))].join(" ");
-      const approved = await ctx.requestApproval?.(`Run detected test command?\n\n${displayCommand}`, { command: displayCommand });
+      const approved = hailMary(ctx) ? true : await ctx.requestApproval?.(`Run detected test command?\n\n${displayCommand}`, { command: displayCommand });
       if (!approved) return { ok: false, output: "Test command denied by user." };
       const testProxyEnv = proxyEnvironment(ctx.proxyShell || ctx.proxyUrl);
       const result = await runProcess(executable, commandArgs, {
@@ -973,7 +1047,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     },
   },
   "git.push": {
-    description: "Push commits to a remote. Args: { remote?, branch?, setUpstream?: boolean, force?: boolean } uses --force-with-lease when force is true. For tags, mirrors, or remote deletion use shell.run.",
+    description: "Push commits to a remote. Args: { remote?, branch?, setUpstream?: boolean, force?: boolean } uses --force-with-lease when force is true. When branch is given without remote, the default remote (origin, else first) is used. For tags, mirrors, or remote deletion use shell.run.",
     fn: async (args, ctx) => {
       try {
         const refRe = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
@@ -982,10 +1056,15 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
         for (const [label, ref] of [["remote", remote], ["branch", branch]] as const) {
           if (ref && (!refRe.test(ref) || ref.includes("..") || ref.includes("@{"))) return { ok: false, output: `Invalid git ${label} ref: ${ref}` };
         }
+        let effectiveRemote = remote;
+        if (!effectiveRemote && branch) {
+          effectiveRemote = await defaultGitRemote(ctx.workspacePath);
+          if (!effectiveRemote) return { ok: false, output: `No git remote configured; pass remote explicitly to push branch '${branch}'.` };
+        }
         const gitArgs = ["push"];
         if (args.force) gitArgs.push("--force-with-lease");
         if (args.setUpstream) gitArgs.push("--set-upstream");
-        if (remote) gitArgs.push(remote);
+        if (effectiveRemote) gitArgs.push(effectiveRemote);
         if (branch) gitArgs.push(branch);
         const r = await runGit(gitArgs, { cwd: ctx.workspacePath, maxOutputBytes: PROCESS_OUTPUT_LIMIT, timeoutMs: 120_000, env: minimalEnvironment({ GIT_TERMINAL_PROMPT: "0" }) });
         const out = stripAnsi(r.stdout) + (r.stderr ? `\n${stripAnsi(r.stderr)}` : "");
@@ -1371,7 +1450,7 @@ export const tools: Record<string, { description: string; fn: ToolFn }> = {
     fn: async (args, ctx) => {
       const cmd = String(args.command ?? "");
       if (!cmd) return { ok: false, output: "wait.forCommand requires a `command`." };
-      const approved = await ctx.requestApproval?.(`Run condition-wait command (repeats until success or timeout)?\n\n${cmd}`, { command: cmd });
+      const approved = hailMary(ctx) ? true : await ctx.requestApproval?.(`Run condition-wait command (repeats until success or timeout)?\n\n${cmd}`, { command: cmd });
       if (approved === false) return { ok: false, output: "wait.forCommand denied by user." };
       const intervalMs = Math.max(250, Math.round(Number(args.interval ?? 1) * 1000) || 1000);
       const timeoutMs = args.timeout !== undefined ? Math.min(Math.max(Number(args.timeout) * 1000, intervalMs), MAX_WAIT_MS) : 600_000;

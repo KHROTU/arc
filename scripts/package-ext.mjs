@@ -19,7 +19,10 @@ if (existsSync(backupPath)) {
 }
 writeFileSync(backupPath, original, "utf-8");
 try {
-  writeFileSync(pkgPath, JSON.stringify(JSON.parse(original)) + "\n", "utf-8");
+  const pkg = JSON.parse(original);
+  delete pkg.scripts;
+  delete pkg.devDependencies;
+  writeFileSync(pkgPath, JSON.stringify(pkg) + "\n", "utf-8");
   execFileSync(process.execPath, [join(ARC_DIR, "node_modules", "@vscode", "vsce", "vsce"), "package", "--no-dependencies"], { cwd: ARC_DIR, stdio: "inherit" });
 } finally {
   writeFileSync(pkgPath, original, "utf-8");

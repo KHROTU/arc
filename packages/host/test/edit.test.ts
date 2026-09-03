@@ -1,5 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { applyEdit } from "../src/edit/apply";
+import { tools } from "../src/agent/tools";
+import type { ToolContext } from "../src/agent/tools";
 describe("applyEdit", () => {
   it("applies an exact match", () => {
     const r = applyEdit({ before: "hello world", search: "world", replace: "there" });
@@ -124,5 +129,33 @@ function f() {
     });
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/not found/);
+  });
+});
+describe("file.edit empty-replace guard", () => {
+  const dirs: string[] = [];
+  afterEach(async () => {
+    await Promise.all(dirs.splice(0).map((d) => fs.rm(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })));
+  });
+  async function setup(content: string): Promise<{ tmp: string; ctx: ToolContext }> {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "arc-edit-guard-"));
+    dirs.push(tmp);
+    await fs.writeFile(path.join(tmp, "a.txt"), content, "utf-8");
+    return { tmp, ctx: { root: tmp, workspacePath: tmp } as unknown as ToolContext };
+  }
+  it("rejects a missing or empty plain-text replace instead of blanking the match", async () => {
+    const { ctx } = await setup("function getVersion() {\n  return 1;\n}\n");
+    const missing = await tools["file.edit"].fn({ path: "a.txt", search: "function getVersion() {\n  return 1;\n}" }, ctx);
+    expect(missing.ok).toBe(false);
+    expect(missing.output).toMatch(/non-empty `replace`/);
+    const empty = await tools["file.edit"].fn({ path: "a.txt", search: "return 1;", replace: "" }, ctx);
+    expect(empty.ok).toBe(false);
+    expect(empty.output).toMatch(/non-empty `replace`/);
+  });
+  it("still allows explicit deletion via an empty SEARCH/REPLACE block", async () => {
+    const { tmp, ctx } = await setup("keep\nremove me\nkeep\n");
+    const block = "x\n<<<<<<< SEARCH\nremove me\n=======\n\n>>>>>>> REPLACE";
+    const r = await tools["file.edit"].fn({ path: "a.txt", search: block, replace: "" }, ctx);
+    expect(r.ok).toBe(true);
+    expect(await fs.readFile(path.join(tmp, "a.txt"), "utf-8")).toBe("keep\n\nkeep\n");
   });
 });

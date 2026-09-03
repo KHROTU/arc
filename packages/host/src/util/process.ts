@@ -176,11 +176,15 @@ export function runProcess(executable: string, args: string[], opts: ProcessOpti
     proc.stdin?.end(opts.input);
     if (opts.timeoutMs && opts.timeoutMs > 0) {
       timer = setTimeout(() => {
-        if (opts.timeoutAdopt?.(proc, stdout, stderr)) {
-          proc.stdout?.removeAllListeners("data");
-          proc.stderr?.removeAllListeners("data");
-        } else {
-          terminateProcessTree(proc);
+        try {
+          if (opts.timeoutAdopt?.(proc, stdout, stderr)) {
+            proc.stdout?.removeAllListeners("data");
+            proc.stderr?.removeAllListeners("data");
+          } else {
+            terminateProcessTree(proc);
+          }
+        } catch {
+          try { terminateProcessTree(proc); } catch {}
         }
         stderr += `${stderr ? "\n" : ""}Process timed out after ${opts.timeoutMs}ms`;
         finish(false);

@@ -1,8 +1,8 @@
 {
   "name": "arc-code",
   "displayName": "Arc",
-  "description": "0.23 MB provider-agnostic agentic harness. 262+ providers with tiered model routing, multi-provider failover, and first-class security.",
-  "version": "0.7.0",
+  "description": "0.24 MB provider-agnostic agentic harness. 262+ providers with tiered model routing, multi-provider failover, and first-class security.",
+  "version": "0.7.1",
   "publisher": "khrotu",
   "license": "Apache-2.0",
   "repository": {
@@ -435,12 +435,31 @@
             "fixed"
           ],
           "default": "model-aware",
-          "description": "Context compaction strategy. 'model-aware' uses the model's observed average thinking+response length."
+          "description": "Context compaction strategy. Model-aware never compacts before half the usable window."
+        },
+        "arc.compaction.fixedAtPct": {
+          "type": "number",
+          "default": 75,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Fixed strategy only: compact once the context reaches this percentage of the model's context window."
         },
         "arc.compaction.safetyMargin": {
           "type": "number",
           "default": 0.15,
-          "description": "Safety margin reserved for model output (fraction of window)."
+          "description": "Model-aware strategy only: extra fraction of the window kept free below the learned output reserve before compacting."
+        },
+        "arc.compaction.frictionCost": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "User-friction penalty per compaction in dollars (F) used by the cost-optimal compaction timing. 0 means purely cost-minimizing."
+        },
+        "arc.compaction.lostContextPenalty": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Lost-context penalty per discarded token in dollars (beta) used by the cost-optimal compaction timing. Higher values compact sooner."
         },
         "arc.verify.mode": {
           "type": "string",

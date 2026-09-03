@@ -135,7 +135,7 @@ const TodoListBlock = memo(({ todos }: { todos: TodoItem[] }) => (
                 <Check size={13} strokeWidth={2.5} />
               </ScaleIn>
             ) : active ? (
-              <span className="arc-proc-todo-pulse" />
+              <CircleDot size={12} />
             ) : skipped ? (
               <Circle size={12} />
             ) : blocked ? (

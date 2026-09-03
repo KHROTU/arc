@@ -151,6 +151,22 @@ export const anthropicTransport: Transport = {
     void (async () => {
       let buffer = "";
       const contentBudget: StreamContentBudget = { bytes: 0 };
+      let usage: { input: number; cacheWrite: number; cacheRead: number; output: number } | undefined;
+      const emitUsage = () => {
+        if (!usage) return;
+        q.push({
+          type: "usage",
+          usage: {
+            prompt: usage.input + usage.cacheWrite + usage.cacheRead,
+            completion: usage.output,
+            thinking: 0,
+            cost: 0,
+            cacheRead: usage.cacheRead,
+            cacheWrite: usage.cacheWrite,
+          },
+        });
+        usage = undefined;
+      };
       const toolBlocks = new Map<number, { id: string; name: string; json: string }>();
       try {
         for await (const chunk of readableToAsyncIterable(res.body as ReadableStream<Uint8Array>)) {
@@ -169,8 +185,16 @@ export const anthropicTransport: Transport = {
                 type: string;
                 index?: number;
                 delta?: { type?: string; text?: string; thinking?: string; partial_json?: string; stop_reason?: string };
+                usage?: { input_tokens?: number | null; output_tokens?: number | null; cache_creation_input_tokens?: number | null; cache_read_input_tokens?: number | null };
                 content_block?: { type: string; name?: string; id?: string };
-                message?: { usage?: { input_tokens: number; output_tokens: number } };
+                message?: { usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number | null; cache_read_input_tokens?: number | null } };
+              };
+              const takeUsage = (u: NonNullable<NonNullable<typeof j.message>["usage"]> | NonNullable<typeof j.usage>) => {
+                usage = usage ?? { input: 0, cacheWrite: 0, cacheRead: 0, output: 0 };
+                if (typeof u.input_tokens === "number") usage.input = u.input_tokens;
+                if (typeof u.output_tokens === "number") usage.output = u.output_tokens;
+                if (typeof u.cache_creation_input_tokens === "number") usage.cacheWrite = u.cache_creation_input_tokens;
+                if (typeof u.cache_read_input_tokens === "number") usage.cacheRead = u.cache_read_input_tokens;
               };
               if (j.type === "content_block_start" && j.content_block) {
                 if (j.content_block.type === "tool_use" && typeof j.index === "number") {
@@ -202,8 +226,11 @@ try { args = blk.json ? JSON.parse(blk.json) : {}; } catch { hostLog(`Anthropic 
                   q.push({ type: "tool_call", id: blk.id, name: fromApiToolName(blk.name), args });
                   toolBlocks.delete(j.index);
                 }
-              } else if (j.type === "message_delta" && j.message?.usage) {
-                q.push({ type: "usage", usage: { prompt: j.message.usage.input_tokens ?? 0, completion: j.message.usage.output_tokens ?? 0, thinking: 0, cost: 0 } });
+              } else if (j.type === "message_start" && j.message?.usage) {
+                takeUsage(j.message.usage);
+              } else if (j.type === "message_delta") {
+                if (j.usage) takeUsage(j.usage);
+                emitUsage();
               } else if (j.type === "message_stop") {
                 q.push({ type: "done" });
                 q.close();

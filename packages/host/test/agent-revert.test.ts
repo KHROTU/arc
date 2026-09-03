@@ -95,6 +95,22 @@ describe("Agent.revertToMessage across a compaction boundary", () => {
     expect(r.messagesRemoved).toBe(2);
     expect(agent.getArchivedMessages()).toHaveLength(0);
   });
+  it("preserves cumulative usage (cost ledger) when messages are removed", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "arc-revert-usage-"));
+    tmpDirs.push(tmp);
+    const postU = { id: "post-u", role: "user", content: "keep me", ts: 9 } as ChatMessage;
+    const cut = { id: "cut-me", role: "user", content: "revert to me", ts: 30 } as ChatMessage;
+    const tail = { id: "tail", role: "assistant", content: "expensive later answer", ts: 40 } as ChatMessage;
+    const { agent } = await makeAgent([postU, cut, tail], [], tmp);
+    (agent as unknown as { usageByModel: Record<string, { prompt: number; completion: number; thinking: number; cost: number }> }).usageByModel = {
+      m1: { prompt: 12_000, completion: 800, thinking: 0, cost: 0.042 },
+    };
+    const before = JSON.stringify(agent.getUsage());
+    const r = await agent.revertToMessage("cut-me", false);
+    expect(r.reverted).toBe(true);
+    expect(r.messagesRemoved).toBeGreaterThan(0);
+    expect(JSON.stringify(agent.getUsage())).toBe(before);
+  });
   it("matches by content when the id no longer exists after compaction", async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "arc-revert3-"));
     tmpDirs.push(tmp);

@@ -2,6 +2,18 @@
 
 A self-contained workspace for the Arc agent to read, explore, and exercise every built-in tool.
 
+> Path convention: every tool `path` argument is relative to the agent workspace
+> root. If a file write lands somewhere unexpected, probe the actual root first
+> (e.g. `shell.run` a directory listing) — file, git, and shell tools all
+> resolve from the same root, so a mismatch means the root is not what you
+> assumed, not that tools use different bases.
+>
+> Environment-sensitive rows: `web.search` needs reachable search backends (a
+> no-results answer covers the error path); `git.push` / `git.pr` need a
+> configured remote and `gh` auth; several rows below (notebook, git, test,
+> exportTrace, some browser tabs) sit in the default `arc.tools.disabled`
+> list — enable them before covering those rows.
+
 ## Structure
 
 ```
@@ -56,25 +68,25 @@ notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteC
 
 | Tool | Action |
 | ------ | -------- |
-| shell.run | Run `demo.ps1`; test timeout with `slow.ps1` (3s kill vs -1 complete) |
+| shell.run | Run `demo.ps1`; test timeout with `slow.ps1` (3s adopts into background with partial output vs -1 runs to completion) |
 | shell.backgroundRun | Background `slow.ps1`, `interactive.ps1` |
 | shell.check | Poll background process output and exit status |
-| shell.write | Send stdin to `interactive.ps1` |
+| shell.write | Send stdin to `interactive.ps1` (a trailing newline is appended if missing, for line-buffered readers) |
 | shell.customRun | Create named pipeline 'full_check' (lint + build + check) |
-| shell.editCustomRun | Edit pipeline: add demo.ps1, rename to 'pipeline'; test error on nonexistent id |
-| shell.runCustomRun | Run the 'pipeline' custom run by id |
+| shell.editCustomRun | Edit pipeline: add demo.ps1, rename to 'pipeline' (renaming also renames the id); test error on nonexistent id |
+| shell.runCustomRun | Run the 'pipeline' custom run by id or display name |
 
 ### LSP Tools
 
 | Tool | Action |
-|------|--------|
-| lsp.problems | Check workspace-wide diagnostics (`src/index.ts` has type mismatch + unused import) |
-| lsp.problemsFor | Check `src/index.ts` and `src/style.css` individually |
+| ------ | -------- |
+| lsp.problems | Check workspace-wide diagnostics. Mirrors the Problems tab exactly: TypeScript diagnostics only exist for files currently open in the editor, so expect results only after opening the files (`src/index.ts` then shows its type mismatch; the unused import needs `noUnusedLocals` to surface) |
+| lsp.problemsFor | Check `src/index.ts` and `src/style.css` individually (same open-file caveat as above) |
 
 ### Web Tools
 
 | Tool | Action |
-|------|--------|
+| ------ | -------- |
 | web.fetch | Fetch `https://example.com`, `httpbin.org/html`, `httpbin.org/json`; test 404 + DNS errors |
 | web.search | Search "Arc agentic coding assistant", "TypeScript type narrowing" |
 
@@ -106,19 +118,19 @@ notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteC
 
 | Tool | Action |
 | ------ | -------- |
-| mcp.call | Call `context7/resolve` or `context7/query` on the context7 server |
+| mcp.call | Call `resolve-library-id` or `query-docs` on the context7 server (tool names are `{server}/{registered-tool}`, not `context7/resolve`) |
 | mcp.create | Register a new MCP server |
 | mcp.remove | Remove an MCP server |
 | mcp.toggle | Enable/disable an MCP server |
-| mcp.resources/list | List resources on a server |
-| mcp.resources/read | Read resource by URI |
-| mcp.prompts/list | List prompts on a server |
-| mcp.prompts/get | Get prompt by name |
+| mcp.resources/list | List resources on a server (context7 exposes none — the empty list is the expected result) |
+| mcp.resources/read | Read resource by URI (expect not-found on context7; that covers the error path) |
+| mcp.prompts/list | List prompts on a server (context7 exposes none — the empty list is the expected result) |
+| mcp.prompts/get | Get prompt by name (expect not-found on context7; that covers the error path) |
 
 ### Subagent Tools
 
 | Tool | Action |
-|------|--------|
+| ------ | -------- |
 | subagent.spawn | Single, batch (parallel), and rule-constrained subagents |
 | subagent.askParent | Subagent asks parent for clarification |
 
@@ -127,7 +139,7 @@ notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteC
 | Tool | Action |
 | ------ | -------- |
 | checkpoint.revert | Revert file edits to checkpoint state |
-| checkpoint.list | List all saved checkpoints with indices |
+| checkpoint.list | List workspace checkpoints, most recent first (index 1 = newest; matches revert/compare) |
 | checkpoint.compare | Compare two checkpoints by index or turnId |
 
 ### Mode / Skill / Memory / Rule Tools
@@ -135,16 +147,16 @@ notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteC
 | Tool | Action |
 | ------ | -------- |
 | mode.switch | Switch between plan/code/audit/debug modes |
-| skill.read | Read `.arc/skills/demo-skill.md` |
+| skill.read | Read skill by `name` (e.g. `demo-skill`), not by file path |
 | skill.use | Load skill into agent context |
-| memory.add | Add memory entry with category |
+| memory.add | Add memory entry with exact keys `category` + `content` |
 | memory.note | Leave a session note for future sessions in this workspace |
 | memory.list | List all memory entries |
 | memory.edit | Edit memory by index |
 | memory.delete | Delete memory by index |
 | rule.list | List `.arc/rules/` entries |
-| rule.read | Read `test-rule.md` |
-| rule.create | Create a new rule |
+| rule.read | Read rule by `name` (e.g. `test-rule`), not by file path |
+| rule.create | Create a new rule (requires `name` + `content` + `glob` + `description`) |
 
 ### Git Tools
 
@@ -155,9 +167,9 @@ notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteC
 | git.diffStaged | Read staged diff |
 | git.branchDiff | Diff current branch vs base |
 | git.commitMessage | Generate commit message from diff |
-| git.stage | Stage a file (the file.edit demo creates changes to stage) |
+| git.stage | Stage a file with a workspace-relative path (the file.edit demo creates changes to stage) |
 | git.commit | Commit staged changes (approval-gated) |
-| git.push | Push to a remote (approval-gated) |
+| git.push | Push to a remote (approval-gated; pass `branch` alone to use the default remote, needs a configured remote; `gh` auth needed for `git.pr`) |
 | git.branch | List / create / switch / delete branches |
 | git.pr | Create or view a PR via the gh CLI |
 
@@ -181,6 +193,8 @@ notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteC
 
 ### Notebook Tools
 
+> Disabled by default (`arc.tools.disabled`): enable them before covering these rows.
+
 | Tool | Action |
 | ------ | -------- |
 | notebook.read | List cells / read specific cell by index |
@@ -198,4 +212,4 @@ notebook-demo.ipynb  Jupyter notebook for notebook.read/editCell/addCell/deleteC
 | test.run | Run `test/example.test.ts` (vitest) |
 | handoff | Escalate to a heavier model tier |
 | clarification.askUser | Ask whether to keep/delete a file |
-| session.exportTrace | After all tools are tested, export full session execution trace as markdown + JSON |
+| session.exportTrace | Export the session trace as markdown + JSON; pass `path` to also write it to a file, otherwise re-read the full trace via the returned `context.retrieve` id |

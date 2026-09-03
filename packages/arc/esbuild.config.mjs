@@ -1,16 +1,15 @@
 import esbuild from "esbuild";
-import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkgJson = JSON.parse(readFileSync(resolve(__dirname, "package.json"), "utf-8"));
+const ARC_VERSION = typeof pkgJson.version === "string" && pkgJson.version ? pkgJson.version : "0.0.0-dev";
 const watch = process.argv.includes("--watch");
 const isProd = !watch && process.env.NODE_ENV !== "development";
 const wantMetafile = !!process.env.ARC_METAFILE;
 const hostSrc = resolve(__dirname, "../host/src");
-if (!watch) {
-  await rm(resolve(__dirname, "dist"), { recursive: true, force: true });
-}
 await mkdir(resolve(__dirname, "dist"), { recursive: true });
 const host = {
   entryPoints: [resolve(__dirname, "src/extension/host-entry.ts")],
@@ -21,6 +20,7 @@ const host = {
   target: "node20",
   outfile: resolve(__dirname, "dist/extension.js"),
   external: ["vscode", "playwright", "playwright-core", "playwright-firefox", "undici", "@img/*", "canvas"],
+  define: { "process.env.ARC_VERSION": JSON.stringify(ARC_VERSION) },
   charset: "utf8",
   sourcemap: !isProd,
   minify: isProd,
@@ -91,9 +91,9 @@ const webview = {
             const raw = await readFile(cssSrc, "utf-8");
             if (isProd) {
               const minified = await esbuild.transform(raw, { loader: "css", minify: true });
-              await writeFile(resolve(__dirname, "dist/styles.css"), minified.code);
+              await cssWrite(minified.code);
             } else {
-              await writeFile(resolve(__dirname, "dist/styles.css"), raw);
+              await cssWrite(raw);
             }
           }
         });
@@ -101,6 +101,15 @@ const webview = {
     },
   ],
 };
+const atomic = !watch;
+const hostOutfile = resolve(__dirname, "dist/extension.js");
+const webviewOutfile = resolve(__dirname, "dist/webview.js");
+const cssOutfile = resolve(__dirname, "dist/styles.css");
+if (atomic) {
+  host.outfile = `${hostOutfile}.tmp`;
+  webview.outfile = `${webviewOutfile}.tmp`;
+}
+const cssWrite = async (code) => writeFile(atomic ? `${cssOutfile}.tmp` : cssOutfile, code);
 const ctx1 = await esbuild.context(host);
 const ctx2 = await esbuild.context(webview);
 if (watch) {
@@ -113,9 +122,9 @@ if (watch) {
       const raw = await readFile(cssSrc, "utf-8");
       if (isProd) {
         const minified = await esbuild.transform(raw, { loader: "css", minify: true });
-        await writeFile(resolve(__dirname, "dist/styles.css"), minified.code);
+        await cssWrite(minified.code);
       } else {
-        await writeFile(resolve(__dirname, "dist/styles.css"), raw);
+        await cssWrite(raw);
       }
     }
   });
@@ -130,7 +139,7 @@ if (watch) {
   if (isProd && !process.env.ARC_NO_TERSER) {
     try {
       const { minify } = await import("terser");
-      for (const name of ["extension.js", "webview.js"]) {
+      for (const name of ["extension.js.tmp", "webview.js.tmp"]) {
         const out = resolve(__dirname, "dist", name);
         const res = await minify(await readFile(out, "utf-8"), {
           compress: { passes: 3, ecma: 2022 },
@@ -144,6 +153,9 @@ if (watch) {
       console.warn(`[arc] terser post-pass skipped: ${e.message}`);
     }
   }
+  await rename(`${hostOutfile}.tmp`, hostOutfile);
+  await rename(`${webviewOutfile}.tmp`, webviewOutfile);
+  try { await rename(`${cssOutfile}.tmp`, cssOutfile); } catch {  }
   await ctx1.dispose();
   await ctx2.dispose();
 }

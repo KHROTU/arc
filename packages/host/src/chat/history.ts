@@ -7,6 +7,13 @@ export interface ChatMeta {
   updatedAt: number;
   cost: number;
   promptTokens?: number;
+  inputTokens?: number;
+  completionTokens?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  cacheReadCost?: number;
+  costIn?: number;
+  costOut?: number;
 }
 export interface ChatSnapshot {
   chats: ChatMeta[];
@@ -87,13 +94,28 @@ export class ChatHistory {
     delete this.steps[id];
     if (this.currentId === id) this.currentId = this.chats[0]?.id;
   }
-  bump(id: string, cost: number): void {
+  bump(id: string, cost: number, detail?: { inputTokens?: number; cacheRead?: number; cacheWrite?: number; cacheReadCost?: number; costIn?: number; costOut?: number; completionTokens?: number }): void {
     const c = this.chats.find((x) => x.id === id);
-    if (c) { c.updatedAt = Date.now(); c.cost += cost; }
+    if (!c) return;
+    c.updatedAt = Date.now();
+    c.cost += cost;
+    if (detail) {
+      c.inputTokens = (c.inputTokens ?? 0) + (detail.inputTokens ?? 0);
+      c.cacheRead = (c.cacheRead ?? 0) + (detail.cacheRead ?? 0);
+      c.cacheWrite = (c.cacheWrite ?? 0) + (detail.cacheWrite ?? 0);
+      c.cacheReadCost = (c.cacheReadCost ?? 0) + (detail.cacheReadCost ?? 0);
+      c.costIn = (c.costIn ?? 0) + (detail.costIn ?? 0);
+      c.costOut = (c.costOut ?? 0) + (detail.costOut ?? 0);
+      c.completionTokens = (c.completionTokens ?? 0) + (detail.completionTokens ?? 0);
+    }
   }
   bumpPromptTokens(id: string, promptTokens: number): void {
     const c = this.chats.find((x) => x.id === id);
     if (c && (!c.promptTokens || promptTokens > c.promptTokens)) c.promptTokens = promptTokens;
+  }
+  setPromptTokens(id: string, promptTokens: number): void {
+    const c = this.chats.find((x) => x.id === id);
+    if (c) c.promptTokens = Math.max(0, Math.floor(promptTokens));
   }
   getMessages(id: string): unknown[] {
     return this.messages[id] ?? [];

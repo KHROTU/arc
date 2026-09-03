@@ -95,7 +95,7 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const [clarification, setClarification] = useState<{ id: string; question: string; options: string[] } | null>(null);
   const [handoff, setHandoff] = useState<{ from: string; to: string; reason: string } | null>(null);
   const [, setUsage] = useState<TurnUsage | null>(null);
-  const [ctxStats, setCtxStats] = useState<{ usedPct: number; tokens: number; window: number; cost: number } | null>(null);
+  const [ctxStats, setCtxStats] = useState<{ usedPct: number; tokens: number; window: number; cost: number; inputTokens?: number; cacheRead?: number; cacheWrite?: number; cacheReadCost?: number; completionTokens?: number; costIn?: number; costOut?: number } | null>(null);
   const [groupSummaryMode, setGroupSummaryMode] = useState<"count" | "tools" | "ai">("count");
   const pendingToolSummaries = useRef(new Map<string, (text: string) => void>());
   const [models, setModels] = useState<ModelDescriptor[]>([]);
@@ -547,7 +547,21 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
   const pct = ctxStats?.usedPct ?? 0;
   const chatCost = ctxStats?.cost ?? 0;
   const costShort = chatCost.toFixed(1);
-  const costPrecise = String(Number(chatCost.toFixed(3)));
+  const [ctxTipOpen, setCtxTipOpen] = useState(false);
+  const fmtTok = (n: number | undefined) => {
+    const v = n ?? 0;
+    if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+    if (v >= 1_000) return `${(v / 1_000).toFixed(1)}k`;
+    return String(Math.round(v));
+  };
+  const fmtMoney = (n: number | undefined) => {
+    const v = n ?? 0;
+    return `$${v.toFixed(v > 0 && v < 0.01 ? 4 : 2)}`;
+  };
+  const hitTokens = ctxStats?.cacheRead ?? 0;
+  const missTokens = Math.max(0, (ctxStats?.inputTokens ?? 0) - hitTokens);
+  const missCost = Math.max(0, (ctxStats?.costIn ?? 0) - (ctxStats?.cacheReadCost ?? 0));
+  const hitRate = (ctxStats?.inputTokens ?? 0) > 0 ? hitTokens / (ctxStats?.inputTokens ?? 0) : 0;
   const isEmpty = steps.length === 0 && streaming === null && !hasEverSent && !lastTurnError;
   type TimelineItem =
     | { kind: "msg"; ts: number; seq: number; msg: ChatMessage }
@@ -786,8 +800,25 @@ export default function ArcChat({ client, monoLogo, prideLogo, monoLogoText, pri
           </>
         )}
         <span className="arc-topbar-spacer" />
-        <span className="arc-ctx-pct" title={`Context ${pct.toFixed(0)}% used`}>{pct.toFixed(0)}%</span>
-        <span className="arc-topbar-cost" title={`${costPrecise} spent`}>${costShort}</span>
+        <span className="arc-ctx-group" onMouseEnter={() => setCtxTipOpen(true)} onMouseLeave={() => setCtxTipOpen(false)}>
+          <span className="arc-ctx-pct">{pct.toFixed(0)}%</span>
+          <span className="arc-ctx-dot">·</span>
+          <span className="arc-topbar-cost">${costShort}</span>
+          {ctxTipOpen && (
+            <div className="arc-ctx-tooltip" role="status">
+              <div className="arc-ctx-tip-row arc-ctx-tip-head">
+                <span>Context</span>
+                <span>{fmtTok(ctxStats?.tokens)} / {fmtTok(ctxStats?.window)} ({pct.toFixed(1)}%)</span>
+              </div>
+              <div className="arc-ctx-tip-row"><span>Cache hit</span><span>{fmtTok(hitTokens)} tok · {fmtMoney(ctxStats?.cacheReadCost)}</span></div>
+              <div className="arc-ctx-tip-row"><span>Cache miss</span><span>{fmtTok(missTokens)} tok · {fmtMoney(missCost)}</span></div>
+              <div className="arc-ctx-tip-row"><span>Output</span><span>{fmtTok(ctxStats?.completionTokens)} tok · {fmtMoney(ctxStats?.costOut)}</span></div>
+              <div className="arc-ctx-tip-row"><span>Input total</span><span>{fmtMoney(ctxStats?.costIn)}</span></div>
+              <div className="arc-ctx-tip-row arc-ctx-tip-total"><span>Total</span><span>{fmtMoney(chatCost)}</span></div>
+              <div className="arc-ctx-tip-row"><span>Cache hit rate</span><span>{(hitRate * 100).toFixed(1)}%</span></div>
+            </div>
+          )}
+        </span>
         <span className="arc-topbar-sep" />
         <button className="arc-iconbtn" title="Compress context" onClick={compact} disabled={!!streaming}>
           <FoldVertical size={15} />

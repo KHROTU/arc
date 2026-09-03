@@ -1,6 +1,4 @@
-import { renderMath } from "./math";
-const ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-const escape = (s: string): string => s.replace(/[&<>"']/g, (c) => ESC[c] ?? c);
+import { renderMath, esc as escape } from "./math";
 const FILE_REF_RE = /(?<![\w./\\-])([A-Za-z0-9_@][\w./\\-]*\.[A-Za-z0-9]{1,8}):(\d+)(?:-(\d+))?(?![\d-])/g;
 const FILE_REF_FULL = /(?<![\w./\\-])([A-Za-z0-9_@][\w./\\-]*\.[A-Za-z0-9]{1,8}):(\d+)(?:-(\d+))?(?![\d-])/;
 function renderInline(s: string): string {  const mathBlocks: string[] = [];

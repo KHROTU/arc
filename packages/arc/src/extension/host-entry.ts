@@ -66,6 +66,7 @@ import {
   getOrFrontEntries,
   listProviderModelSlugs,
   groupProviderModels,
+  lastOrBackFetchError,
   aliasKeyForSlug,
 } from "@arc/host";
 import { CHATS_FILE_NAME, LEGACY_CHATS_FILE_NAME, encryptChatSnapshot, decryptChatSnapshot } from "./chats-codec.js";
@@ -112,7 +113,9 @@ const initReady = new Promise<void>((r) => { initResolve = r; });
 type Session = { id: string; panel?: vscode.WebviewPanel; view?: vscode.WebviewView; agent: Agent; agentReady?: Promise<Agent | undefined>; steps: ProcessStep[]; messages: import("@arc/host").ChatMessage[]; };
 const sidebarSession: Session = { id: "sidebar", agent: undefined as unknown as Agent, steps: [], messages: [] };
 const fullscreenSessions = new Map<string, Session>();
-const chatTotals = new Map<string, { cost: number; promptTokens: number; completionTokens: number; window: number }>();
+type ChatTotals = { cost: number; promptTokens: number; inputTokens: number; completionTokens: number; window: number; cacheRead: number; cacheWrite: number; cacheReadCost: number; costIn: number; costOut: number };
+const emptyChatTotals = (): ChatTotals => ({ cost: 0, promptTokens: 0, inputTokens: 0, completionTokens: 0, window: 0, cacheRead: 0, cacheWrite: 0, cacheReadCost: 0, costIn: 0, costOut: 0 });
+const chatTotals = new Map<string, ChatTotals>();
 const pendingApprovals = new Map<string, { resolve: (allowed: boolean) => void; session: Session; timer: ReturnType<typeof setTimeout> }>();
 let mcpChangeDispose: (() => void) | undefined;
 let approvalId = 0;
@@ -151,20 +154,38 @@ function updateLastInlineComment(thread: vscode.CommentThread, body: string): vo
   md.isTrusted = false;
   thread.comments = [...comments, new InlineComment(md, vscode.CommentMode.Preview, { name: "Arc" })];
 }
+let browserRememberedTabs: { url: string; active: boolean }[] = [];
 function resetBrowserIdleTimer(): void {
   clearTimeout(browserIdleTimer);
   browserIdleTimer = setTimeout(() => {
-    if (browser) {
-      void browser.close().then(() => { browser = undefined; browserPromise = undefined; });
-    }
+    const closing = browser;
+    browser = undefined;
+    browserPromise = undefined;
+    if (!closing) return;
+    void (async () => {
+      try {
+        const listed = await closing.listTabs();
+        const urls = (listed.tabs ?? [])
+          .filter((t) => t.url && t.url !== "about:blank")
+          .map((t) => ({ url: t.url, active: t.active }));
+        if (urls.length) browserRememberedTabs = urls.slice(0, 10);
+      } catch {}
+      try { await closing.close(); } catch {}
+    })();
   }, BROWSER_IDLE_MS);
 }
 function getBrowser(): Promise<BrowserAdapter> {
   resetBrowserIdleTimer();
   if (browser) return Promise.resolve(browser);
   if (!browserPromise) {
-    browserPromise = createBrowser("chromium", true, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()).then((b) => {
+    browserPromise = createBrowser("chromium", true, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd()).then(async (b) => {
       browser = b;
+      const restore = browserRememberedTabs;
+      browserRememberedTabs = [];
+      restore.sort((a, b2) => Number(a.active) - Number(b2.active));
+      for (const tab of restore) {
+        try { await b.newTab(tab.url); } catch {}
+      }
       return b;
     });
   }
@@ -177,6 +198,7 @@ let indexWatcher: IndexWatcher | undefined;
 let indexWatcherSaveTimer: ReturnType<typeof setTimeout> | undefined;
 let autoReindexTimer: ReturnType<typeof setInterval> | undefined;
 let approvalsConfig: ApprovalsConfig = { ...DEFAULT_APPROVALS };
+let autoApproveMode: "off" | "safe" | "allowlist" | "all" = "off";
 let pendingAgentState: { messages: unknown[]; steps: unknown[]; mode: string; todoItems: unknown[] } | undefined;
 let pendingUpdateNotice: { version: string; url: string } | undefined;
 let versionCheck: Promise<void> = Promise.resolve();
@@ -1498,15 +1520,21 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
       broadcast(session, { type: "session/turnEnd", turnId, ok, ...(error ? { error } : {}), sessionId: sinkId });
     },
     usage: (usage, perModel) => {
-      const totals = chatTotals.get(session.id) ?? { cost: 0, promptTokens: 0, completionTokens: 0, window: 0 };
+      const totals = chatTotals.get(session.id) ?? emptyChatTotals();
       totals.promptTokens = Math.max(totals.promptTokens, usage.prompt);
+      totals.inputTokens += usage.prompt;
       totals.completionTokens += usage.completion;
       totals.cost += usage.cost;
+      totals.cacheRead += usage.cacheRead ?? 0;
+      totals.cacheWrite += usage.cacheWrite ?? 0;
+      totals.cacheReadCost += usage.cacheReadCost ?? 0;
+      totals.costIn += usage.costIn ?? 0;
+      totals.costOut += usage.costOut ?? 0;
       const model = registry?.getCurrent();
       if (model) totals.window = withProviderOverrides(model, registry.providersFor(model.id)[0]).contextWindow;
       chatTotals.set(session.id, totals);
       if (chatHistory) {
-        chatHistory.bump(session.id, usage.cost);
+        chatHistory.bump(session.id, usage.cost, { inputTokens: usage.prompt, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0, cacheReadCost: usage.cacheReadCost ?? 0, costIn: usage.costIn ?? 0, costOut: usage.costOut ?? 0, completionTokens: usage.completion });
         chatHistory.bumpPromptTokens(session.id, totals.promptTokens);
         const full = stripHiddenMessages((session.agent?.getMessages()?.length ? session.agent.getMessages() : session.messages) as ChatMessage[]);
         chatHistory.setMessages(session.id, full);
@@ -1559,6 +1587,8 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     mode: "code",
     modeRegistry,
     approvalsConfig,
+    initialSessionApprovals: { autoApproveMode, sessionCommandAllowlist: [], commandPrefixMemory: [] },
+    conversationId: session.id,
     reasoningEffort: (vscode.workspace.getConfiguration().get<string>("arc.reasoning.effort", "high") ?? "high") as "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
     isMain: true,
     verifyMode: (vscode.workspace.getConfiguration().get<string>("arc.verify.mode", "default") ?? "default") as "none" | "default" | "custom",
@@ -1567,6 +1597,9 @@ async function createAgent(session: Session): Promise<Agent | undefined> {
     compactionConfig: {
       safetyMargin: vscode.workspace.getConfiguration().get<number>("arc.compaction.safetyMargin", 0.15),
       strategy: vscode.workspace.getConfiguration().get<string>("arc.compaction.strategy", "model-aware") === "fixed" ? "fixed" : "model-aware",
+      fixedAtPct: vscode.workspace.getConfiguration().get<number>("arc.compaction.fixedAtPct", 75) / 100,
+      frictionCost: vscode.workspace.getConfiguration().get<number>("arc.compaction.frictionCost", 0),
+      lostContextPenalty: vscode.workspace.getConfiguration().get<number>("arc.compaction.lostContextPenalty", 0),
     },
     proxyUrl: resolveProxy("url"),
     proxyProvider: resolveProxy("providerUrl"),
@@ -1707,22 +1740,58 @@ function switchToChat(chatId: string, webview: vscode.Webview) {
     s.steps = persistedSteps as ProcessStep[];
   }
   webview.postMessage({ type: "session/replaceState", messages: persisted, steps: persistedSteps.length ? persistedSteps : [] });
+  webview.postMessage({ type: "autoApproveState", active: autoApproveMode === "all", mode: autoApproveMode });
   const chatMeta = chatHistory?.list().find((c) => c.id === chatId);
   chatTotals.set(chatId, {
     cost: chatMeta?.cost ?? 0,
     promptTokens: chatMeta?.promptTokens && chatMeta.promptTokens > 0 ? chatMeta.promptTokens : estimateTokens(persisted as ChatMessage[]),
-    completionTokens: 0,
+    inputTokens: chatMeta?.inputTokens ?? 0,
+    completionTokens: chatMeta?.completionTokens ?? 0,
     window: 0,
+    cacheRead: chatMeta?.cacheRead ?? 0,
+    cacheWrite: chatMeta?.cacheWrite ?? 0,
+    cacheReadCost: chatMeta?.cacheReadCost ?? 0,
+    costIn: chatMeta?.costIn ?? 0,
+    costOut: chatMeta?.costOut ?? 0,
   });
   pushContextStats(webview, chatId);
 }
 function pushContextStats(webview: vscode.Webview, chatId: string) {
-  const totals = chatTotals.get(chatId) ?? { cost: 0, promptTokens: 0, completionTokens: 0, window: 0 };
+  const totals = chatTotals.get(chatId) ?? emptyChatTotals();
   const model = registry?.getCurrent();
   const window = model ? withProviderOverrides(model, registry.providersFor(model.id)[0]).contextWindow : 0;
   const tokens = totals.promptTokens;
   const usedPct = window > 0 ? Math.min(100, (tokens / window) * 100) : 0;
-  webview.postMessage({ type: "context/stats", usedPct, tokens, window, cost: totals.cost });
+  webview.postMessage({
+    type: "context/stats",
+    usedPct,
+    tokens,
+    window,
+    cost: totals.cost,
+    inputTokens: totals.inputTokens,
+    cacheRead: totals.cacheRead,
+    cacheWrite: totals.cacheWrite,
+    cacheReadCost: totals.cacheReadCost,
+    completionTokens: totals.completionTokens,
+    costIn: totals.costIn,
+    costOut: totals.costOut,
+  });
+}
+function refreshGaugeAfterRemoval(session: Session, msgs: ChatMessage[]): void {
+  const live = estimateTokens(msgs);
+  const totals = chatTotals.get(session.id) ?? emptyChatTotals();
+  totals.promptTokens = live;
+  chatTotals.set(session.id, totals);
+  if (chatHistory) {
+    chatHistory.setMessages(session.id, stripHiddenMessages(msgs));
+    chatHistory.setPromptTokens(session.id, live);
+    persist?.();
+    void persistAsync?.();
+  }
+  for (const w of [session.view?.webview, session.panel?.webview].filter(Boolean) as vscode.Webview[]) {
+    pushContextStats(w, session.id);
+  }
+  broadcastChatListAll();
 }
 function renormalizeChatCosts(): void {
   if (!chatHistory) return;
@@ -1829,7 +1898,7 @@ async function fetchOpenRouterEmbeddingModels(): Promise<OpenRouterEmbeddingMode
   else log.appendLine("[arc] openrouter embedding model list refresh failed: no embedding models in response");
   return models;
 }
-async function buildModelCatalog(registry?: ModelRegistry): Promise<import("@arc/host").ModelCatalogEntry[]> {
+async function buildModelCatalog(registry?: ModelRegistry, reload = false): Promise<import("@arc/host").ModelCatalogEntry[]> {
   if (!registry) return [];
   const proxyUrl = resolveProxy("providerUrl") ?? resolveProxy("url");
   const providers = registry.listProviders().filter((p) => p.enabled);
@@ -1838,7 +1907,7 @@ async function buildModelCatalog(registry?: ModelRegistry): Promise<import("@arc
     const slugs = await listProviderModelSlugs({ providerId: p.id, kind: p.kind, baseUrl: p.baseUrl, apiKey: key }, proxyUrl).catch(() => [] as string[]);
     return slugs.map((slug) => ({ slug, providerId: p.id }));
   }));
-  const grouped = await groupProviderModels(sweep.flat());
+  const grouped = await groupProviderModels(sweep.flat(), undefined, { force: reload, proxyUrl });
   const existing = new Map<string, string>();
   for (const m of registry.list()) {
     for (const ref of m.providers) {
@@ -1853,6 +1922,8 @@ async function buildModelCatalog(registry?: ModelRegistry): Promise<import("@arc
     maxOutputTokens: g.info?.maxOutputTokens,
     priceIn: g.info?.priceInPer1m,
     priceOut: g.info?.priceOutPer1m,
+    priceCacheRead: g.info?.priceCacheReadPer1m,
+    priceCacheWrite: g.info?.priceCacheWritePer1m,
     imageInput: g.info?.imageInput,
     providers: g.providers,
     existingModelId: existing.get(g.key),
@@ -1998,7 +2069,7 @@ async function ensureSearchIndex(): Promise<void> {
   return searchIndexLoadPromise;
 }
 const WEBVIEW_CONFIG_KEYS = new Set([
-  "arc.image.describeModel", "arc.model.multimodalIds", "arc.compaction.strategy", "arc.compaction.safetyMargin",
+  "arc.image.describeModel", "arc.model.multimodalIds", "arc.compaction.strategy", "arc.compaction.safetyMargin", "arc.compaction.fixedAtPct",
   "arc.titleGeneration.method", "arc.discord.spoofRpc", "arc.proxy.url", "arc.proxy.providerUrl", "arc.proxy.webUrl",
   "arc.proxy.shellUrl", "arc.verify.mode", "arc.verify.customMaxRetries", "arc.search.enabled", "arc.search.backend",
   "arc.search.modelTier", "arc.search.openrouterModel", "arc.search.chunkCount", "arc.search.autoReindex", "arc.appearance.prideLogo", "arc.appearance.toolTree",
@@ -2028,7 +2099,7 @@ const WEBVIEW_MESSAGE_KEYS: Record<string, readonly string[]> = {
   "config/get": ["type", "key", "id"], "config/set": ["type", "key", "value"],
   "mcp/addServer": ["type", "name", "transport"], "mcp/removeServer": ["type", "name"], "mcp/toggleServer": ["type", "name", "enabled"],
   "mcp/list": ["type"], "mcp/marketplaceSearch": ["type", "query"], "mcp/testCall": ["type", "server", "tool"], "mcp/authenticate": ["type", "server"],
-  "model/catalog": ["type", "query"],
+  "model/catalog": ["type", "query", "reload"],
   "ui/attachSelection": ["type"], "ui/attachFile": ["type"], "ui/attachProblems": ["type"], "ui/attachAllProblems": ["type"],
   "ui/attachFileProblems": ["type"], "ui/attachCurrentFile": ["type"], "ui/attachGitDiff": ["type"],
   "ui/attachGitStaged": ["type"], "ui/attachChangedFiles": ["type"], "ui/attachPullRequest": ["type"],
@@ -2036,7 +2107,7 @@ const WEBVIEW_MESSAGE_KEYS: Record<string, readonly string[]> = {
   "ui/openFileDiff": ["type", "path", "hunks", "streamId"], "ui/openPrompt": ["type"], "ui/newTask": ["type"], "ready": ["type"],
   "chat/switch": ["type", "chatId"], "chat/rename": ["type", "chatId", "title"], "chat/delete": ["type", "chatId"],
   "chat/new": ["type"], "chat/compact": ["type"], "ui/openSidebar": ["type"],
-  "ui/openExternal": ["type", "url"], "search/reindex": ["type"], "model/bindUpdate": ["type", "modelId", "providerId", "remoteModel", "costPer1mIn", "costPer1mOut", "contextWindow", "maxOutputTokens", "imageInput"],
+  "ui/openExternal": ["type", "url"], "search/reindex": ["type"], "model/bindUpdate": ["type", "modelId", "providerId", "remoteModel", "costPer1mIn", "costPer1mOut", "costPer1mCacheRead", "costPer1mCacheWrite", "contextWindow", "maxOutputTokens", "imageInput"],
   "mode/select": ["type", "mode"], "mode/list": ["type"], "mode/save": ["type", "mode", "scope"], "mode/delete": ["type", "slug", "scope"],
   "autoApprove/set": ["type", "mode"], "approval/response": ["type", "id", "allowed", "rememberCommand", "rememberPrefix"],
   "approval/setPreset": ["type", "preset"], "chat/search": ["type", "query"], "chat/resume": ["type", "id"],
@@ -2376,7 +2447,15 @@ function wireWebview(webview: vscode.Webview, session: Session) {
         case "chat/retract":
           {
             const agent = await awaitAgent(session);
-            if (agent) await agent.retract(msg.turnId);
+            if (agent) {
+              await agent.retract(msg.turnId);
+              session.steps = agent.getSteps();
+              if (chatHistory) {
+                chatHistory.setSteps(session.id, session.steps as unknown[]);
+                persist?.();
+                void persistAsync?.();
+              }
+            }
           }
           break;
         case "chat/revertToMessage":
@@ -2389,6 +2468,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
                 const steps = agent.getSteps();
                 session.messages = msgs;
                 session.steps = steps;
+                refreshGaugeAfterRemoval(session, msgs);
                 const composerText = msg.loadToComposer ? msg.content : undefined;
                 webview.postMessage({ type: "session/replaceState", messages: msgs, steps, loadComposer: composerText });
               } else {
@@ -2414,6 +2494,7 @@ function wireWebview(webview: vscode.Webview, session: Session) {
                 await agent.restore({ messages, steps: keptSteps, mode: agent.getCurrentMode(), todoItems: agent.getTodo() });
                 session.messages = agent.getMessages();
                 session.steps = agent.getSteps();
+                refreshGaugeAfterRemoval(session, session.messages);
                 webview.postMessage({ type: "session/replaceState", messages: agent.getMessages(), steps: agent.getSteps() });
                 void agent.continue();
               }
@@ -2441,6 +2522,8 @@ function wireWebview(webview: vscode.Webview, session: Session) {
                       remoteModel: msg.remoteModel?.trim() || undefined,
                       ...(msg.costPer1mIn !== undefined ? { costPer1mIn: msg.costPer1mIn > 0 ? msg.costPer1mIn : undefined } : {}),
                       ...(msg.costPer1mOut !== undefined ? { costPer1mOut: msg.costPer1mOut > 0 ? msg.costPer1mOut : undefined } : {}),
+                      ...(msg.costPer1mCacheRead !== undefined ? { costPer1mCacheRead: msg.costPer1mCacheRead > 0 ? msg.costPer1mCacheRead : undefined } : {}),
+                      ...(msg.costPer1mCacheWrite !== undefined ? { costPer1mCacheWrite: msg.costPer1mCacheWrite > 0 ? msg.costPer1mCacheWrite : undefined } : {}),
                       ...(msg.contextWindow !== undefined ? { contextWindow: msg.contextWindow > 0 ? msg.contextWindow : undefined } : {}),
                       ...(msg.maxOutputTokens !== undefined ? { maxOutputTokens: msg.maxOutputTokens > 0 ? msg.maxOutputTokens : undefined } : {}),
                       ...(msg.imageInput !== undefined ? { imageInput: msg.imageInput } : {}),
@@ -2837,6 +2920,10 @@ function wireWebview(webview: vscode.Webview, session: Session) {
             webview.postMessage({ type: "config/get", value: terminals, inReplyTo: msg.id });
             break;
           }
+          if (msg.key === "arc.env.platform") {
+            webview.postMessage({ type: "config/get", value: process.platform, inReplyTo: msg.id });
+            break;
+          }
           if (msg.key === "arc.search.openrouterModels") {
             void fetchOpenRouterEmbeddingModels().then((models) => {
               webview.postMessage({ type: "config/get", value: models, inReplyTo: msg.id });
@@ -3213,8 +3300,9 @@ function wireWebview(webview: vscode.Webview, session: Session) {
           break;
         }
         case "model/catalog": {
-          const entries = await buildModelCatalog(registry).catch(() => []);
-          webview.postMessage({ type: "model/catalogResult", entries });
+          const entries = await buildModelCatalog(registry, msg.reload === true).catch(() => []);
+          const reloadError = msg.reload === true ? lastOrBackFetchError() : undefined;
+          webview.postMessage({ type: "model/catalogResult", entries, ...(reloadError ? { reloadError } : {}) });
           break;
         }
         case "mcp/marketplaceSearch": {
@@ -3351,6 +3439,8 @@ Prompts: ${server.prompts?.length ?? 0}`;
         }
         break;
         case "autoApprove/set": {
+          if (msg.mode !== "off" && msg.mode !== "safe" && msg.mode !== "allowlist" && msg.mode !== "all") break;
+          autoApproveMode = msg.mode;
           const agent = await awaitAgent(session);
           if (agent) {
             agent.setAutoApproveMode(msg.mode);

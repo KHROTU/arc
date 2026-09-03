@@ -27,6 +27,8 @@ export function withProviderOverrides(model: ModelDescriptor, ref?: ProviderRef)
     maxOutputTokens: ref.maxOutputTokens ?? model.maxOutputTokens,
     costPer1mIn: ref.costPer1mIn ?? model.costPer1mIn,
     costPer1mOut: ref.costPer1mOut ?? model.costPer1mOut,
+    costPer1mCacheRead: ref.costPer1mCacheRead ?? model.costPer1mCacheRead,
+    costPer1mCacheWrite: ref.costPer1mCacheWrite ?? model.costPer1mCacheWrite,
   };
 }
 export function pickForTier(
@@ -232,4 +234,29 @@ export function estimateCost(model: ModelDescriptor, usage: { prompt: number; co
   const per1mIn = ref?.costPer1mIn ?? model.costPer1mIn;
   const per1mOut = ref?.costPer1mOut ?? model.costPer1mOut;
   return (usage.prompt / 1_000_000) * per1mIn + (usage.completion / 1_000_000) * per1mOut + (t / 1_000_000) * per1mOut;
+}
+export interface CostBreakdown {
+  total: number;
+  cacheRead: number;
+  cacheWrite: number;
+  plainInput: number;
+  output: number;
+}
+export function costBreakdown(
+  model: Pick<ModelDescriptor, "costPer1mIn" | "costPer1mOut" | "costPer1mCacheRead" | "costPer1mCacheWrite">,
+  usage: { prompt: number; completion: number; thinking?: number; cacheRead?: number; cacheWrite?: number },
+  ref?: Pick<ProviderRef, "costPer1mIn" | "costPer1mOut" | "costPer1mCacheRead" | "costPer1mCacheWrite">,
+): CostBreakdown {
+  const per1mIn = ref?.costPer1mIn ?? model.costPer1mIn;
+  const per1mOut = ref?.costPer1mOut ?? model.costPer1mOut;
+  const per1mRead = ref?.costPer1mCacheRead ?? model.costPer1mCacheRead ?? per1mIn;
+  const per1mWrite = ref?.costPer1mCacheWrite ?? model.costPer1mCacheWrite ?? per1mIn;
+  const outputCost = ((usage.completion + (usage.thinking ?? 0)) / 1_000_000) * per1mOut;
+  const hit = Math.min(Math.max(0, usage.cacheRead ?? 0), usage.prompt);
+  const miss = Math.max(0, usage.prompt - hit);
+  const writePortion = Math.min(Math.max(0, usage.cacheWrite ?? 0), miss);
+  const readCost = (hit / 1_000_000) * per1mRead;
+  const writeCost = (writePortion / 1_000_000) * per1mWrite;
+  const plainCost = ((miss - writePortion) / 1_000_000) * per1mIn;
+  return { total: readCost + writeCost + plainCost + outputCost, cacheRead: readCost, cacheWrite: writeCost, plainInput: plainCost, output: outputCost };
 }

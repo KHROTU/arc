@@ -237,8 +237,38 @@ function setIntegrityLabel(target: string): void {
   execFileSync("icacls", [target, "/setintegritylevel", "(OI)(CI)L", "/T"], { timeout: 300_000, stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
   labeledIntegrity.add(key);
 }
+const PATHEXT = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").map((s) => s.trim().toLowerCase()).filter(Boolean);
+function resolveWindowsExe(executable: string, root: string): string {
+  const hasSep = executable.includes("/") || executable.includes("\\");
+  const hasExt = /\.[a-zA-Z0-9]+$/.test(executable);
+  const exts = hasExt ? [""] : PATHEXT;
+  const pathEnv = (process.env.PATH ?? process.env.Path ?? "").split(";").filter(Boolean);
+  const dirs = hasSep ? [root, process.cwd()] : [root, process.cwd(), ...pathEnv];
+  for (const d of dirs) {
+    for (const e of exts) {
+      const p = path.join(d, executable + e);
+      try {
+        if (fs.existsSync(p) && fs.statSync(p).isFile()) return p;
+      } catch {}
+    }
+  }
+  return executable;
+}
 export function wrapWindowsSandbox(profile: SandboxProfile, root: string, executable: string, args: string[]): { executable: string; args: string[] } {
   if (!windowsSandboxAvailable()) throw new Error(`Sandbox profile '${profile}' requires Windows PowerShell, which was not found.`);
+  let exe = executable;
+  let childArgs = args;
+  if (WIN32) {
+    const resolved = resolveWindowsExe(executable, root);
+    const lower = resolved.toLowerCase();
+    if (lower.endsWith(".cmd") || lower.endsWith(".bat")) {
+      const inner = [resolved, ...args].map((a) => `"${a.replace(/"/g, '""')}"`).join(" ");
+      exe = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "cmd.exe");
+      childArgs = ["/d", "/s", "/c", inner];
+    } else {
+      exe = resolved;
+    }
+  }
   const { script } = ensureLauncherFiles();
   const lowIl = profile !== "system";
   const scratch = scratchDirFor(root);
@@ -249,9 +279,9 @@ export function wrapWindowsSandbox(profile: SandboxProfile, root: string, execut
   } else {
     fs.mkdirSync(scratch, { recursive: true });
   }
-  const argsB64 = Buffer.from(JSON.stringify(args), "utf-8").toString("base64");
+  const argsB64 = Buffer.from(JSON.stringify(childArgs), "utf-8").toString("base64");
   return {
     executable: powershellPath(),
-    args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Exe", executable, "-ChildArgsB64", argsB64, "-LowIl", lowIl ? "1" : "0"],
+    args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Exe", exe, "-ChildArgsB64", argsB64, "-LowIl", lowIl ? "1" : "0"],
   };
 }

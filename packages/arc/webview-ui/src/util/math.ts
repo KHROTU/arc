@@ -1,5 +1,5 @@
 const ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-const esc = (s: string): string => s.replace(/[&<>"']/g, (c) => ESC[c] ?? c);
+export const esc = (s: string): string => s.replace(/[&<>"']/g, (c) => ESC[c] ?? c);
 const MORD = "mord";
 const MBIN = "mbin";
 const MREL = "mrel";

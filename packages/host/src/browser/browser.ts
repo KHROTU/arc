@@ -190,10 +190,19 @@ export async function createBrowser(kind: BrowserKind = "chromium", headless = t
     async readDom(tabId) {
       const tab = resolveTab(tabId);
       if (!tab) return { ok: false, output: `Unknown tab '${tabId}'.` };
+      let snapshotError = "";
       try {
-        const a11y = await tab.page.accessibility.snapshot();
-        return { ok: true, output: JSON.stringify(a11y, null, 2) };
-      } catch (e) { return { ok: false, output: `Accessibility snapshot failed: ${(e as Error).message}` }; }
+        const snapshot = tab.page.accessibility ? await tab.page.accessibility.snapshot() : undefined;
+        if (snapshot) return { ok: true, output: JSON.stringify(snapshot, null, 2) };
+        snapshotError = "accessibility snapshot unavailable";
+      } catch (e) { snapshotError = (e as Error).message; }
+      try {
+        const html = await tab.page.evaluate("document.documentElement ? document.documentElement.outerHTML : ''");
+        const text = typeof html === "string" ? html : "";
+        if (!text) return { ok: false, output: `Accessibility snapshot failed (${snapshotError}) and the page has no document.` };
+        const capped = text.length > 20_000 ? `${text.slice(0, 20_000)}\n... (DOM truncated from ${text.length} chars)` : text;
+        return { ok: true, output: `(accessibility snapshot unavailable [${snapshotError}]; DOM fallback)\n${capped}` };
+      } catch (e) { return { ok: false, output: `Accessibility snapshot failed (${snapshotError}); DOM fallback also failed: ${(e as Error).message}` }; }
     },
     async hover(selector, tabId) {
       const tab = resolveTab(tabId);
@@ -287,7 +296,19 @@ export async function createBrowser(kind: BrowserKind = "chromium", headless = t
             case "waitForSelector": results.push(await tab.page.waitForSelector(String(op.args[0]), { state: "visible", timeout: 10_000 })); break;
             case "waitForURL": results.push(await tab.page.waitForURL(String(op.args[0]), { timeout: 10_000 })); break;
             case "waitForLoadState": results.push(await tab.page.waitForLoadState(String(op.args[0] ?? "networkidle"))); break;
-            case "evaluate": results.push(await tab.page.evaluate(String(op.args[0] ?? ""))); break;
+            case "evaluate": {
+              const raw = op.args[0];
+              const rest = op.args.slice(1);
+              let expr = typeof raw === "string" ? raw : String(raw ?? "");
+              if (/^\s*(async\s+)?(function\b|(\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>)/.test(expr)) {
+                const fwd = rest.map((a) => {
+                  try { return JSON.stringify(a) ?? "undefined"; } catch { return "undefined"; }
+                }).join(",");
+                expr = `(${expr})(${fwd})`;
+              }
+              results.push(await tab.page.evaluate(expr));
+              break;
+            }
             case "screenshot": {
               const options = (op.args[0] && typeof op.args[0] === "object" ? op.args[0] : {}) as { path?: string; fullPage?: boolean; type?: string };
               const out = options.path ? resolveAuthorizedPath(workspaceRoot, options.path) : path.join(workspaceRoot, `arc-shot-${Date.now()}.${options.type === "jpeg" ? "jpeg" : "png"}`);

@@ -10,6 +10,8 @@ export interface ModelDescriptor {
   maxOutputTokens?: number;
   costPer1mIn: number;
   costPer1mOut: number;
+  costPer1mCacheRead?: number;
+  costPer1mCacheWrite?: number;
   providers: ProviderRef[];
 }
 export interface ProviderRef {
@@ -20,6 +22,8 @@ export interface ProviderRef {
   weight?: number;
   costPer1mIn?: number;
   costPer1mOut?: number;
+  costPer1mCacheRead?: number;
+  costPer1mCacheWrite?: number;
   contextWindow?: number;
   maxOutputTokens?: number;
   imageInput?: boolean;
@@ -35,6 +39,8 @@ export interface ModelCatalogEntry {
   maxOutputTokens?: number;
   priceIn?: number;
   priceOut?: number;
+  priceCacheRead?: number;
+  priceCacheWrite?: number;
   imageInput?: boolean;
   providers: CatalogProviderRef[];
   existingModelId?: string;
@@ -337,6 +343,11 @@ export interface TurnUsage {
   completion: number;
   thinking: number;
   cost: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  cacheReadCost?: number;
+  costIn?: number;
+  costOut?: number;
 }
 export type ExecutionEvent =
   | { type: "tool_call"; turnId: string; toolCallId: string; toolName: string; args: Record<string, unknown>; ts: number; durationMs: number; ok: boolean; output?: string }
@@ -369,14 +380,14 @@ export type HostMsg =
   | { type: "session/attachment"; uri: string; preview: string }
   | { type: "chat/list"; chats: { id: string; title: string; updatedAt: number; cost: number; isActive: boolean }[] }
   | { type: "chat/current"; chatId: string }
-  | { type: "context/stats"; usedPct: number; tokens: number; window: number; cost: number }
+  | { type: "context/stats"; usedPct: number; tokens: number; window: number; cost: number; inputTokens?: number; cacheRead?: number; cacheWrite?: number; cacheReadCost?: number; completionTokens?: number; costIn?: number; costOut?: number }
   | { type: "model/list"; models: ModelDescriptor[]; currentModelId: string }
   | { type: "provider/list"; providers: ProviderSummary[] }
   | { type: "config/get"; value: unknown; inReplyTo: string }
   | { type: "config/changed"; key: string; value: unknown }
   | { type: "mcp/list"; servers: { name: string; enabled: boolean; transport: "stdio" | "http" | "sse"; toolCount: number; status: string; oauth?: boolean }[] }
   | { type: "mcp/marketplaceResults"; results?: unknown[]; error?: string }
-  | { type: "model/catalogResult"; entries: ModelCatalogEntry[] }
+  | { type: "model/catalogResult"; entries: ModelCatalogEntry[]; reloadError?: string }
   | { type: "mode/list"; modes: { slug: string; roleDefinition: string; allowedTools: string[]; writeGlob?: string; description: string; whenToUse: string; model?: string; source: "builtin" | "workspace" | "global" }[] }
   | { type: "chat/searchResults"; results: { id: string; title: string; matches: string[] }[]; query?: string }
   | { type: "ui/showSettings" }
@@ -430,7 +441,7 @@ export type WebviewMsg =
   | { type: "mcp/marketplaceSearch"; query: string }
   | { type: "mcp/testCall"; server: string; tool: string }
   | { type: "mcp/authenticate"; server: string }
-  | { type: "model/catalog"; query: string }
+  | { type: "model/catalog"; query: string; reload?: boolean }
   | { type: "ui/attachSelection" }
   | { type: "ui/attachFile" }
   | { type: "ui/attachProblems" }
@@ -458,7 +469,7 @@ export type WebviewMsg =
   | { type: "chat/compact" }
   | { type: "ui/openSidebar" }
   | { type: "search/reindex" }
-  | { type: "model/bindUpdate"; modelId: string; providerId: string; remoteModel?: string; costPer1mIn?: number; costPer1mOut?: number; contextWindow?: number; maxOutputTokens?: number; imageInput?: boolean }
+  | { type: "model/bindUpdate"; modelId: string; providerId: string; remoteModel?: string; costPer1mIn?: number; costPer1mOut?: number; costPer1mCacheRead?: number; costPer1mCacheWrite?: number; contextWindow?: number; maxOutputTokens?: number; imageInput?: boolean }
   | { type: "mode/select"; mode: string }
   | { type: "mode/list" }
   | { type: "mode/save"; mode: { slug: string; roleDefinition: string; allowedTools: string[]; writeGlob?: string; description: string; whenToUse: string; model?: string }; scope?: "workspace" | "global" }

@@ -56,6 +56,7 @@ export function resolveApproval(
   const effectiveConfig = config.preset ? resolvePreset(config.preset) : config;
   const taskConfig = session.taskOverride ?? effectiveConfig;
   if (session.autoApproveMode === "off") return "ask";
+  if (session.autoApproveMode === "all") return "auto";
   const toolName = extra?.toolName ?? "";
   let policyCategory = category;
   if (category === "read" && extra?.filePath && extra.workspaceRoot && classifyWorkspacePath(extra.workspaceRoot, extra.filePath).external) policyCategory = "read.external";

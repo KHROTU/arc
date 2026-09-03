@@ -18,12 +18,12 @@ Arc is built for speed and precision. It combines a sophisticated multi-model or
 
 ## Efficiency
 
-| Extension | VSIX Size (as of September 2nd, 2026) |
+| Extension | VSIX Size (as of September 4th, 2026) |
 | :--- | :--- |
-| **Arc** | [**0.23 MB***](#faq-vsix-size) |
+| **Arc** | [**0.24 MB***](#faq-vsix-size) |
 | Cline | 19.25 MB |
 | Roo Code | 30.11 MB |
-| Claude Code | 98.04 MB |
+| Claude Code | 98.62 MB |
 | Continue | 111.48 MB |
 | Kilo Code | 119.18 MB |
 | Codex | 373.29 MB |
@@ -205,7 +205,7 @@ Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/item
 ```bash
 pnpm install
 node scripts/package-ext.mjs
-code --install-extension packages/arc/arc-code-0.7.0.vsix
+code --install-extension packages/arc/arc-code-0.7.1.vsix
 ```
 
 ### Development

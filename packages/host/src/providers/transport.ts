@@ -83,6 +83,7 @@ export interface StreamRequest {
   signal?: AbortSignal;
   proxyUrl?: string;
   reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  conversationId?: string;
 }
 export interface StreamHandle {
   events: AsyncIterable<StreamEvent>;

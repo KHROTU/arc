@@ -5,10 +5,11 @@ export interface AppIdentity {
   version: string;
   categories?: string[];
 }
+export const APP_VERSION: string = process.env.ARC_VERSION || "0.0.0-dev";
 export const APP: AppIdentity = {
   url: "https://github.com/khrotu/arc",
   title: "Arc",
-  version: "0.6.1",
+  version: APP_VERSION,
   categories: ["ide-extension"],
 };
 const UA = (a: AppIdentity): Record<string, string> => ({
@@ -27,6 +28,22 @@ const OR_DIALECT = new Set<ProviderKind>([
   "anyapi",
   "unorouter",
 ]);
+const OPENCODE_HOSTS = new Set(["opencode.ai"]);
+export function isOpencodeEndpoint(baseUrl: string | undefined, kind: ProviderKind): boolean {
+  if (kind === "opencode") return true;
+  if (!baseUrl) return false;
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return OPENCODE_HOSTS.has(host) || host.endsWith(".opencode.ai");
+  } catch {
+    return false;
+  }
+}
+export function opencodeSessionHeader(baseUrl: string | undefined, kind: ProviderKind, conversationId: string | undefined): Record<string, string> {
+  if (!conversationId) return {};
+  if (!isOpencodeEndpoint(baseUrl, kind)) return {};
+  return { "x-opencode-session": conversationId };
+}
 export function attributionHeaders(kind: ProviderKind, a: AppIdentity = APP): Record<string, string> {
   switch (kind) {
     case "openrouter":

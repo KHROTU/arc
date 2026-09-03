@@ -35,7 +35,7 @@ export class SubagentRunner {
   async run(
     spec: SubagentSpec,
     parent: ModelDescriptor,
-    ctx: AgentOptions["toolContext"] & { root: string; shell?: { policy: "always" | "allowlist" | "off"; allowlist: string[] }; requestApproval?: (description: string, meta?: import("../approvals/index.js").ApproveShellMeta) => Promise<boolean> } & { approvalsConfig?: import("../approvals/index.js").ApprovalsConfig; sessionApprovals?: import("../approvals/index.js").SessionApprovals },
+    ctx: AgentOptions["toolContext"] & { root: string; shell?: { policy: "always" | "allowlist" | "off"; allowlist: string[] }; requestApproval?: (description: string, meta?: import("../approvals/index.js").ApproveShellMeta) => Promise<boolean> } & { approvalsConfig?: import("../approvals/index.js").ApprovalsConfig; sessionApprovals?: import("../approvals/index.js").SessionApprovals; conversationId?: string },
     askParent?: (question: string, options: string[]) => Promise<string>,
     onStep?: (steps: ProcessStep[]) => void,
     onApprovalRequest?: (description: string) => void,
@@ -98,6 +98,7 @@ export class SubagentRunner {
       modeRegistry: modeReg,
       approvalsConfig: ctx.approvalsConfig ?? DEFAULT_APPROVALS,
       initialSessionApprovals: ctx.sessionApprovals,
+      conversationId: ctx.conversationId,
       isMain: false,
       ownerTier: tier,
       toolContext,
@@ -106,13 +107,20 @@ export class SubagentRunner {
       proxyProvider: toolContext.proxyProvider,
     });
     await agent.send(spec.instructions);
-    const finalText = agent.getMessages().filter((m) => m.role === "assistant").slice(-1)[0]?.content ?? "";
+    const all = agent.getMessages();
+    const assistantTexts = all.filter((m) => m.role === "assistant" && m.content?.trim()).map((m) => m.content);
+    let finalText = assistantTexts.length ? assistantTexts[assistantTexts.length - 1] : "";
+    if (!finalText) {
+      const toolOuts = all.filter((m) => m.role === "tool" && m.content?.trim()).map((m) => m.content);
+      const last = toolOuts.length ? toolOuts[toolOuts.length - 1] : "";
+      finalText = last ? `(no summary; last tool output)\n${last.slice(0, 2000)}` : "(subagent produced no output)";
+    }
     return { ok: true, output: finalText, steps: collected, todo: todos, model: { id: model.id, label: model.label } };
   }
   async runBatch(
     specs: SubagentSpec[],
     parent: ModelDescriptor,
-    ctx: AgentOptions["toolContext"] & { root: string; shell?: { policy: "always" | "allowlist" | "off"; allowlist: string[] }; requestApproval?: (description: string, meta?: import("../approvals/index.js").ApproveShellMeta) => Promise<boolean> } & { approvalsConfig?: import("../approvals/index.js").ApprovalsConfig; sessionApprovals?: import("../approvals/index.js").SessionApprovals },
+    ctx: AgentOptions["toolContext"] & { root: string; shell?: { policy: "always" | "allowlist" | "off"; allowlist: string[] }; requestApproval?: (description: string, meta?: import("../approvals/index.js").ApproveShellMeta) => Promise<boolean> } & { approvalsConfig?: import("../approvals/index.js").ApprovalsConfig; sessionApprovals?: import("../approvals/index.js").SessionApprovals; conversationId?: string },
     askParent?: (question: string, options: string[]) => Promise<string>,
     onStep?: (steps: ProcessStep[]) => void,
     onApprovalRequest?: (description: string) => void,

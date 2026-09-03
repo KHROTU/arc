@@ -8,17 +8,28 @@ export const COMPACTION_SUMMARY_HEADER = "## Compaction summary of";
 export interface CompactionStats {
   avgOutput: number;
   avgPrompt: number;
+  avgUser: number;
+  avgHitRate: number;
+  avgSummary: number;
   samples: number;
 }
 export class CompactionTracker {
   private stats = new Map<string, CompactionStats>();
-  observe(modelId: string, usage: { prompt: number; completion: number; thinking: number }) {
-    const s = this.stats.get(modelId) ?? { avgOutput: 0, avgPrompt: 0, samples: 0 };
+  observe(modelId: string, usage: { prompt: number; completion: number; thinking: number; cacheRead?: number; cacheWrite?: number }, userTokens: number = 0) {
+    const s = this.stats.get(modelId) ?? { avgOutput: 0, avgPrompt: 0, avgUser: 0, avgHitRate: 0, avgSummary: 0, samples: 0 };
     const alpha = 0.2;
     const out = usage.completion + usage.thinking;
     s.avgOutput = s.avgOutput * (1 - alpha) + out * alpha;
     s.avgPrompt = s.avgPrompt * (1 - alpha) + usage.prompt * alpha;
+    s.avgUser = s.avgUser * (1 - alpha) + userTokens * alpha;
+    const hit = usage.cacheRead ?? 0;
+    s.avgHitRate = s.avgHitRate * (1 - alpha) + (usage.prompt > 0 ? Math.min(1, Math.max(0, hit / usage.prompt)) : 0) * alpha;
     s.samples += 1;
+    this.stats.set(modelId, s);
+  }
+  noteSummary(modelId: string, summaryTokens: number) {
+    const s = this.stats.get(modelId) ?? { avgOutput: 0, avgPrompt: 0, avgUser: 0, avgHitRate: 0, avgSummary: 0, samples: 0 };
+    s.avgSummary = s.avgSummary > 0 ? s.avgSummary * 0.7 + summaryTokens * 0.3 : summaryTokens;
     this.stats.set(modelId, s);
   }
   for(modelId: string): CompactionStats | undefined {
@@ -32,11 +43,17 @@ export interface CompactionConfig {
   enforce: boolean;
   keepTail: number;
   strategy?: CompactionStrategy;
+  fixedAtPct?: number;
+  frictionCost?: number;
+  lostContextPenalty?: number;
 }
 export const defaultCompactionConfig: CompactionConfig = {
   safetyMargin: 0.15,
   enforce: true,
   keepTail: 6,
+  fixedAtPct: 75,
+  frictionCost: 0,
+  lostContextPenalty: 0,
 };
 export interface CompactionDecision {
   shouldCompact: boolean;
@@ -45,6 +62,17 @@ export interface CompactionDecision {
   usable: number;
   window: number;
 }
+export interface CompactionCostTarget {
+  s0: number;
+  p: number;
+  m: number;
+  tStar: number;
+  tMax: number;
+  tOpt: number;
+  nCompact: number;
+}
+const DEFAULT_SUMMARY_TOKENS = 1024;
+const COST_TRIGGER_FLOOR_PCT = 0.5;
 function outputReserve(model: ModelDescriptor, stats: CompactionStats | undefined, strategy: CompactionStrategy, window: number): number {
   const halfWindow = Math.floor(window / 2);
   if (strategy !== "fixed" && stats && stats.avgOutput > 0) {
@@ -53,6 +81,39 @@ function outputReserve(model: ModelDescriptor, stats: CompactionStats | undefine
   }
   const base = Math.max(model.maxOutputTokens ?? MIN_OUTPUT_RESERVE, MIN_OUTPUT_RESERVE);
   return Math.min(halfWindow, base);
+}
+function estimatePostCompactionTokens(messages: ChatMessage[], cfg: CompactionConfig, summaryTokens: number): number {
+  const { lead, tailStart } = segment(messages, cfg.keepTail);
+  const middle = messages.slice(lead, tailStart);
+  const prot = protectedIndices(middle);
+  const preserved = middle.filter((_, i) => prot.has(i));
+  return estimateTokens(messages.slice(0, lead)) + estimateTokens(preserved) + summaryTokens + estimateTokens(messages.slice(tailStart));
+}
+export function compactionCostTarget(
+  messages: ChatMessage[],
+  model: ModelDescriptor,
+  stats: CompactionStats | undefined,
+  cfg: CompactionConfig,
+  hardLimit: number,
+): CompactionCostTarget | undefined {
+  const perIn = model.costPer1mIn / 1_000_000;
+  const perCache = (model.costPer1mCacheRead ?? model.costPer1mIn) / 1_000_000;
+  const perOut = model.costPer1mOut / 1_000_000;
+  if (!(perIn > 0)) return undefined;
+  const h = Math.min(1, Math.max(0, stats?.avgHitRate ?? 0));
+  const p = h * perCache + (1 - h) * perIn;
+  const m = (stats?.avgUser ?? 0) + (stats?.avgOutput ?? 0);
+  if (!(p > 0) || !(m > 0)) return undefined;
+  const summaryTokens = stats && stats.avgSummary > 0 ? stats.avgSummary : DEFAULT_SUMMARY_TOKENS;
+  const s0 = estimatePostCompactionTokens(messages, cfg, summaryTokens);
+  const friction = Math.max(0, cfg.frictionCost ?? 0);
+  const lostPenalty = Math.max(0, cfg.lostContextPenalty ?? 0);
+  const summaryTerm = Math.max(0, perOut - lostPenalty) * summaryTokens;
+  const numerator = 2 * (p * s0 + summaryTerm + friction);
+  const tStar = Math.sqrt(numerator / (p * m));
+  const tMax = Math.floor(Math.max(0, hardLimit - s0) / m);
+  const tOpt = Math.min(Math.max(tStar, 1), Math.max(1, tMax));
+  return { s0, p, m, tStar, tMax, tOpt, nCompact: Math.ceil(s0 + tOpt * m) };
 }
 export function decideCompaction(
   messages: ChatMessage[],
@@ -74,8 +135,25 @@ export function decideCompaction(
   if (limit <= 0) {
     return { shouldCompact: false, reason: "usable window exhausted by reserves", currentUsage: current, usable: limit, window };
   }
+  if ((cfg.strategy ?? "model-aware") === "fixed") {
+    const rawPct = cfg.fixedAtPct ?? 75;
+    const fixedPct = Math.min(1, Math.max(0.01, rawPct > 1 ? rawPct / 100 : rawPct));
+    const fixedLimit = Math.floor(window * fixedPct);
+    if (current >= fixedLimit) {
+      return { shouldCompact: true, reason: `fixed: estimated ${current} >= ${Math.round(fixedPct * 100)}% of window (${fixedLimit})`, currentUsage: current, usable: fixedLimit, window };
+    }
+    return { shouldCompact: false, reason: `fixed: below ${Math.round(fixedPct * 100)}% of window`, currentUsage: current, usable: fixedLimit, window };
+  }
   if (current >= limit) {
     return { shouldCompact: true, reason: `estimated ${current} >= limit ${limit}`, currentUsage: current, usable: limit, window };
+  }
+  const target = compactionCostTarget(messages, model, tracker?.for(model.id), cfg, limit);
+  if (target && current >= target.nCompact) {
+    const floor = Math.floor(limit * COST_TRIGGER_FLOOR_PCT);
+    if (current >= floor) {
+      return { shouldCompact: true, reason: `cost-optimal: ${current} >= N_compact ${target.nCompact} (T*=${target.tStar.toFixed(1)})`, currentUsage: current, usable: limit, window };
+    }
+    return { shouldCompact: false, reason: `cost-optimal deferred: ${current} below ${Math.round(COST_TRIGGER_FLOOR_PCT * 100)}% of usable window (${floor})`, currentUsage: current, usable: limit, window };
   }
   return { shouldCompact: false, reason: "headroom sufficient", currentUsage: current, usable: limit, window };
 }

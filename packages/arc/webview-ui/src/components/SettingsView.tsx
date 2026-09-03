@@ -119,6 +119,8 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [catalog, setCatalog] = useState<ModelCatalogEntry[] | null>(null);
+  const [catalogReloading, setCatalogReloading] = useState(false);
+  const [catalogReloadError, setCatalogReloadError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [label, setLabel] = useState("");
@@ -127,10 +129,12 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
   const [maxOut, setMaxOut] = useState<number | "">("");
   const [costIn, setCostIn] = useState<number | undefined>(undefined);
   const [costOut, setCostOut] = useState<number | undefined>(undefined);
+  const [costCacheRead, setCostCacheRead] = useState<number | undefined>(undefined);
+  const [costCacheWrite, setCostCacheWrite] = useState<number | undefined>(undefined);
   const [multimodal, setMultimodal] = useState(false);
   const [bindIds, setBindIds] = useState<string[]>([]);
   const [slugs, setSlugs] = useState<Record<string, string>>({});
-  const [ovrs, setOvrs] = useState<Record<string, { costIn: string; costOut: string; ctx: string; maxOut: string; image?: boolean }>>({});
+  const [ovrs, setOvrs] = useState<Record<string, { costIn: string; costOut: string; cacheRead: string; cacheWrite: string; ctx: string; maxOut: string; image?: boolean }>>({});
   const [ovrOpen, setOvrOpen] = useState<Set<string>>(new Set());
   const [provAdding, setProvAdding] = useState(false);
   const [provSearch, setProvSearch] = useState("");
@@ -144,12 +148,21 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
   }, [adding, catalog, client]);
   useEffect(() => {
     const off = client.on((e: HostEvent) => {
-      if (e.type === "model/catalogResult") setCatalog(e.entries);
+      if (e.type === "model/catalogResult") {
+        setCatalog(e.entries);
+        setCatalogReloading(false);
+        setCatalogReloadError(e.reloadError ?? null);
+      }
     });
     return off;
   }, [client]);
+  const reloadCatalog = () => {
+    setCatalogReloading(true);
+    setCatalogReloadError(null);
+    client.send({ type: "model/catalog", query: "", reload: true });
+  };
   const openAdd = () => {
-    setSelectedKey(null); setLabel(""); setTier("default"); setCtx(""); setMaxOut(""); setCostIn(undefined); setCostOut(undefined);
+    setSelectedKey(null); setLabel(""); setTier("default"); setCtx(""); setMaxOut(""); setCostIn(undefined); setCostOut(undefined); setCostCacheRead(undefined); setCostCacheWrite(undefined);
     setMultimodal(false); setBindIds([]); setSlugs({}); setOvrs({}); setOvrOpen(new Set());
     setQuery(""); setProvAdding(false); setAdding(true);
   };
@@ -166,27 +179,31 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
     if (existingModel) {
       setLabel(existingModel.label);
       setTier(existingModel.tier);
-      setCtx(existingModel.contextWindow || "");
-      setMaxOut(existingModel.maxOutputTokens || "");
-      setCostIn(existingModel.costPer1mIn || undefined);
-      setCostOut(existingModel.costPer1mOut || undefined);
+      setCtx(existingModel.contextWindow || e.contextLength || "");
+      setMaxOut(existingModel.maxOutputTokens || e.maxOutputTokens || "");
+      setCostIn(existingModel.costPer1mIn || e.priceIn);
+      setCostOut(existingModel.costPer1mOut || e.priceOut);
+      setCostCacheRead(existingModel.costPer1mCacheRead || e.priceCacheRead);
+      setCostCacheWrite(existingModel.costPer1mCacheWrite || e.priceCacheWrite);
       void client.request("arc.model.multimodalIds").then((v) => {
         const ids = Array.isArray(v) ? v as string[] : [];
         setMultimodal(ids.includes(existingModel.id));
       });
       const nextSlugs: Record<string, string> = {};
-      const nextOvrs: Record<string, { costIn: string; costOut: string; ctx: string; maxOut: string; image?: boolean }> = {};
-      const opened = new Set<string>();
+      const nextOvrs: Record<string, { costIn: string; costOut: string; cacheRead: string; cacheWrite: string; ctx: string; maxOut: string; image?: boolean }> = {};
+      const opened = new Set<string>([`base:${existingModel.id}`]);
       for (const ref of existingModel.providers) {
         nextSlugs[ref.id] = ref.remoteModel ?? "";
         nextOvrs[ref.id] = {
           costIn: ref.costPer1mIn != null ? String(ref.costPer1mIn) : "",
           costOut: ref.costPer1mOut != null ? String(ref.costPer1mOut) : "",
+          cacheRead: ref.costPer1mCacheRead != null ? String(ref.costPer1mCacheRead) : "",
+          cacheWrite: ref.costPer1mCacheWrite != null ? String(ref.costPer1mCacheWrite) : "",
           ctx: ref.contextWindow != null ? String(ref.contextWindow) : "",
           maxOut: ref.maxOutputTokens != null ? String(ref.maxOutputTokens) : "",
           image: ref.imageInput ?? undefined,
         };
-        if (ref.costPer1mIn != null || ref.costPer1mOut != null || ref.contextWindow != null || ref.maxOutputTokens != null || ref.imageInput != null) opened.add(`add:${ref.id}`);
+        if (ref.costPer1mIn != null || ref.costPer1mOut != null || ref.costPer1mCacheRead != null || ref.costPer1mCacheWrite != null || ref.contextWindow != null || ref.maxOutputTokens != null || ref.imageInput != null) opened.add(`add:${ref.id}`);
       }
       for (const p of e.providers) {
         if (!(p.providerId in nextSlugs)) nextSlugs[p.providerId] = p.slug;
@@ -205,6 +222,8 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
     setMaxOut(e.maxOutputTokens ?? "");
     setCostIn(e.priceIn);
     setCostOut(e.priceOut);
+    setCostCacheRead(e.priceCacheRead);
+    setCostCacheWrite(e.priceCacheWrite);
     setMultimodal(e.imageInput ?? false);
     const next: Record<string, string> = {};
     for (const p of e.providers) next[p.providerId] = p.slug;
@@ -227,6 +246,8 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
         return {
           costIn: before?.costPer1mIn != null ? String(before.costPer1mIn) : "",
           costOut: before?.costPer1mOut != null ? String(before.costPer1mOut) : "",
+          cacheRead: before?.costPer1mCacheRead != null ? String(before.costPer1mCacheRead) : "",
+          cacheWrite: before?.costPer1mCacheWrite != null ? String(before.costPer1mCacheWrite) : "",
           ctx: before?.contextWindow != null ? String(before.contextWindow) : "",
           maxOut: before?.maxOutputTokens != null ? String(before.maxOutputTokens) : "",
           image: before?.imageInput ?? undefined,
@@ -243,6 +264,8 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
           remoteModel: slugs[pid]?.trim() || undefined,
           ...(parseOvr(o.costIn) !== undefined ? { costPer1mIn: parseOvr(o.costIn) } : {}),
           ...(parseOvr(o.costOut) !== undefined ? { costPer1mOut: parseOvr(o.costOut) } : {}),
+          ...(parseOvr(o.cacheRead) !== undefined ? { costPer1mCacheRead: parseOvr(o.cacheRead) } : {}),
+          ...(parseOvr(o.cacheWrite) !== undefined ? { costPer1mCacheWrite: parseOvr(o.cacheWrite) } : {}),
           ...(parseOvr(o.ctx) !== undefined ? { contextWindow: parseOvr(o.ctx) } : {}),
           ...(parseOvr(o.maxOut) !== undefined ? { maxOutputTokens: parseOvr(o.maxOut) } : {}),
           ...(o.image !== undefined ? { imageInput: o.image } : before?.imageInput !== undefined ? { imageInput: before.imageInput } : {}),
@@ -259,6 +282,8 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
           maxOutputTokens: maxOut === "" ? 0 : maxOut,
           costPer1mIn: costIn ?? 0,
           costPer1mOut: costOut ?? 0,
+          costPer1mCacheRead: costCacheRead,
+          costPer1mCacheWrite: costCacheWrite,
           providers: refs,
         },
       });
@@ -268,7 +293,7 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
         if (multimodal && !has) client.send({ type: "config/set", key: "arc.model.multimodal.toggle", value: { modelId: existingModel.id, enabled: true } });
         else if (!multimodal && has) client.send({ type: "config/set", key: "arc.model.multimodal.toggle", value: { modelId: existingModel.id, enabled: false } });
       });
-      setLabel(""); setCtx(""); setMaxOut(""); setCostIn(undefined); setCostOut(undefined);
+      setLabel(""); setCtx(""); setMaxOut(""); setCostIn(undefined); setCostOut(undefined); setCostCacheRead(undefined); setCostCacheWrite(undefined);
       setMultimodal(false); setBindIds([]); setSlugs({}); setOvrs({}); setOvrOpen(new Set()); setSelectedKey(null); setAdding(false);
       return;
     }
@@ -285,6 +310,8 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
         remoteModel: slugs[pid]?.trim() || undefined,
         ...(o && parseOvr(o.costIn) !== undefined ? { costPer1mIn: parseOvr(o.costIn) } : {}),
         ...(o && parseOvr(o.costOut) !== undefined ? { costPer1mOut: parseOvr(o.costOut) } : {}),
+        ...(o && parseOvr(o.cacheRead) !== undefined ? { costPer1mCacheRead: parseOvr(o.cacheRead) } : {}),
+        ...(o && parseOvr(o.cacheWrite) !== undefined ? { costPer1mCacheWrite: parseOvr(o.cacheWrite) } : {}),
         ...(o && parseOvr(o.ctx) !== undefined ? { contextWindow: parseOvr(o.ctx) } : {}),
         ...(o && parseOvr(o.maxOut) !== undefined ? { maxOutputTokens: parseOvr(o.maxOut) } : {}),
         ...(o?.image !== undefined ? { imageInput: o.image } : {}),
@@ -300,6 +327,8 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
         maxOutputTokens: maxOut === "" ? 0 : maxOut,
         costPer1mIn: costIn ?? 0,
         costPer1mOut: costOut ?? 0,
+        costPer1mCacheRead: costCacheRead,
+        costPer1mCacheWrite: costCacheWrite,
         providers: refs,
       },
     });
@@ -309,7 +338,7 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
         if (!ids.includes(id)) client.send({ type: "config/set", key: "arc.model.multimodal.toggle", value: { modelId: id, enabled: true } });
       });
     }
-    setLabel(""); setCtx(""); setMaxOut(""); setCostIn(undefined); setCostOut(undefined);
+    setLabel(""); setCtx(""); setMaxOut(""); setCostIn(undefined); setCostOut(undefined); setCostCacheRead(undefined); setCostCacheWrite(undefined);
     setMultimodal(false); setBindIds([]); setSlugs({}); setOvrs({}); setSelectedKey(null); setAdding(false);
   };
   const bind = (model: ModelDescriptor, providerId: string) => {
@@ -351,6 +380,17 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
     <Section
       title="Models"
       action={!adding && <button className="arc-btn" onClick={openAdd}><Plus size={14} /> Add model</button>}
+      titleExtra={
+        <button
+          className="arc-iconbtn"
+          onClick={reloadCatalog}
+          disabled={catalogReloading}
+          title={catalogReloadError ? `Reload failed: ${catalogReloadError}. The cached model data is unchanged; check your network/proxy and try again.` : "Reload model data from OpenRouter (prices, context window, capabilities)"}
+          style={{ marginLeft: 4, verticalAlign: "middle", ...(catalogReloadError ? { color: "var(--arc-err, #f66)" } : {}) }}
+        >
+          {catalogReloadError ? <AlertTriangle size={13} /> : <RefreshCw size={13} style={catalogReloading ? { animation: "arc-spin 1.4s linear infinite" } : undefined} />}
+        </button>
+      }
     >
       {adding && (
         <div className="arc-form">
@@ -378,6 +418,8 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
           <div className="arc-form-row">
             <input className="arc-input" type="number" step="0.0001" placeholder="$/1M input" value={costIn ?? ""} onChange={(e) => setCostIn(e.target.value === "" ? undefined : Number(e.target.value))} onKeyDown={(e) => e.stopPropagation()} />
             <input className="arc-input" type="number" step="0.0001" placeholder="$/1M output" value={costOut ?? ""} onChange={(e) => setCostOut(e.target.value === "" ? undefined : Number(e.target.value))} onKeyDown={(e) => e.stopPropagation()} />
+            <input className="arc-input" type="number" step="0.00001" placeholder="$/1M cache hit (optional)" title="Cache-read (hit) price per 1M tokens; falls back to the input price when empty" value={costCacheRead ?? ""} onChange={(e) => setCostCacheRead(e.target.value === "" ? undefined : Number(e.target.value))} onKeyDown={(e) => e.stopPropagation()} />
+            <input className="arc-input" type="number" step="0.00001" placeholder="$/1M cache write (optional)" title="Cache-write (miss) price per 1M tokens; falls back to the input price when empty" value={costCacheWrite ?? ""} onChange={(e) => setCostCacheWrite(e.target.value === "" ? undefined : Number(e.target.value))} onKeyDown={(e) => e.stopPropagation()} />
             <label className="arc-check" style={{ display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
               <input type="checkbox" checked={multimodal} onChange={(e) => setMultimodal(e.target.checked)} />
               <span style={{ fontSize: 12 }}>multimodal</span>
@@ -386,7 +428,7 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
           <ul className="arc-binds">
             {bindIds.map((pid) => {
               const prov = providers.find((p) => p.id === pid);
-              const o = ovrs[pid] ?? { costIn: "", costOut: "", ctx: "", maxOut: "", image: false };
+              const o = ovrs[pid] ?? { costIn: "", costOut: "", cacheRead: "", cacheWrite: "", ctx: "", maxOut: "", image: false };
               const setOvr = (patch: Partial<typeof o>) => setOvrs((prev) => ({ ...prev, [pid]: { ...o, ...patch } }));
               return (
                 <li key={pid} className="arc-bind">
@@ -415,14 +457,37 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
                   </div>
                   {ovrOpen.has(`add:${pid}`) && (
                     <div className="arc-bind-ovrs">
-                      <label className="arc-check" title="image input for this provider">
-                        <input type="checkbox" checked={o.image ?? false} onChange={(e) => setOvr({ image: e.target.checked })} />
-                        <span style={{ fontSize: 12 }}>multimodal</span>
+                      <label className="arc-field" title="Image input for this provider">
+                        <span className="arc-field-label">Modality</span>
+                        <label className="arc-check">
+                          <input type="checkbox" checked={o.image ?? false} onChange={(e) => setOvr({ image: e.target.checked })} />
+                          <span style={{ fontSize: 12 }}>multimodal</span>
+                        </label>
                       </label>
-                      <input className="arc-input arc-input-sm arc-bind-ovr" type="number" placeholder="max in" value={o.ctx} onChange={(e) => setOvr({ ctx: e.target.value })} onKeyDown={(e) => e.stopPropagation()} />
-                      <input className="arc-input arc-input-sm arc-bind-ovr" type="number" placeholder="max out" value={o.maxOut} onChange={(e) => setOvr({ maxOut: e.target.value })} onKeyDown={(e) => e.stopPropagation()} />
-                      <input className="arc-input arc-input-sm arc-bind-ovr" type="number" step="0.0001" placeholder="$/1M in" value={o.costIn} onChange={(e) => setOvr({ costIn: e.target.value })} onKeyDown={(e) => e.stopPropagation()} />
-                      <input className="arc-input arc-input-sm arc-bind-ovr" type="number" step="0.0001" placeholder="$/1M out" value={o.costOut} onChange={(e) => setOvr({ costOut: e.target.value })} onKeyDown={(e) => e.stopPropagation()} />
+                      <label className="arc-field">
+                        <span className="arc-field-label">Context window</span>
+                        <input className="arc-input arc-input-sm" type="number" placeholder="model default" value={o.ctx} onChange={(e) => setOvr({ ctx: e.target.value })} onKeyDown={(e) => e.stopPropagation()} />
+                      </label>
+                      <label className="arc-field">
+                        <span className="arc-field-label">Max output</span>
+                        <input className="arc-input arc-input-sm" type="number" placeholder="model default" value={o.maxOut} onChange={(e) => setOvr({ maxOut: e.target.value })} onKeyDown={(e) => e.stopPropagation()} />
+                      </label>
+                      <label className="arc-field">
+                        <span className="arc-field-label">$ / 1M in</span>
+                        <input className="arc-input arc-input-sm" type="number" step="0.0001" placeholder="model default" value={o.costIn} onChange={(e) => setOvr({ costIn: e.target.value })} onKeyDown={(e) => e.stopPropagation()} />
+                      </label>
+                      <label className="arc-field">
+                        <span className="arc-field-label">$ / 1M out</span>
+                        <input className="arc-input arc-input-sm" type="number" step="0.0001" placeholder="model default" value={o.costOut} onChange={(e) => setOvr({ costOut: e.target.value })} onKeyDown={(e) => e.stopPropagation()} />
+                      </label>
+                      <label className="arc-field" title="Cache-read (hit) price per 1M tokens; falls back to the input price when empty">
+                        <span className="arc-field-label">$ / 1M cache hit</span>
+                        <input className="arc-input arc-input-sm" type="number" step="0.00001" placeholder="model default" value={o.cacheRead} onChange={(e) => setOvr({ cacheRead: e.target.value })} onKeyDown={(e) => e.stopPropagation()} />
+                      </label>
+                      <label className="arc-field" title="Cache-write (miss) price per 1M tokens; falls back to the input price when empty">
+                        <span className="arc-field-label">$ / 1M cache write</span>
+                        <input className="arc-input arc-input-sm" type="number" step="0.00001" placeholder="model default" value={o.cacheWrite} onChange={(e) => setOvr({ cacheWrite: e.target.value })} onKeyDown={(e) => e.stopPropagation()} />
+                      </label>
                     </div>
                   )}
                 </li>
@@ -499,19 +564,47 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
                   {TIERS.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
                 <span className="arc-spacer" />
+                <button className="arc-iconbtn" onClick={() => toggleOvr(`base:${m.id}`)} title={ovrOpen.has(`base:${m.id}`) ? "Collapse model settings" : "Expand model settings"}>
+                  {ovrOpen.has(`base:${m.id}`) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                </button>
                 <button className="arc-iconbtn" onClick={() => { setRenamingId(m.id); setRenameValue(m.label); }} title="Rename model"><Pencil size={14} /></button>
                 <button className="arc-iconbtn" onClick={() => client.send({ type: "model/remove", modelId: m.id })} title="Remove model"><Trash2 size={14} /></button>
               </div>
-              <div className="arc-row-sub" key={`edit-${m.id}-${m.contextWindow}-${m.maxOutputTokens ?? 0}-${m.costPer1mIn}-${m.costPer1mOut}`}>
-                <label className="arc-check" style={{ marginRight: 8 }}>
-                  <ModelMultimodalCheckbox modelId={m.id} client={client} />
-                  <span style={{ fontSize: 12 }}>multimodal</span>
+              {ovrOpen.has(`base:${m.id}`) && (
+              <div className="arc-row-sub" key={`edit-${m.id}-${m.contextWindow}-${m.maxOutputTokens ?? 0}-${m.costPer1mIn}-${m.costPer1mOut}-${m.costPer1mCacheRead ?? ""}-${m.costPer1mCacheWrite ?? ""}`}>
+                <label className="arc-field arc-field-check" title="Accepts image input">
+                  <span className="arc-field-label">Modality</span>
+                  <label className="arc-check">
+                    <ModelMultimodalCheckbox modelId={m.id} client={client} />
+                    <span style={{ fontSize: 12 }}>multimodal</span>
+                  </label>
                 </label>
-                <input className="arc-input arc-input-sm" type="number" placeholder="context window" defaultValue={m.contextWindow || ""} onBlur={(e) => { const v = Number(e.target.value); if (v && v !== m.contextWindow) { client.send({ type: "model/remove", modelId: m.id }); client.send({ type: "model/add", model: { ...m, contextWindow: v } }); } }} onKeyDown={(e) => e.stopPropagation()} />
-                <input className="arc-input arc-input-sm" type="number" placeholder="max output tokens" defaultValue={m.maxOutputTokens ?? ""} onBlur={(e) => { const v = Number(e.target.value) || undefined; if (v !== (m.maxOutputTokens ?? undefined)) { client.send({ type: "model/remove", modelId: m.id }); client.send({ type: "model/add", model: { ...m, maxOutputTokens: v } }); } }} onKeyDown={(e) => e.stopPropagation()} />
-                <input className="arc-input arc-input-sm" type="number" step="0.0001" placeholder="$/1M in" defaultValue={m.costPer1mIn ?? ""} onBlur={(e) => { const v = Number(e.target.value); if (v !== m.costPer1mIn) { client.send({ type: "model/remove", modelId: m.id }); client.send({ type: "model/add", model: { ...m, costPer1mIn: v } }); } }} onKeyDown={(e) => e.stopPropagation()} />
-                <input className="arc-input arc-input-sm" type="number" step="0.0001" placeholder="$/1M out" defaultValue={m.costPer1mOut ?? ""} onBlur={(e) => { const v = Number(e.target.value); if (v !== m.costPer1mOut) { client.send({ type: "model/remove", modelId: m.id }); client.send({ type: "model/add", model: { ...m, costPer1mOut: v } }); } }} onKeyDown={(e) => e.stopPropagation()} />
+                <label className="arc-field">
+                  <span className="arc-field-label">Context window</span>
+                  <input className="arc-input arc-input-sm" type="number" placeholder="auto" defaultValue={m.contextWindow || ""} onBlur={(e) => { const v = Number(e.target.value); if (v && v !== m.contextWindow) { client.send({ type: "model/remove", modelId: m.id }); client.send({ type: "model/add", model: { ...m, contextWindow: v } }); } }} onKeyDown={(e) => e.stopPropagation()} />
+                </label>
+                <label className="arc-field">
+                  <span className="arc-field-label">Max output</span>
+                  <input className="arc-input arc-input-sm" type="number" placeholder="auto" defaultValue={m.maxOutputTokens ?? ""} onBlur={(e) => { const v = Number(e.target.value) || undefined; if (v !== (m.maxOutputTokens ?? undefined)) { client.send({ type: "model/remove", modelId: m.id }); client.send({ type: "model/add", model: { ...m, maxOutputTokens: v } }); } }} onKeyDown={(e) => e.stopPropagation()} />
+                </label>
+                <label className="arc-field">
+                  <span className="arc-field-label">$ / 1M in</span>
+                  <input className="arc-input arc-input-sm" type="number" step="0.0001" placeholder="0" defaultValue={m.costPer1mIn ?? ""} onBlur={(e) => { const v = Number(e.target.value); if (v !== m.costPer1mIn) { client.send({ type: "model/remove", modelId: m.id }); client.send({ type: "model/add", model: { ...m, costPer1mIn: v } }); } }} onKeyDown={(e) => e.stopPropagation()} />
+                </label>
+                <label className="arc-field">
+                  <span className="arc-field-label">$ / 1M out</span>
+                  <input className="arc-input arc-input-sm" type="number" step="0.0001" placeholder="0" defaultValue={m.costPer1mOut ?? ""} onBlur={(e) => { const v = Number(e.target.value); if (v !== m.costPer1mOut) { client.send({ type: "model/remove", modelId: m.id }); client.send({ type: "model/add", model: { ...m, costPer1mOut: v } }); } }} onKeyDown={(e) => e.stopPropagation()} />
+                </label>
+                <label className="arc-field" title="Cache-read (hit) price per 1M tokens; falls back to the input price when empty">
+                  <span className="arc-field-label">$ / 1M cache hit</span>
+                  <input className="arc-input arc-input-sm" type="number" step="0.00001" placeholder="= in" defaultValue={m.costPer1mCacheRead ?? ""} onBlur={(e) => { const v = e.target.value === "" ? undefined : Number(e.target.value); if (v !== m.costPer1mCacheRead) { client.send({ type: "model/remove", modelId: m.id }); client.send({ type: "model/add", model: { ...m, costPer1mCacheRead: v } }); } }} onKeyDown={(e) => e.stopPropagation()} />
+                </label>
+                <label className="arc-field" title="Cache-write (miss) price per 1M tokens; falls back to the input price when empty">
+                  <span className="arc-field-label">$ / 1M cache write</span>
+                  <input className="arc-input arc-input-sm" type="number" step="0.00001" placeholder="= in" defaultValue={m.costPer1mCacheWrite ?? ""} onBlur={(e) => { const v = e.target.value === "" ? undefined : Number(e.target.value); if (v !== m.costPer1mCacheWrite) { client.send({ type: "model/remove", modelId: m.id }); client.send({ type: "model/add", model: { ...m, costPer1mCacheWrite: v } }); } }} onKeyDown={(e) => e.stopPropagation()} />
+                </label>
               </div>
+              )}
               <ul className="arc-binds">
                 {m.providers.map((p) => {
                   const prov = providers.find((x) => x.id === p.id);
@@ -534,14 +627,37 @@ function ModelsTab({ client, providers, models, providerCatalog, onSwitchTab }: 
                       </div>
                       {ovrOpen.has(ovrKey) && (
                         <div className="arc-bind-ovrs">
-                          <label key={`ovr-img-${p.id}-${p.imageInput ?? false}`} className="arc-check" title="image input for this provider">
-                            <input type="checkbox" defaultChecked={p.imageInput ?? false} onChange={(e) => client.send({ type: "model/bindUpdate", modelId: m.id, providerId: p.id, imageInput: e.target.checked })} />
-                            <span style={{ fontSize: 12 }}>multimodal</span>
+                          <label className="arc-field" title="Image input for this provider">
+                            <span className="arc-field-label">Modality</span>
+                            <label className="arc-check">
+                              <input type="checkbox" defaultChecked={p.imageInput ?? false} onChange={(e) => client.send({ type: "model/bindUpdate", modelId: m.id, providerId: p.id, imageInput: e.target.checked })} />
+                              <span style={{ fontSize: 12 }}>multimodal</span>
+                            </label>
                           </label>
-                          <input key={`ovr-ctx-${p.id}-${p.contextWindow ?? ""}`} className="arc-input arc-input-sm arc-bind-ovr" type="number" placeholder="max in" defaultValue={p.contextWindow ?? ""} onBlur={(e) => { const v = e.target.value === "" ? 0 : Number(e.target.value); if (v !== (p.contextWindow ?? 0)) client.send({ type: "model/bindUpdate", modelId: m.id, providerId: p.id, contextWindow: v }); }} onKeyDown={(e) => e.stopPropagation()} />
-                          <input key={`ovr-max-${p.id}-${p.maxOutputTokens ?? ""}`} className="arc-input arc-input-sm arc-bind-ovr" type="number" placeholder="max out" defaultValue={p.maxOutputTokens ?? ""} onBlur={(e) => { const v = e.target.value === "" ? 0 : Number(e.target.value); if (v !== (p.maxOutputTokens ?? 0)) client.send({ type: "model/bindUpdate", modelId: m.id, providerId: p.id, maxOutputTokens: v }); }} onKeyDown={(e) => e.stopPropagation()} />
-                          <input key={`ovr-in-${p.id}-${p.costPer1mIn ?? ""}`} className="arc-input arc-input-sm arc-bind-ovr" type="number" step="0.0001" placeholder="$/1M in" defaultValue={p.costPer1mIn ?? ""} onBlur={(e) => { const v = e.target.value === "" ? 0 : Number(e.target.value); if (v !== (p.costPer1mIn ?? 0)) client.send({ type: "model/bindUpdate", modelId: m.id, providerId: p.id, costPer1mIn: v }); }} onKeyDown={(e) => e.stopPropagation()} />
-                          <input key={`ovr-out-${p.id}-${p.costPer1mOut ?? ""}`} className="arc-input arc-input-sm arc-bind-ovr" type="number" step="0.0001" placeholder="$/1M out" defaultValue={p.costPer1mOut ?? ""} onBlur={(e) => { const v = e.target.value === "" ? 0 : Number(e.target.value); if (v !== (p.costPer1mOut ?? 0)) client.send({ type: "model/bindUpdate", modelId: m.id, providerId: p.id, costPer1mOut: v }); }} onKeyDown={(e) => e.stopPropagation()} />
+                          <label className="arc-field" key={`ovr-ctx-${p.id}-${p.contextWindow ?? ""}`}>
+                            <span className="arc-field-label">Context window</span>
+                            <input className="arc-input arc-input-sm" type="number" placeholder="model default" defaultValue={p.contextWindow ?? ""} onBlur={(e) => { const v = e.target.value === "" ? 0 : Number(e.target.value); if (v !== (p.contextWindow ?? 0)) client.send({ type: "model/bindUpdate", modelId: m.id, providerId: p.id, contextWindow: v }); }} onKeyDown={(e) => e.stopPropagation()} />
+                          </label>
+                          <label className="arc-field" key={`ovr-max-${p.id}-${p.maxOutputTokens ?? ""}`}>
+                            <span className="arc-field-label">Max output</span>
+                            <input className="arc-input arc-input-sm" type="number" placeholder="model default" defaultValue={p.maxOutputTokens ?? ""} onBlur={(e) => { const v = e.target.value === "" ? 0 : Number(e.target.value); if (v !== (p.maxOutputTokens ?? 0)) client.send({ type: "model/bindUpdate", modelId: m.id, providerId: p.id, maxOutputTokens: v }); }} onKeyDown={(e) => e.stopPropagation()} />
+                          </label>
+                          <label className="arc-field" key={`ovr-in-${p.id}-${p.costPer1mIn ?? ""}`}>
+                            <span className="arc-field-label">$ / 1M in</span>
+                            <input className="arc-input arc-input-sm" type="number" step="0.0001" placeholder="model default" defaultValue={p.costPer1mIn ?? ""} onBlur={(e) => { const v = e.target.value === "" ? 0 : Number(e.target.value); if (v !== (p.costPer1mIn ?? 0)) client.send({ type: "model/bindUpdate", modelId: m.id, providerId: p.id, costPer1mIn: v }); }} onKeyDown={(e) => e.stopPropagation()} />
+                          </label>
+                          <label className="arc-field" key={`ovr-out-${p.id}-${p.costPer1mOut ?? ""}`}>
+                            <span className="arc-field-label">$ / 1M out</span>
+                            <input className="arc-input arc-input-sm" type="number" step="0.0001" placeholder="model default" defaultValue={p.costPer1mOut ?? ""} onBlur={(e) => { const v = e.target.value === "" ? 0 : Number(e.target.value); if (v !== (p.costPer1mOut ?? 0)) client.send({ type: "model/bindUpdate", modelId: m.id, providerId: p.id, costPer1mOut: v }); }} onKeyDown={(e) => e.stopPropagation()} />
+                          </label>
+                          <label className="arc-field" key={`ovr-cr-${p.id}-${p.costPer1mCacheRead ?? ""}`} title="Cache-read (hit) price per 1M tokens; falls back to the input price when empty">
+                            <span className="arc-field-label">$ / 1M cache hit</span>
+                            <input className="arc-input arc-input-sm" type="number" step="0.00001" placeholder="model default" defaultValue={p.costPer1mCacheRead ?? ""} onBlur={(e) => { const v = e.target.value === "" ? 0 : Number(e.target.value); if (v !== (p.costPer1mCacheRead ?? 0)) client.send({ type: "model/bindUpdate", modelId: m.id, providerId: p.id, costPer1mCacheRead: v }); }} onKeyDown={(e) => e.stopPropagation()} />
+                          </label>
+                          <label className="arc-field" key={`ovr-cw-${p.id}-${p.costPer1mCacheWrite ?? ""}`} title="Cache-write (miss) price per 1M tokens; falls back to the input price when empty">
+                            <span className="arc-field-label">$ / 1M cache write</span>
+                            <input className="arc-input arc-input-sm" type="number" step="0.00001" placeholder="model default" defaultValue={p.costPer1mCacheWrite ?? ""} onBlur={(e) => { const v = e.target.value === "" ? 0 : Number(e.target.value); if (v !== (p.costPer1mCacheWrite ?? 0)) client.send({ type: "model/bindUpdate", modelId: m.id, providerId: p.id, costPer1mCacheWrite: v }); }} onKeyDown={(e) => e.stopPropagation()} />
+                          </label>
                         </div>
                       )}
                     </li>
@@ -1011,27 +1127,44 @@ function VerificationSection({ client }: { client: RpcClient }) {
 function CompactionSection({ client }: { client: RpcClient }) {
   const [compactionStrategy, setCompactionStrategy] = useState<"model-aware" | "fixed">("model-aware");
   const [safetyMargin, setSafetyMargin] = useState(0.15);
+  const [fixedAtPct, setFixedAtPct] = useState(75);
   useEffect(() => {
     void client.request("arc.compaction.strategy").then((v) => setCompactionStrategy((v as typeof compactionStrategy) ?? "model-aware"));
     void client.request("arc.compaction.safetyMargin").then((v) => setSafetyMargin(typeof v === "number" ? v : 0.15));
+    void client.request("arc.compaction.fixedAtPct").then((v) => setFixedAtPct(typeof v === "number" ? v : 75));
   }, [client]);
   return (
       <Section collapsible title="Compaction" description="Controls when and how conversation context is summarized.">
         <ul className="arc-rows">
           <li className="arc-row"><div className="arc-row-main">
             <span className="arc-row-label">Strategy</span>
+            {compactionStrategy === "model-aware" && (
+              <span className="arc-info-icon" title="Learns from recent turns: reserves headroom for the model's average thinking + response length plus the safety margin below, and may compact at the cost-optimal point once pricing is known — but never before half the usable window (see the context tooltip). Falls back to a fixed output reserve when few turns have been observed.">
+                <Info size={13} />
+              </span>
+            )}
             <span className="arc-spacer" />
             <select className="arc-input arc-input-sm" value={compactionStrategy} onChange={(e) => { const v = e.target.value as typeof compactionStrategy; setCompactionStrategy(v); client.send({ type: "config/set", key: "arc.compaction.strategy", value: v }); }}>
               <option value="model-aware">model-aware</option>
-              <option value="fixed">fixed (75%)</option>
+              <option value="fixed">fixed</option>
             </select>
           </div></li>
-          <li className="arc-row"><div className="arc-row-main">
-            <span className="arc-row-label">Safety margin</span>
-            <span className="arc-row-meta">window reserved for model output</span>
-            <span className="arc-spacer" />
-            <input className="arc-input arc-input-sm" type="number" min={0} max={0.5} step={0.05} value={safetyMargin} onChange={(e) => setSafetyMargin(Number(e.target.value))} onBlur={() => client.send({ type: "config/set", key: "arc.compaction.safetyMargin", value: safetyMargin })} />
-          </div></li>
+          {compactionStrategy === "fixed" && (
+            <li className="arc-row"><div className="arc-row-main">
+              <span className="arc-row-label">Compact at</span>
+              <span className="arc-row-meta">% of context window</span>
+              <span className="arc-spacer" />
+              <input className="arc-input arc-input-sm" type="number" min={1} max={100} step={5} value={fixedAtPct} onChange={(e) => setFixedAtPct(Number(e.target.value))} onBlur={() => client.send({ type: "config/set", key: "arc.compaction.fixedAtPct", value: Math.min(100, Math.max(1, fixedAtPct || 75)) })} style={{ width: 72 }} />
+            </div></li>
+          )}
+          {compactionStrategy === "model-aware" && (
+            <li className="arc-row"><div className="arc-row-main">
+              <span className="arc-row-label">Safety margin</span>
+              <span className="arc-row-meta">extra headroom below the learned output reserve</span>
+              <span className="arc-spacer" />
+              <input className="arc-input arc-input-sm" type="number" min={0} max={0.5} step={0.05} value={safetyMargin} onChange={(e) => setSafetyMargin(Number(e.target.value))} onBlur={() => client.send({ type: "config/set", key: "arc.compaction.safetyMargin", value: safetyMargin })} />
+            </div></li>
+          )}
         </ul>
       </Section>
   );
@@ -1423,19 +1556,41 @@ function ToolTogglesSection({ client, toolCatalog }: { client: RpcClient; toolCa
   );
 }
 function ShellSection({ client }: { client: RpcClient }) {
-  const [sandboxProfile, setSandboxProfile] = useState<"off" | "read-only" | "workspace">("off");
+  const [sandboxProfile, setSandboxProfile] = useState<"off" | "read-only" | "workspace" | "system">("off");
   const [terminal, setTerminal] = useState("default");
   const [surface, setSurface] = useState<"arc-handled" | "integrated">("arc-handled");
   const [terminals, setTerminals] = useState<{ id: string; name: string }[]>([]);
+  const [isWindows, setIsWindows] = useState(false);
+  // Remembers the pre-sandbox terminal so disabling the sandbox restores it.
+  const preSandboxTerminal = useRef<string | undefined>(undefined);
   useEffect(() => {
-    void client.request("arc.sandbox.profile").then((v) => setSandboxProfile(v === "read-only" || v === "workspace" ? v : "off"));
+    void client.request("arc.sandbox.profile").then((v) => setSandboxProfile(v === "read-only" || v === "workspace" || v === "system" ? v : "off"));
     void client.request("arc.shell.terminal").then((v) => { if (typeof v === "string" && v) setTerminal(v); });
     void client.request("arc.shell.surface").then((v) => setSurface(v === "integrated" ? "integrated" : "arc-handled"));
+    void client.request("arc.env.platform").then((v) => { if (v === "win32") setIsWindows(true); });
     void client.request("arc.shell.detectedTerminals").then((v) => {
       if (!Array.isArray(v)) return;
       setTerminals(v.filter((t): t is { id: string; name: string } => !!t && typeof (t as { id?: unknown }).id === "string" && typeof (t as { name?: unknown }).name === "string"));
     });
   }, [client]);
+  // On Windows the native sandbox can only drive native Win32 shells:
+  // emulation-layer shells (Git Bash, WSL, Cygwin/MSYS, Nushell) break under
+  // the restricted token. Prefer PowerShell 7, then 5.1, then Command Prompt.
+  const sandboxTerminal = isWindows && sandboxProfile !== "off"
+    ? (["pwsh", "powershell", "cmd"].map((id) => terminals.find((t) => t.id === id)).find(Boolean))
+    : undefined;
+  useEffect(() => {
+    if (sandboxTerminal && terminal !== sandboxTerminal.id) {
+      if (preSandboxTerminal.current === undefined) preSandboxTerminal.current = terminal;
+      setTerminal(sandboxTerminal.id);
+      client.send({ type: "config/set", key: "arc.shell.terminal", value: sandboxTerminal.id });
+    } else if (!sandboxTerminal && preSandboxTerminal.current !== undefined) {
+      const restore = preSandboxTerminal.current;
+      preSandboxTerminal.current = undefined;
+      setTerminal(restore);
+      client.send({ type: "config/set", key: "arc.shell.terminal", value: restore });
+    }
+  }, [client, sandboxTerminal, terminal]);
   const knownTerminal = terminal === "default" || terminals.some((t) => t.id === terminal);
   return (
       <Section collapsible nested title="Shell" description="Approvals are in the chat top bar.">
@@ -1443,8 +1598,13 @@ function ShellSection({ client }: { client: RpcClient }) {
           <li className="arc-row"><div className="arc-row-main">
             <span className="arc-row-label">Terminal</span>
             <span className="arc-row-meta">the shell that interprets shell tool commands</span>
+            {sandboxTerminal && (
+              <span className="arc-info-icon" title={`Sandboxing on Windows is only supported by ${sandboxTerminal.name}`}>
+                <Info size={13} />
+              </span>
+            )}
             <span className="arc-spacer" />
-            <select className="arc-input arc-input-sm" value={terminal} onChange={(e) => { const v = e.target.value; setTerminal(v); client.send({ type: "config/set", key: "arc.shell.terminal", value: v }); }}>
+            <select className="arc-input arc-input-sm" value={sandboxTerminal ? sandboxTerminal.id : terminal} disabled={!!sandboxTerminal} onChange={(e) => { const v = e.target.value; setTerminal(v); client.send({ type: "config/set", key: "arc.shell.terminal", value: v }); }}>
               <option value="default">default</option>
               {!knownTerminal && <option value={terminal}>{terminal}</option>}
               {terminals.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}

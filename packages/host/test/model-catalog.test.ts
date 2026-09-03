@@ -36,6 +36,29 @@ describe("parseOpenRouterCatalogue", () => {
     expect(info?.priceOutPer1m).toBeCloseTo(8);
     expect(info?.imageInput).toBe(true);
   });
+  it("converts per-token cache prices to per-1M without float artifacts (Claude Sonnet 5)", () => {
+    const map = parseOpenRouterCatalogue({
+      data: [
+        {
+          id: "anthropic/claude-sonnet-5",
+          name: "Anthropic: Claude Sonnet 5",
+          context_length: 1000000,
+          top_provider: { max_completion_tokens: 128000 },
+          pricing: {
+            prompt: "0.000002",
+            completion: "0.00001",
+            input_cache_read: "0.0000002",
+            input_cache_write: "0.0000025",
+          },
+        },
+      ],
+    });
+    const info = map.get("anthropic/claude-sonnet-5");
+    expect(info?.priceInPer1m).toBe(2);
+    expect(info?.priceOutPer1m).toBe(10);
+    expect(info?.priceCacheReadPer1m).toBe(0.2);
+    expect(info?.priceCacheWritePer1m).toBe(2.5);
+  });
 });
 describe("matchModelInfo", () => {
   const map = catalogueFrom([{ id: "zai/glm-5.3-flash", name: "Z AI: GLM 5.3 Flash" }]);

@@ -17,6 +17,8 @@ export interface OpenRouterModelInfo {
   maxOutputTokens?: number;
   priceInPer1m?: number;
   priceOutPer1m?: number;
+  priceCacheReadPer1m?: number;
+  priceCacheWritePer1m?: number;
   imageInput?: boolean;
   thinking?: boolean;
 }
@@ -215,17 +217,24 @@ function infoFromRaw(entry: OrBackEntry): OpenRouterModelInfo | undefined {
   const maxCompletionTokens = positiveNumber(entry.top_provider?.max_completion_tokens);
   const priceIn = typeof entry.pricing?.prompt === "string" ? Number(entry.pricing.prompt) : undefined;
   const priceOut = typeof entry.pricing?.completion === "string" ? Number(entry.pricing.completion) : undefined;
+  const priceCacheRead = typeof entry.pricing?.input_cache_read === "string" ? Number(entry.pricing.input_cache_read) : undefined;
+  const priceCacheWrite = typeof entry.pricing?.input_cache_write === "string" ? Number(entry.pricing.input_cache_write) : undefined;
   const info: OpenRouterModelInfo = {};
   const displayName = extractDisplayName(entry.name);
   if (displayName) info.displayName = displayName;
   if (contextLength) info.contextLength = contextLength;
   if (maxCompletionTokens) info.maxOutputTokens = maxCompletionTokens;
-  if (priceIn !== undefined && Number.isFinite(priceIn) && priceIn >= 0) info.priceInPer1m = priceIn * 1_000_000;
-  if (priceOut !== undefined && Number.isFinite(priceOut) && priceOut >= 0) info.priceOutPer1m = priceOut * 1_000_000;
+  if (priceIn !== undefined && Number.isFinite(priceIn) && priceIn >= 0) info.priceInPer1m = toPer1m(priceIn);
+  if (priceOut !== undefined && Number.isFinite(priceOut) && priceOut >= 0) info.priceOutPer1m = toPer1m(priceOut);
+  if (priceCacheRead !== undefined && Number.isFinite(priceCacheRead) && priceCacheRead >= 0) info.priceCacheReadPer1m = toPer1m(priceCacheRead);
+  if (priceCacheWrite !== undefined && Number.isFinite(priceCacheWrite) && priceCacheWrite >= 0) info.priceCacheWritePer1m = toPer1m(priceCacheWrite);
   const mods = entry.architecture?.input_modalities;
   if (Array.isArray(mods) && mods.some((v) => typeof v === "string" && v.toLowerCase() === "image")) info.imageInput = true;
   if (entry.reasoning && typeof entry.reasoning === "object") info.thinking = true;
   return Object.keys(info).length > 0 ? info : undefined;
+}
+function toPer1m(perToken: number): number {
+  return Number((perToken * 1_000_000).toPrecision(12));
 }
 export function parseOpenRouterCatalogue(json: unknown): Map<string, OpenRouterModelInfo> {
   const maybeData = (json as Record<string, unknown> | undefined)?.["data"];
@@ -258,12 +267,17 @@ function indexFromEntries(entries: OrBackEntry[]): Map<string, OpenRouterModelIn
   }
   return map;
 }
-export async function getModelCatalogue(): Promise<Map<string, OpenRouterModelInfo> | undefined> {
+export async function getModelCatalogue(opts: { force?: boolean; proxyUrl?: string } = {}): Promise<Map<string, OpenRouterModelInfo> | undefined> {
+  const force = opts.force === true;
+  if (force) {
+    infoIndex = undefined;
+    slugCache.clear();
+  }
   if (infoIndex) return infoIndex;
   if (!infoIndexPromise) {
     infoIndexPromise = (async () => {
       try {
-        const entries = await getOrBackEntries();
+        const entries = await getOrBackEntries({ force, proxyUrl: opts.proxyUrl });
         if (entries?.length) infoIndex = indexFromEntries(entries);
         return infoIndex;
       } finally {
@@ -373,8 +387,8 @@ export async function listProviderModelSlugs(source: SlugSource, proxyUrl?: stri
   slugCache.set(key, { at: Date.now(), slugs });
   return slugs;
 }
-export async function groupProviderModels(entries: ProviderModelEntry[], info?: Map<string, OpenRouterModelInfo>): Promise<GroupedModel[]> {
-  const catalogue = info ?? (await getModelCatalogue());
+export async function groupProviderModels(entries: ProviderModelEntry[], info?: Map<string, OpenRouterModelInfo>, opts?: { force?: boolean; proxyUrl?: string }): Promise<GroupedModel[]> {
+  const catalogue = info ?? (await getModelCatalogue(opts));
   const groups = new Map<string, GroupedModel>();
   for (const entry of entries) {
     const key = aliasKeyForSlug(entry.slug);
